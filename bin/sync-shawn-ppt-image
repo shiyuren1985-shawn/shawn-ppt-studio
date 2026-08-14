@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+studio_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+skill_root="${SHAWN_PPT_IMAGE_PUBLIC_ROOT:-$(cd "$studio_root/.." && pwd)/shawn-ppt-image-skill}"
+skill_prefix=".agents/skills/shawn-ppt-image"
+
+if [[ ! -d "$skill_root/.git" || ! -f "$skill_root/SKILL.md" ]]; then
+  echo "Standalone Skill checkout not found: $skill_root" >&2
+  exit 1
+fi
+
+if [[ -n "$(git -C "$skill_root" status --porcelain)" ]]; then
+  echo "Commit or discard standalone Skill changes before syncing." >&2
+  exit 1
+fi
+
+if [[ -n "$(git -C "$studio_root" status --porcelain)" ]]; then
+  echo "Commit or discard Studio changes before syncing." >&2
+  exit 1
+fi
+
+default_python="$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
+default_node="$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
+python_bin="${SHAWN_PPT_TEST_PYTHON:-$default_python}"
+node_bin="${SHAWN_PPT_TEST_NODE:-$default_node}"
+
+[[ -x "$python_bin" ]] || python_bin="$(command -v python3)"
+[[ -x "$node_bin" ]] || node_bin="$(command -v node)"
+
+SHAWN_PPT_TEST_NODE="$node_bin" \
+SHAWN_PPT_TEST_PYTHON="$python_bin" \
+  "$python_bin" -m unittest discover -s "$skill_root/tests" -q
+
+git -C "$skill_root" push origin main
+git -C "$studio_root" subtree pull \
+  --prefix="$skill_prefix" \
+  "$skill_root" main --squash
+
+echo "Updated $skill_prefix from $(git -C "$skill_root" rev-parse --short HEAD)."

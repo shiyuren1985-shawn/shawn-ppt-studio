@@ -4,11 +4,12 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { SHAWN_SKILL_PATH, SHAWN_SKILL_ROOT } from "./skill-paths.mjs";
+
+export { SHAWN_SKILL_PATH, SHAWN_SKILL_ROOT } from "./skill-paths.mjs";
+
 export const CONTRACT_VERSION = 1;
 export const STUDIO_APP_SERVER_TRANSPORT = "studio_app_server_v1";
-const CODEX_HOME = path.resolve(process.env.CODEX_HOME || path.join(homedir(), ".codex"));
-export const SHAWN_SKILL_PATH = path.join(CODEX_HOME, "skills", "Shawn-PPT-image", "SKILL.md");
-export const SHAWN_SKILL_ROOT = path.dirname(SHAWN_SKILL_PATH);
 export const DEFAULT_LAB_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",

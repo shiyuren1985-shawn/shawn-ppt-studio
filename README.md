@@ -2,7 +2,7 @@
 
 Shawn PPT Studio is a local, conversation-first workspace for building visual PowerPoint decks with Codex. It keeps the outline, selected slide images, candidate review, image retouching, and export workflow in one macOS app.
 
-> **Developer preview:** the source is public, but the full image-production workflow is not yet plug-and-play for third parties. It currently depends on Codex and a separate `Shawn-PPT-image` skill that is not included in this repository.
+> **Developer preview:** the source and the `shawn-ppt-image` project Skill are public. The full image-production workflow still depends on a compatible, signed-in Codex environment and its system `imagegen` Skill.
 
 ## What is included
 
@@ -10,7 +10,7 @@ Shawn PPT Studio is a local, conversation-first workspace for building visual Po
 - A project-level Codex conversation with streamed items, steering, interrupt, history, and official approval prompts.
 - A native candidate-selection workspace with three images per row, immediate selection, zoom, and Trash support.
 - New-project flows for an empty folder or an existing Markdown outline.
-- Canonical Fast8 and single-image-edit adapters for the external `Shawn-PPT-image` skill.
+- Canonical Fast8 and single-image-edit adapters with the project Skill bundled at `.agents/skills/shawn-ppt-image`.
 - PDF and ordered page-image ZIP export. PPTX export remains unavailable until a real Microsoft Office sensitivity label can be verified.
 - A Tauri desktop shell for macOS.
 
@@ -26,11 +26,11 @@ Company decks, private assets, production selection state, generated images, run
 
 ### Required for image generation and retouching
 
-- The separate `Shawn-PPT-image` skill at `$CODEX_HOME/skills/Shawn-PPT-image`.
-- The Codex `imagegen` skill at `$CODEX_HOME/skills/.system/imagegen`.
+- The bundled `shawn-ppt-image` project Skill. Its standalone public repository is [shawn-ppt-image-skill](https://github.com/shiyuren1985-shawn/shawn-ppt-image-skill).
+- The Codex system `imagegen` Skill.
 - The local Python/runtime dependencies used by those skills.
 
-The `Shawn-PPT-image` skill is not public yet, so cloning this repository alone currently provides the UI, project management, Codex conversation, selection, and export code—but not the complete image-production pipeline.
+The Studio prefers its bundled project Skill. Set `SHAWN_PPT_IMAGE_SKILL_ROOT` only when developing against a separate local checkout.
 
 ### Optional legacy integration
 
@@ -70,7 +70,18 @@ The defaults work with a standard Codex home directory. These environment variab
 | `SHAWN_PPT_STUDIO_RUNTIME_ROOT` | Runtime containing export tools |
 | `SHAWN_PPT_STUDIO_SELECTOR_ROOT` | Optional legacy selector checkout |
 | `SHAWN_PPT_STUDIO_DECKS_FILE` | Optional legacy deck registry |
+| `SHAWN_PPT_IMAGE_SKILL_ROOT` | Optional standalone `shawn-ppt-image` checkout used instead of the bundled copy |
 | `SHAWN_PPT_IMAGE_MONITORING_ROOT` | Shared image-generation slot registry |
+
+## Updating the bundled Skill
+
+The Skill remains independently testable in its own repository. After committing changes there, run this from Studio:
+
+```bash
+./bin/sync-shawn-ppt-image
+```
+
+The script validates a clean standalone checkout, pushes its `main` branch, runs the Skill tests, and updates the Studio subtree. Review and test the resulting Studio commit before publishing Studio.
 
 Run the source server without the desktop shell:
 

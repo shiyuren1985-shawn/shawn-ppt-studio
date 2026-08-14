@@ -362,6 +362,9 @@ fn is_studio_root(root: &Path) -> bool {
     root.join("server/server.mjs").is_file()
         && root.join("web/index.html").is_file()
         && root.join("integrations").is_dir()
+        && root
+            .join(".agents/skills/shawn-ppt-image/SKILL.md")
+            .is_file()
 }
 
 fn bundled_studio_root(executable: &Path) -> Option<PathBuf> {

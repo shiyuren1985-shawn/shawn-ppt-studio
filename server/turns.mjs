@@ -1,7 +1,10 @@
-import { homedir } from "node:os";
 import path from "node:path";
 
 import { STUDIO_APP_SERVER_TRANSPORT } from "../integrations/shawn-single-page.mjs";
+import {
+  IMAGEGEN_SKILL_PATH,
+  SHAWN_SKILL_PATH,
+} from "../integrations/skill-paths.mjs";
 import { HttpError } from "./errors.mjs";
 
 export const MODES = new Set([
@@ -12,9 +15,7 @@ export const MODES = new Set([
   "shawn_skill_dry_run",
 ]);
 
-const CODEX_HOME = path.resolve(process.env.CODEX_HOME || path.join(homedir(), ".codex"));
-export const IMAGEGEN_SKILL_PATH = path.join(CODEX_HOME, "skills", ".system", "imagegen", "SKILL.md");
-export const SHAWN_SKILL_PATH = path.join(CODEX_HOME, "skills", "Shawn-PPT-image", "SKILL.md");
+export { IMAGEGEN_SKILL_PATH, SHAWN_SKILL_PATH } from "../integrations/skill-paths.mjs";
 
 const USER_MESSAGE_START = "[SHAWN_PPT_STUDIO_USER_MESSAGE]";
 const USER_MESSAGE_END = "[/SHAWN_PPT_STUDIO_USER_MESSAGE]";

@@ -2,26 +2,30 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   parseOutlineIdentity,
   sha256Bytes,
   STUDIO_APP_SERVER_TRANSPORT,
 } from "./shawn-single-page.mjs";
+import {
+  IMAGEGEN_SKILL_PATH,
+  SHAWN_SKILL_PATH,
+  SHAWN_SKILL_ROOT,
+  STUDIO_ROOT,
+} from "./skill-paths.mjs";
+
+export { SHAWN_SKILL_PATH } from "./skill-paths.mjs";
 
 export const SINGLE_IMAGE_EDIT_CONTRACT_VERSION = 1;
 export const SINGLE_IMAGE_EDIT_RUN_MODE = "single_image_edit";
 export const SINGLE_IMAGE_EDIT_HOST_FINALIZE_STATUS = "host_finalize_required";
 const CODEX_HOME = path.resolve(process.env.CODEX_HOME || path.join(homedir(), ".codex"));
-const STUDIO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-export const SHAWN_SKILL_PATH = path.join(CODEX_HOME, "skills", "Shawn-PPT-image", "SKILL.md");
 export const SINGLE_IMAGE_EDIT_CONTROL_PLANE = path.join(
-  path.dirname(SHAWN_SKILL_PATH),
+  SHAWN_SKILL_ROOT,
   "scripts",
   "single_image_edit_control_plane_v1.py",
 );
-export const IMAGEGEN_SKILL_PATH = path.join(CODEX_HOME, "skills", ".system", "imagegen", "SKILL.md");
 export const CODEX_GENERATED_IMAGES_ROOT = path.join(CODEX_HOME, "generated_images");
 export const DEFAULT_MONITORING_ROOT = path.resolve(
   process.env.SHAWN_PPT_IMAGE_MONITORING_ROOT ||

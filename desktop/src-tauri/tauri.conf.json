@@ -30,7 +30,8 @@
     "resources": {
       "../../server/": "studio/server",
       "../../integrations/": "studio/integrations",
-      "../../web/": "studio/web"
+      "../../web/": "studio/web",
+      "../../.agents/skills/shawn-ppt-image/": "studio/.agents/skills/shawn-ppt-image"
     }
   }
 }
