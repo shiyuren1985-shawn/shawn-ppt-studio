@@ -3,10 +3,6 @@
 .selector-native button { font: inherit; }
 
 .selector-sidebar { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 14px 10px 10px; background: var(--soft, #f3f6f3); }
-.selector-decks { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; overflow: visible; padding: 0 2px 10px; }
-.selector-decks:empty { display: none; }
-.selector-deck-button { width: 100%; min-width: 0; min-height: 38px; padding: 6px 10px; border: 1px solid var(--line, #dce3de); border-radius: 9px; color: var(--muted, #64716c); background: white; font-weight: 750; line-height: 1.25; white-space: normal; }
-.selector-deck-button[aria-current="true"] { color: white; border-color: var(--forest, #123f33); background: var(--forest, #123f33); }
 .selector-sidebar-heading { min-height: 38px; display: flex; justify-content: space-between; align-items: center; padding: 0 7px; color: var(--muted, #64716c); font-size: 13px; }
 .selector-page-list { min-height: 0; display: grid; align-content: start; gap: 5px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 2px 3px 18px 2px; }
 .selector-page-button { width: 100%; min-height: 54px; display: grid; grid-template-columns: 39px minmax(0, 1fr) 9px; align-items: center; gap: 7px; padding: 6px 8px; border: 1px solid transparent; border-radius: 9px; color: #43504b; background: transparent; text-align: left; }

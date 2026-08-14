@@ -15,6 +15,7 @@ if [ -z "$NODE_DIR" ] || [ ! -x "$NODE_DIR/node" ]; then
 fi
 
 export PATH="$NODE_DIR:$PATH"
+python3 "$STUDIO_ROOT/tests/desktop/bundle-resource-hygiene.py"
 cd "$STUDIO_ROOT/desktop"
 if [ ! -x node_modules/.bin/tauri ]; then
   "$PNPM_BIN" install --frozen-lockfile
@@ -32,5 +33,6 @@ test -x "$APP/Contents/MacOS/shawn-ppt-studio"
 test -f "$APP/Contents/Resources/studio/server/server.mjs"
 test -f "$APP/Contents/Resources/studio/web/index.html"
 test -d "$APP/Contents/Resources/studio/integrations"
+python3 "$STUDIO_ROOT/tests/desktop/bundle-resource-hygiene.py" --app "$APP"
 echo "Built local development app: $APP"
 echo "Distribution note: this build is not Developer ID signed or notarized unless an identity is supplied."

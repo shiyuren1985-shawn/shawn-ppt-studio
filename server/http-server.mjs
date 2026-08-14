@@ -595,8 +595,38 @@ export function createLabHttpServer(context) {
               missing: [],
               message: "export service is not configured",
             },
+            tasks: context.taskProjection?.health?.() || {
+              ready: false,
+              task_count: 0,
+              error: "task projection is not configured",
+            },
           },
         });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/tasks") {
+        if (!context.taskProjection) {
+          throw new HttpError(503, "task center is unavailable", "task_center_unavailable");
+        }
+        json(res, 200, await context.taskProjection.list({ codexInteraction: context.codexInteraction }));
+        return;
+      }
+
+      const taskInterruptMatch = requestUrl.pathname.match(/^\/api\/tasks\/([^/]+)\/interrupt$/);
+      if (req.method === "POST" && taskInterruptMatch) {
+        await readJson(req);
+        if (!context.taskProjection) {
+          throw new HttpError(503, "task center is unavailable", "task_center_unavailable");
+        }
+        await context.taskProjection.list({ codexInteraction: context.codexInteraction, force: true });
+        const taskId = decodeURIComponent(taskInterruptMatch[1]);
+        const target = context.taskProjection.interruptTarget(taskId);
+        if (!target || context.codexInteraction.activeTurn(target.threadId) !== target.turnId) {
+          throw new HttpError(409, "this task is no longer running", "turn_not_active");
+        }
+        await context.client.request("turn/interrupt", { threadId: target.threadId, turnId: target.turnId });
+        json(res, 202, { contract_version: 1, task_id: taskId, interrupt_requested: true });
         return;
       }
 
@@ -677,6 +707,11 @@ export function createLabHttpServer(context) {
             label: body.label,
           });
         } else if (body.mode === "existing") {
+          const restored = await context.discovery.restoreExistingOutline(body.outline_path);
+          if (restored) {
+            json(res, 200, { contract_version: 1, project: restored, reused: true, restored: true });
+            return;
+          }
           let requestedOutline = null;
           try {
             requestedOutline = await realpath(body.outline_path);
@@ -704,6 +739,22 @@ export function createLabHttpServer(context) {
           contract_version: 1,
           project: await context.discovery.getOutline(record.deck_id),
           reused,
+        });
+        return;
+      }
+
+      const hideProjectMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/hide$/);
+      if (req.method === "POST" && hideProjectMatch) {
+        await readJson(req);
+        const deckId = decodeURIComponent(hideProjectMatch[1]);
+        await context.discovery.hideDeck(deckId);
+        const listing = await context.discovery.listDecks();
+        json(res, 200, {
+          contract_version: 1,
+          hidden: true,
+          deck_id: deckId,
+          default_deck: listing.default_deck,
+          remaining_count: listing.decks.length,
         });
         return;
       }

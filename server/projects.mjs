@@ -65,7 +65,12 @@ export class StudioProjectRegistry {
     this.runtimeRoot = path.join(path.resolve(dataRoot), "runtime");
     this.path = path.join(this.runtimeRoot, "projects.json");
     this.clock = clock;
-    this.state = { contract_version: CONTRACT_VERSION, default_project_id: null, projects: [] };
+    this.state = {
+      contract_version: CONTRACT_VERSION,
+      default_project_id: null,
+      projects: [],
+      hidden_decks: [],
+    };
     this.ready = false;
     this.lastError = null;
     this.writeQueue = Promise.resolve();
@@ -83,6 +88,7 @@ export class StudioProjectRegistry {
         });
       }
     }
+    if (parsed && !Array.isArray(parsed.hidden_decks)) parsed.hidden_decks = [];
     if (parsed) this.#validate(parsed);
     this.state = parsed || this.state;
     this.ready = true;
@@ -94,17 +100,55 @@ export class StudioProjectRegistry {
       ready: this.ready,
       path: this.path,
       project_count: this.state.projects.length,
+      visible_project_count: this.state.projects.filter((record) => !this.isHidden(record.deck_id)).length,
       error: this.lastError?.message || null,
     };
   }
 
-  list() {
+  list({ includeHidden = false } = {}) {
     if (!this.ready) throw new HttpError(503, "project registry is unavailable", "project_registry_unavailable");
+    const hidden = new Set(this.state.hidden_decks.map((entry) => entry.deck_id));
     return {
       contract_version: CONTRACT_VERSION,
       default_project_id: this.state.default_project_id,
-      projects: this.state.projects.map(publicRecord),
+      projects: this.state.projects
+        .filter((record) => includeHidden || !hidden.has(record.deck_id))
+        .map(publicRecord),
     };
+  }
+
+  isHidden(deckId) {
+    return this.state.hidden_decks.some((entry) => entry.deck_id === deckId);
+  }
+
+  async hideDeck({ deckId, outlinePath }) {
+    if (typeof deckId !== "string" || !deckId.trim()) {
+      throw new HttpError(400, "deck_id is required", "invalid_project_id");
+    }
+    if (typeof outlinePath !== "string" || !path.isAbsolute(outlinePath)) {
+      throw new HttpError(400, "outline_path must be absolute", "invalid_outline_path");
+    }
+    if (this.isHidden(deckId)) return { hidden: true, deck_id: deckId, already_hidden: true };
+    const timestamp = this.clock();
+    await this.#mutate((state) => {
+      state.hidden_decks.push({ deck_id: deckId, outline_path: outlinePath, hidden_at: timestamp });
+      const hiddenProject = state.projects.find((record) => record.deck_id === deckId);
+      if (hiddenProject?.project_id === state.default_project_id) {
+        const hiddenIds = new Set(state.hidden_decks.map((entry) => entry.deck_id));
+        state.default_project_id = state.projects.find((record) => !hiddenIds.has(record.deck_id))?.project_id || null;
+      }
+    });
+    return { hidden: true, deck_id: deckId, already_hidden: false };
+  }
+
+  async restoreDeck(deckId) {
+    if (!this.isHidden(deckId)) return false;
+    await this.#mutate((state) => {
+      state.hidden_decks = state.hidden_decks.filter((entry) => entry.deck_id !== deckId);
+      const project = state.projects.find((record) => record.deck_id === deckId);
+      if (project) state.default_project_id = project.project_id;
+    });
+    return true;
   }
 
   get(deckId) {
@@ -161,7 +205,10 @@ export class StudioProjectRegistry {
     }
     if (!info.isFile()) throw new HttpError(400, "outline must be a file", "invalid_outline_path");
     const duplicate = this.state.projects.find((item) => item.outline_path === outlineReal);
-    if (duplicate) return { ...publicRecord(duplicate), already_registered: true };
+    if (duplicate) {
+      const restored = await this.restoreDeck(duplicate.deck_id);
+      return { ...publicRecord(duplicate), already_registered: true, restored };
+    }
     const text = await readFile(outlineReal, "utf8");
     const canonicalUid = text.match(/^deck_uid:\s*(.+?)\s*$/m)?.[1]?.trim() || null;
     const deckUid = canonicalUid || `STUDIO_${randomUUID()}`;
@@ -230,7 +277,12 @@ export class StudioProjectRegistry {
   }
 
   #validate(state) {
-    if (!state || state.contract_version !== CONTRACT_VERSION || !Array.isArray(state.projects)) {
+    if (
+      !state ||
+      state.contract_version !== CONTRACT_VERSION ||
+      !Array.isArray(state.projects) ||
+      !Array.isArray(state.hidden_decks)
+    ) {
       throw Object.assign(new Error("project registry has an invalid root"), { code: "project_registry_corrupt" });
     }
     const ids = new Set();
@@ -253,6 +305,17 @@ export class StudioProjectRegistry {
     }
     if (state.default_project_id && !ids.has(state.default_project_id)) {
       throw Object.assign(new Error("project registry has an invalid default"), { code: "project_registry_corrupt" });
+    }
+    const hiddenIds = new Set();
+    for (const entry of state.hidden_decks) {
+      if (
+        !entry ||
+        typeof entry.deck_id !== "string" ||
+        !path.isAbsolute(entry.outline_path) ||
+        typeof entry.hidden_at !== "string" ||
+        hiddenIds.has(entry.deck_id)
+      ) throw Object.assign(new Error("project registry has an invalid hidden deck"), { code: "project_registry_corrupt" });
+      hiddenIds.add(entry.deck_id);
     }
   }
 }

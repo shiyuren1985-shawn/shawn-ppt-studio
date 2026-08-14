@@ -112,6 +112,20 @@ export function normalizeExportReadiness(value) {
   };
 }
 
+export function exportFormatsCopy(formats) {
+  const names = {
+    pptx: "PPTX",
+    pdf: "PDF",
+    images_zip: "页面图片",
+  };
+  const visible = [...new Set(Array.isArray(formats) ? formats : [])]
+    .map((format) => names[format])
+    .filter(Boolean);
+  if (!visible.length) return "成品";
+  if (visible.length === 1) return visible[0];
+  return `${visible.slice(0, -1).join("、")}和${visible.at(-1)}`;
+}
+
 function safeDownloadUrl(value) {
   return typeof value === "string" && /^\/api\/decks\/[^/]+\/exports\/[^/]+\/files\/(pptx|pdf|images_zip)$/.test(value)
     ? value

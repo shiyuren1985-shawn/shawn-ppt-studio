@@ -24,6 +24,16 @@ export async function getHealth() {
   return readJson(await fetch("/api/health", { cache: "no-store" }));
 }
 
+export async function getTasks() {
+  return readJson(await fetch("/api/tasks", { cache: "no-store" }));
+}
+
+export async function interruptTask(taskId) {
+  return readJson(await fetch(`/api/tasks/${encodeURIComponent(taskId)}/interrupt`, {
+    method: "POST", headers: MUTATION_HEADERS, body: JSON.stringify({}),
+  }));
+}
+
 export async function getDecks() {
   return readJson(await fetch("/api/decks", { cache: "no-store" }));
 }
@@ -55,6 +65,12 @@ export async function pickOutlineFile() {
 export async function createProject(body) {
   return readJson(await fetch("/api/projects", {
     method: "POST", headers: MUTATION_HEADERS, body: JSON.stringify(body),
+  }));
+}
+
+export async function hideProject(deckId) {
+  return readJson(await fetch(`/api/projects/${encodeURIComponent(deckId)}/hide`, {
+    method: "POST", headers: MUTATION_HEADERS, body: JSON.stringify({}),
   }));
 }
 

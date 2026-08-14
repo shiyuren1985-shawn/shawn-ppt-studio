@@ -1,5 +1,6 @@
 import { selectorApi } from "./api.js";
 import {
+  exportFormatsCopy,
   formatCandidateDate,
   normalizeExportReadiness,
   normalizeExportResult,
@@ -73,7 +74,6 @@ export function mountSelectorWorkspace({
   shell.dataset.testid = "selector-native-workspace";
   shell.innerHTML = `
     <aside class="selector-sidebar" aria-label="PPT 页面">
-      <div class="selector-decks" data-selector-decks></div>
       <div class="selector-sidebar-heading"><strong>页面</strong><span data-selector-page-count>0</span></div>
       <nav class="selector-page-list" data-testid="selector-page-list" data-selector-page-list aria-label="选稿页面"></nav>
     </aside>
@@ -131,7 +131,6 @@ export function mountSelectorWorkspace({
 
   const find = (selector) => shell.querySelector(selector);
   const nodes = {
-    decks: find("[data-selector-decks]"),
     pageCount: find("[data-selector-page-count]"),
     pageList: find("[data-selector-page-list]"),
     pageLabel: find("[data-selector-page-label]"),
@@ -179,20 +178,6 @@ export function mountSelectorWorkspace({
     view.deleteConfirmId = "";
   }
 
-  function renderDecks() {
-    nodes.decks.replaceChildren();
-    if (view.decks.length < 2) return;
-    for (const deck of view.decks) {
-      const deckId = deck.deck_id || deck.id;
-      if (!deckId) continue;
-      const button = element("button", "selector-deck-button", deck.label || deck.deck_label || "PPT");
-      button.type = "button";
-      button.dataset.deckId = deckId;
-      button.setAttribute("aria-current", deckId === view.deckId ? "true" : "false");
-      nodes.decks.append(button);
-    }
-  }
-
   function renderPages() {
     nodes.pageList.replaceChildren();
     const pages = view.catalog?.pages || [];
@@ -216,6 +201,8 @@ export function mountSelectorWorkspace({
       button.append(number, copy, dot);
       nodes.pageList.append(button);
     }
+    const activePage = nodes.pageList.querySelector('[aria-current="page"]');
+    activePage?.scrollIntoView({ block: "nearest" });
   }
 
   function openImage(candidate) {
@@ -240,7 +227,9 @@ export function mountSelectorWorkspace({
     nodes.exportOpenFolder.disabled = view.exportBusy;
     if (view.exportBusy) {
       nodes.exportTitle.textContent = result ? "正在打开 Finder…" : (readiness ? "正在生成成品…" : "正在检查…");
-      nodes.exportMessage.textContent = result ? "请稍候。" : (readiness ? "PPTX、PDF 和页面图片正在生成，请稍候。" : "正在确认每一页是否已经选好图片。");
+      nodes.exportMessage.textContent = result
+        ? "请稍候。"
+        : (readiness ? `${exportFormatsCopy(readiness.formats)}正在生成，请稍候。` : "正在确认每一页是否已经选好图片。");
       return;
     }
     if (view.exportError) {
@@ -421,7 +410,6 @@ export function mountSelectorWorkspace({
 
   function render() {
     if (view.destroyed) return;
-    renderDecks();
     renderPages();
     const catalog = view.catalog;
     const page = view.page;
@@ -609,11 +597,6 @@ export function mountSelectorWorkspace({
   }
 
   shell.addEventListener("click", (event) => {
-    const deckButton = event.target.closest("[data-deck-id]");
-    if (deckButton) {
-      controller.setContext({ deckId: deckButton.dataset.deckId, slideUid: "" });
-      return;
-    }
     const pageButton = event.target.closest("[data-slide-uid]");
     if (pageButton) {
       selectSlide(pageButton.dataset.slideUid);

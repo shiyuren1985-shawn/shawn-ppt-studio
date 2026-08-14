@@ -19,6 +19,7 @@ import { SelectionProjection } from "./selection-projection.mjs";
 import { SelectorWorkspace } from "./selector-workspace.mjs";
 import { ExportService } from "./export-service.mjs";
 import { SingleEditTurnFinalizer } from "./single-edit-turn-finalizer.mjs";
+import { TaskProjection } from "./task-projection.mjs";
 import {
   DEFAULT_MONITORING_ROOT,
   DEFAULT_OVERVIEW_PYTHON,
@@ -93,6 +94,7 @@ try {
   conversations.lastError = error;
   process.stderr.write(`Shawn PPT Studio: conversation history unavailable: ${error.message}\n`);
 }
+const taskProjection = new TaskProjection({ discovery, conversations });
 
 const client = new AppServerClient({
   executable: resolveCodexExecutable(),
@@ -170,6 +172,7 @@ const server = createLabHttpServer({
   projectPicker,
   exports,
   singleEditTurnFinalizer,
+  taskProjection,
 });
 const port = parsePort(process.argv.slice(2), process.env);
 
