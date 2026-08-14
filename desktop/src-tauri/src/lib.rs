@@ -470,6 +470,11 @@ fn resolve_selector_root(studio_root: &Path) -> PathBuf {
         .unwrap_or_else(|| studio_root.join("saturated-ppt"))
 }
 
+fn selector_decks_file(selector_root: &Path) -> Option<PathBuf> {
+    let candidate = selector_root.join("decks.json");
+    candidate.is_file().then_some(candidate)
+}
+
 fn desktop_config() -> Result<DesktopConfig, String> {
     let executable = env::current_exe()
         .map_err(|error| format!("cannot resolve desktop executable: {error}"))?;
@@ -524,6 +529,9 @@ fn studio_command(config: &DesktopConfig) -> Result<Command, String> {
             std::process::id().to_string(),
         )
         .env("PPT_AI_LAB_PORT", config.studio.port.to_string());
+    if let Some(legacy_decks_file) = selector_decks_file(&config.selector_root) {
+        command.env("SHAWN_PPT_STUDIO_DECKS_FILE", legacy_decks_file);
+    }
     Ok(command)
 }
 
@@ -729,11 +737,17 @@ pub fn run() {
 mod tests {
     use super::{
         bundled_studio_root, configured_port, default_data_root, is_studio_root,
-        select_studio_port, selector_health_response, smoke_exit_delay, source_studio_root,
-        studio_health_response, studio_root, LoopbackEndpoint, DEFAULT_SELECTOR_PORT,
-        DEFAULT_STUDIO_PORT, LOOPBACK_HOST,
+        select_studio_port, selector_decks_file, selector_health_response, smoke_exit_delay,
+        source_studio_root, studio_health_response, studio_root, LoopbackEndpoint,
+        DEFAULT_SELECTOR_PORT, DEFAULT_STUDIO_PORT, LOOPBACK_HOST,
     };
-    use std::{ffi::OsString, path::Path, path::PathBuf, time::Duration};
+    use std::{
+        ffi::OsString,
+        fs,
+        path::Path,
+        path::PathBuf,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn default_endpoints_are_fixed_loopback() {
@@ -774,6 +788,20 @@ mod tests {
             default_data_root(Some(OsString::from("/Users/example"))).expect("data root"),
             PathBuf::from("/Users/example/Library/Application Support/Shawn PPT Studio")
         );
+    }
+
+    #[test]
+    fn existing_selector_registry_is_forwarded_to_studio() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("shawn-ppt-selector-{unique}"));
+        fs::create_dir_all(&root).expect("selector root");
+        let decks = root.join("decks.json");
+        fs::write(&decks, b"{}\n").expect("decks registry");
+        assert_eq!(selector_decks_file(&root), Some(decks));
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]

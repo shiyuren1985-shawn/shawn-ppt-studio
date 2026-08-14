@@ -50,11 +50,11 @@ export class ProjectDiscovery {
   health() {
     const legacy = this.legacyDiscovery.health();
     return {
-      ready: this.projects.ready && legacy.ready,
+      ready: this.projects.ready,
       deck_count: (legacy.deck_count || 0) + this.projects.state.projects.length,
       legacy,
       projects: this.projects.health(),
-      error: this.lastError?.message || legacy.error || this.projects.lastError?.message || null,
+      error: this.lastError?.message || this.projects.lastError?.message || null,
     };
   }
 
@@ -72,7 +72,13 @@ export class ProjectDiscovery {
   }
 
   async listDecks() {
-    const legacy = await this.legacyDiscovery.listDecks();
+    let legacy = { default_deck: null, decks: [] };
+    try {
+      legacy = await this.legacyDiscovery.listDecks();
+    } catch {
+      // Legacy EPC/SI discovery is optional. Studio projects and their
+      // conversations must remain usable when saturated-ppt is not installed.
+    }
     const records = this.projects.list();
     const studio = [];
     for (const record of records.projects) studio.push(publicDeck(await this.#readStudio(record)));
@@ -93,8 +99,12 @@ export class ProjectDiscovery {
   async readDeck(deckId) {
     const record = this.projects.state.projects.find((item) => item.deck_id === deckId);
     if (record) return this.#readStudio(record);
-    const deck = await this.legacyDiscovery.readDeck(deckId);
-    return { ...deck, source_kind: "legacy", project_root: path.dirname(deck.outline.path) };
+    try {
+      const deck = await this.legacyDiscovery.readDeck(deckId);
+      return { ...deck, source_kind: "legacy", project_root: path.dirname(deck.outline.path) };
+    } catch {
+      throw new HttpError(404, "project is unavailable", "project_not_found");
+    }
   }
 
   async getOutline(deckId) {
