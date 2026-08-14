@@ -20,7 +20,7 @@ Company decks, private assets, production selection state, generated images, run
 
 ### Required for chat
 
-- macOS for the current desktop build.
+- An Apple Silicon Mac for the current desktop build. Intel Macs, Windows, and Linux are not release-tested.
 - Node.js 24 or newer.
 - A signed-in Codex runtime. The app first looks for the Codex binary bundled with ChatGPT for macOS, then for `codex` on `PATH`. See the official [Codex CLI setup](https://developers.openai.com/codex/cli) and [App Server documentation](https://developers.openai.com/codex/app-server).
 
@@ -55,7 +55,7 @@ Build the local macOS app:
 ./bin/desktop-build
 ```
 
-The local build is ad-hoc signed for development. It is not Developer ID signed or notarized.
+Building from source also requires the Xcode Command Line Tools and a current Rust toolchain. The build produced by `./bin/desktop-build` is ad-hoc signed for local development unless `SHAWN_PPT_STUDIO_SIGNING_IDENTITY` supplies a signing identity. It is not a Developer ID distribution build and it is not notarized by Apple, so another Mac may reject or warn about it through Gatekeeper. Treat the downloadable app as a developer preview, not a normal end-user installer.
 
 ## Configuration
 
@@ -105,7 +105,8 @@ No real ImageGen call is made by these tests.
 
 ## Platform status
 
-- **macOS:** supported by the current desktop shell and native folder/file picker.
+- **Apple Silicon macOS:** the only currently tested desktop target. The local `.app` is ad-hoc signed and not notarized.
+- **Intel macOS:** not tested and no universal binary is currently published.
 - **Windows/Linux:** Codex itself supports these platforms, but this Studio does not yet ship a Windows or Linux desktop build. Porting requires replacing the macOS picker/Finder integration and validating desktop packaging and export tools.
 
 ## Data and safety boundaries

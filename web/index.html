@@ -34,9 +34,9 @@
               <button class="project-popover-new" id="project-popover-new" type="button">＋ 新建或打开 PPT</button>
             </div>
           </div>
-          <button class="topbar-new-project" id="new-project-button" type="button" data-testid="new-project">＋ 新建PPT</button>
         </div>
 
+        <span class="toolbar-divider" aria-hidden="true"></span>
         <nav class="workspace-tabs" aria-label="主要工作区">
           <button type="button" data-workspace="outline" aria-current="page">大纲</button>
           <button type="button" data-workspace="selector">选稿</button>
@@ -44,6 +44,16 @@
         </nav>
 
         <div class="top-actions">
+          <div class="task-center">
+            <button class="task-center-button" id="task-center-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="task-center-popover">
+              <span>任务</span><span class="task-count" id="task-count" hidden>0</span>
+            </button>
+            <div class="task-center-popover" id="task-center-popover" role="dialog" aria-label="作图任务" hidden>
+              <div class="task-center-heading"><div><strong>作图任务</strong><span id="task-center-summary">正在读取…</span></div><button class="task-close" id="task-center-close" type="button" aria-label="关闭任务中心">×</button></div>
+              <p class="task-center-tip" id="task-center-tip" hidden>长任务会留在原对话。要同时做别的事，可以在“历史对话”里新建一个对话。</p>
+              <div class="task-list" id="task-list"></div>
+            </div>
+          </div>
           <button class="quiet-button" id="conversation-menu-button" type="button" aria-expanded="false" aria-controls="conversation-drawer">历史对话</button>
           <button class="icon-button" id="refresh-button" type="button" aria-label="刷新当前内容" title="刷新">↻</button>
         </div>

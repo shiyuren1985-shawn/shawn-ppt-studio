@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "scripts": {
     "tauri": "tauri",
-    "check": "tauri info",
+    "check": "python3 ../tests/desktop/bundle-resource-hygiene.py && tauri info",
     "dev": "tauri dev",
     "build": "tauri build"
   },

@@ -124,6 +124,10 @@ export class CodexInteractionRelay {
     return this.activeByThread.get(threadId) || null;
   }
 
+  activeEntries() {
+    return [...this.activeByThread.entries()].map(([threadId, turnId]) => ({ threadId, turnId }));
+  }
+
   markStarting(threadId) {
     if (this.startingThreads.has(threadId) || this.activeByThread.has(threadId)) return false;
     this.startingThreads.add(threadId);

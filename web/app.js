@@ -43,6 +43,11 @@ const state = {
   interrupting: false,
   creatingConversation: false,
   removeTargetDeckId: "",
+  tasks: [],
+  taskCounts: { active: 0, attention: 0 },
+  taskPollTimer: null,
+  taskLoading: false,
+  showCompletedTasks: false,
 };
 
 const ids = [
@@ -58,9 +63,10 @@ const ids = [
   "conversation-panel", "outline-conversation-host", "retouch-conversation-host", "conversation-column-toggle",
   "outline-left-toggle", "retouch-left-toggle", "outline-content-toggle", "retouch-content-toggle", "retouch-stage",
   "image-dialog", "image-dialog-close", "image-dialog-toggle", "image-dialog-content", "page-comparison", "toast",
-  "new-project-button", "project-dialog", "project-dialog-close", "blank-project-button", "existing-outline-button", "project-dialog-status",
+  "project-dialog", "project-dialog-close", "blank-project-button", "existing-outline-button", "project-dialog-status",
   "project-picker-button", "project-picker-label", "project-picker-meta", "project-popover", "project-search", "project-popover-new",
   "remove-project-dialog", "remove-project-name", "remove-project-cancel", "remove-project-confirm", "remove-project-status",
+  "task-center-button", "task-count", "task-center-popover", "task-center-close", "task-center-summary", "task-center-tip", "task-list",
 ];
 const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
@@ -169,6 +175,7 @@ function renderDeckSwitcher() {
   el["deck-switcher"].replaceChildren();
   const active = currentDeck();
   el["project-picker-label"].textContent = active?.label || "选择一份 PPT";
+  el["project-picker-button"].title = active?.label || "选择一份 PPT";
   el["project-picker-meta"].textContent = active
     ? (active.slides.length ? `${active.slides.length} 页` : "大纲草稿")
     : (state.decks.length ? `${state.decks.length} 个项目` : "还没有项目");
@@ -179,6 +186,7 @@ function renderDeckSwitcher() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "deck-button";
+    button.title = deck.label || deck.deck_id;
     button.setAttribute("role", "option");
     button.setAttribute("aria-selected", String(deck.deck_id === state.deckId));
     const check = document.createElement("span");
@@ -388,6 +396,7 @@ async function selectDeck(deckId) {
   renderDeckSwitcher();
   renderSlideLists();
   await Promise.all([loadCurrentPage(), loadConversations()]);
+  renderTaskCenter();
   if (state.workspace === "selector") void syncSelectorWorkspace();
   persist();
 }
@@ -1013,10 +1022,192 @@ function setActiveTurn(active) {
   state.activeTurnStatus = turnId ? status || "inProgress" : "";
   if (!turnId) state.activeHistoryFallback = null;
   el["turn-status"].hidden = !turnId;
-  el["turn-status-copy"].textContent = state.interrupting ? "正在停止…" : "Codex 正在处理";
+  updateTurnStatus();
   el["stop-button"].hidden = !turnId;
   el["stop-button"].disabled = !turnId || state.interrupting;
   updateSendState();
+}
+
+function formatTaskElapsed(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 60) return "刚刚开始";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`;
+}
+
+function currentConversationTask() {
+  return state.tasks.find((task) => task.deck_id === state.deckId
+    && task.conversation_id === state.activeConversationId
+    && ["preparing", "queued", "generating", "reviewing"].includes(task.status)) || null;
+}
+
+function updateTurnStatus() {
+  if (!state.activeTurnId) return;
+  const task = currentConversationTask();
+  el["turn-status-copy"].textContent = state.interrupting
+    ? "正在停止…"
+    : task ? `${task.title} · ${task.status_label}` : "Codex 正在处理";
+}
+
+function taskGroupLabel(status) {
+  if (["preparing", "queued", "generating", "reviewing"].includes(status)) return "进行中";
+  if (["attention", "failed"].includes(status)) return "需要查看";
+  return "最近完成";
+}
+
+function renderTaskCenter() {
+  const count = state.taskCounts.active + state.taskCounts.attention;
+  el["task-count"].hidden = count === 0;
+  el["task-count"].textContent = String(count);
+  el["task-center-button"].classList.toggle("has-active", state.taskCounts.active > 0);
+  el["task-center-button"].classList.toggle("has-attention", state.taskCounts.active === 0 && state.taskCounts.attention > 0);
+  el["task-center-summary"].textContent = state.taskCounts.active
+    ? `${state.taskCounts.active} 个正在进行`
+    : state.taskCounts.attention ? `${state.taskCounts.attention} 个需要查看` : "没有正在进行的作图任务";
+  el["task-center-tip"].hidden = state.taskCounts.active === 0;
+  el["task-list"].replaceChildren();
+  if (!state.tasks.length) {
+    const empty = document.createElement("div");
+    empty.className = "task-empty";
+    empty.innerHTML = "<strong>暂时没有作图任务</strong><span>从对话里发布作图或修图后，会自动出现在这里。</span>";
+    el["task-list"].append(empty);
+    updateTurnStatus();
+    return;
+  }
+  const completedTasks = state.tasks.filter((task) => task.status === "completed");
+  const visibleTasks = state.showCompletedTasks
+    ? state.tasks
+    : state.tasks.filter((task) => task.status !== "completed");
+  let previousGroup = "";
+  for (const task of visibleTasks) {
+    const group = taskGroupLabel(task.status);
+    if (group !== previousGroup) {
+      const heading = document.createElement("h3");
+      heading.className = "task-group-label";
+      heading.textContent = group;
+      el["task-list"].append(heading);
+      previousGroup = group;
+    }
+    const card = document.createElement("article");
+    card.className = `task-card status-${task.status}`;
+    card.dataset.taskId = task.task_id;
+    const main = document.createElement("button");
+    main.type = "button";
+    main.className = "task-card-main";
+    main.disabled = !task.deck_id;
+    main.addEventListener("click", () => openTask(task));
+    const eyebrow = document.createElement("span");
+    eyebrow.className = "task-project";
+    eyebrow.textContent = task.deck_label;
+    const title = document.createElement("strong");
+    title.textContent = task.title;
+    const status = document.createElement("span");
+    status.className = "task-card-status";
+    status.textContent = `${task.status_label} · ${formatTaskElapsed(task.elapsed_seconds)}`;
+    main.append(eyebrow, title, status);
+    if (Number.isFinite(task.progress_percent)) {
+      const progress = document.createElement("div");
+      progress.className = "task-progress";
+      progress.setAttribute("role", "progressbar");
+      progress.setAttribute("aria-valuemin", "0");
+      progress.setAttribute("aria-valuemax", "100");
+      progress.setAttribute("aria-valuenow", String(task.progress_percent));
+      const bar = document.createElement("span");
+      bar.style.width = `${Math.max(0, Math.min(100, task.progress_percent))}%`;
+      progress.append(bar);
+      main.append(progress);
+    } else if (["preparing", "reviewing"].includes(task.status)) {
+      const progress = document.createElement("div");
+      progress.className = "task-progress indeterminate";
+      progress.setAttribute("role", "progressbar");
+      progress.removeAttribute("aria-valuenow");
+      progress.append(document.createElement("span"));
+      main.append(progress);
+    }
+    card.append(main);
+    if (task.can_stop) {
+      const stop = document.createElement("button");
+      stop.type = "button";
+      stop.className = "task-stop";
+      stop.textContent = "停止";
+      stop.addEventListener("click", async () => {
+        stop.disabled = true;
+        try {
+          await api.interruptTask(task.task_id);
+          toast("已请求停止这个任务");
+          await loadTasks({ force: true });
+        } catch (error) {
+          toast(`无法停止：${error.message}`);
+          stop.disabled = false;
+        }
+      });
+      card.append(stop);
+    }
+    el["task-list"].append(card);
+  }
+  if (completedTasks.length) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "task-history-toggle";
+    toggle.textContent = state.showCompletedTasks
+      ? "收起最近完成"
+      : `查看最近完成（${completedTasks.length}）`;
+    toggle.addEventListener("click", () => {
+      state.showCompletedTasks = !state.showCompletedTasks;
+      renderTaskCenter();
+    });
+    el["task-list"].append(toggle);
+  }
+  updateTurnStatus();
+}
+
+async function openTask(task) {
+  closeTaskCenter();
+  if (task.deck_id !== state.deckId) await selectDeck(task.deck_id);
+  if (task.slide_uid && task.slide_uid !== state.slideUid) await selectSlide(task.slide_uid);
+  setWorkspace("outline");
+  if (task.conversation_id && task.conversation_id !== state.activeConversationId) {
+    await activateConversation(task.conversation_id);
+  }
+}
+
+function openTaskCenter() {
+  el["task-center-popover"].hidden = false;
+  el["task-center-button"].setAttribute("aria-expanded", "true");
+  void loadTasks({ force: true });
+}
+
+function closeTaskCenter({ focusButton = false } = {}) {
+  el["task-center-popover"].hidden = true;
+  el["task-center-button"].setAttribute("aria-expanded", "false");
+  if (focusButton) el["task-center-button"].focus();
+}
+
+function toggleTaskCenter() {
+  if (el["task-center-popover"].hidden) openTaskCenter();
+  else closeTaskCenter();
+}
+
+async function loadTasks({ force = false } = {}) {
+  if (state.taskLoading) return;
+  state.taskLoading = true;
+  try {
+    const payload = await api.getTasks();
+    state.tasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
+    state.taskCounts = {
+      active: Number(payload?.active_count || 0),
+      attention: Number(payload?.attention_count || 0),
+    };
+    renderTaskCenter();
+  } catch (error) {
+    if (force) toast(`任务状态暂时无法读取：${error.message}`);
+  } finally {
+    state.taskLoading = false;
+    clearTimeout(state.taskPollTimer);
+    const delay = state.taskCounts.active > 0 ? 4000 : 15000;
+    state.taskPollTimer = setTimeout(() => loadTasks(), delay);
+  }
 }
 
 function stopEventStream() {
@@ -1202,6 +1393,7 @@ function onConversationEvent(event) {
   if (method === "turn/started") {
     state.submitting = false;
     setActiveTurn({ turn_id: turnId, status: params.turn?.status || "inProgress" });
+    void loadTasks();
     return;
   }
   if (method === "item/started") {
@@ -1256,6 +1448,7 @@ function onConversationEvent(event) {
     }
     for (const view of state.itemViews.values()) view.article?.classList.remove("streaming");
     void refreshAll();
+    void loadTasks({ force: true });
   }
 }
 
@@ -1486,6 +1679,7 @@ async function refreshAll() {
     renderSlideLists();
     await loadCurrentPage();
     if (state.workspace === "selector") await syncSelectorWorkspace();
+    void loadTasks();
   } catch (error) {
     toast(`无法打开 PPT：${error.message}`);
   } finally {
@@ -1498,9 +1692,11 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     if (event.target.closest("[data-open-selector]")) setWorkspace("selector");
     if (!event.target.closest(".project-picker")) closeProjectPicker();
+    if (!event.target.closest(".task-center")) closeTaskCenter();
   });
   el["conversation-menu-button"].addEventListener("click", openConversationDrawer);
-  el["new-project-button"].addEventListener("click", openProjectDialog);
+  el["task-center-button"].addEventListener("click", toggleTaskCenter);
+  el["task-center-close"].addEventListener("click", () => closeTaskCenter({ focusButton: true }));
   el["project-picker-button"].addEventListener("click", toggleProjectPicker);
   el["project-picker-button"].addEventListener("keydown", (event) => {
     if (!new Set(["ArrowDown", "Enter", " "]).has(event.key)) return;
@@ -1562,7 +1758,14 @@ function bindEvents() {
     updateSendState();
   });
   el["message-input"].addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+    if (event.shiftKey) {
+      event.preventDefault();
+      const input = el["message-input"];
+      input.setRangeText("\n", input.selectionStart, input.selectionEnd, "end");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
     event.preventDefault();
     if (!el["send-button"].disabled) el["conversation-form"].requestSubmit();
   });
@@ -1585,7 +1788,12 @@ function bindEvents() {
   el["image-dialog"].addEventListener("click", (event) => { if (event.target === el["image-dialog"]) closeImage(); });
   el["image-dialog-toggle"].addEventListener("click", closeImage);
   el["image-dialog"].addEventListener("close", () => el["image-dialog-content"].removeAttribute("src"));
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !el["conversation-drawer"].hidden) closeConversationDrawer(); });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (!el["conversation-drawer"].hidden) closeConversationDrawer();
+    if (!el["task-center-popover"].hidden) closeTaskCenter({ focusButton: true });
+    if (!el["project-popover"].hidden) closeProjectPicker({ focusButton: true });
+  });
 }
 
 async function initialize() {
@@ -1608,6 +1816,7 @@ async function initialize() {
   setWorkspace(state.workspace);
   await refreshAll();
   await loadConversations();
+  await loadTasks();
 }
 
 initialize();

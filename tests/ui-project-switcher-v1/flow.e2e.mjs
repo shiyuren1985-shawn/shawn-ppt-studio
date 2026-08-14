@@ -7,10 +7,47 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(here, "../..");
 const webRoot = path.resolve(here, "../../web");
 const evidenceRoot = path.resolve(here, "../ux-evidence/project-switcher-v1");
-const require = createRequire("/Users/shawn/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/package.json");
-const { chromium } = require("playwright");
+
+function loadPlaywright() {
+  const moduleRoots = [
+    process.env.SHAWN_PPT_STUDIO_NODE_MODULES,
+    process.env.CODEX_NODE_MODULES,
+    ...(process.env.NODE_PATH?.split(path.delimiter) || []),
+    path.join(projectRoot, "node_modules"),
+    path.resolve(path.dirname(process.execPath), "../node_modules"),
+  ].filter(Boolean);
+
+  const attempted = [];
+  for (const moduleRoot of new Set(moduleRoots.map((entry) => path.resolve(entry)))) {
+    attempted.push(moduleRoot);
+    try {
+      const requireFromRoot = createRequire(path.join(moduleRoot, "__studio_test_loader__.cjs"));
+      return requireFromRoot("playwright");
+    } catch (error) {
+      if (error?.code !== "MODULE_NOT_FOUND") throw error;
+    }
+  }
+
+  throw new Error(
+    `Playwright is unavailable. Install it in the project or set SHAWN_PPT_STUDIO_NODE_MODULES. Checked: ${attempted.join(", ")}`,
+  );
+}
+
+function browserLaunchOptions() {
+  const configured = process.env.SHAWN_PPT_STUDIO_BROWSER;
+  const candidates = [
+    configured,
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  ].filter(Boolean);
+  const executablePath = candidates.find((candidate) => fs.existsSync(candidate));
+  return executablePath ? { headless: true, executablePath } : { headless: true };
+}
+
+const { chromium } = loadPlaywright();
 
 const projects = Array.from({ length: 7 }, (_, index) => {
   const number = index + 1;
@@ -49,8 +86,25 @@ async function readBody(request) {
 async function startServer() {
   const hidden = new Set();
   const sentMessages = [];
+  const stoppedTasks = [];
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
+    if (request.method === "GET" && url.pathname === "/api/tasks") {
+      return json(response, {
+        active_count: 2,
+        attention_count: 0,
+        tasks: [
+          { task_id: "task-fast8", deck_id: "project-1", deck_label: "项目 1 · 海外交付方案", conversation_id: "chat-1", slide_uid: "SLIDE_6", page_label: "P06", title: "P06 · 8×1", status: "generating", status_label: "已生成 4/8", completed_units: 4, total_units: 8, progress_percent: 50, elapsed_seconds: 420, can_stop: true, can_open_conversation: true },
+          { task_id: "task-4x3", deck_id: "project-2", deck_label: "项目 2 · 海外交付方案", conversation_id: "chat-2", slide_uid: "SLIDE_2", page_label: "P01", title: "P01–P03 · 4×3", status: "preparing", status_label: "准备中", completed_units: 0, total_units: 12, progress_percent: null, elapsed_seconds: 75, can_stop: false, can_open_conversation: true },
+          { task_id: "task-done", deck_id: "project-3", deck_label: "项目 3 · 海外交付方案", conversation_id: "chat-3", slide_uid: "SLIDE_3", page_label: "P01", title: "整套作图 · 1 页", status: "completed", status_label: "已完成", completed_units: 1, total_units: 1, progress_percent: 100, elapsed_seconds: 900, can_stop: false, can_open_conversation: true },
+        ],
+      });
+    }
+    const taskInterrupt = url.pathname.match(/^\/api\/tasks\/([^/]+)\/interrupt$/);
+    if (request.method === "POST" && taskInterrupt) {
+      stoppedTasks.push(taskInterrupt[1]);
+      return json(response, { task_id: taskInterrupt[1], interrupt_requested: true }, 202);
+    }
     if (request.method === "GET" && url.pathname === "/api/projects") {
       return json(response, { default_deck: projects.find((item) => !hidden.has(item.deck_id))?.deck_id || null, decks: projects.filter((item) => !hidden.has(item.deck_id)) });
     }
@@ -159,27 +213,60 @@ async function startServer() {
     return json(response, { error: "not found" }, 404);
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { server, sentMessages, url: `http://127.0.0.1:${server.address().port}/` };
+  return { server, sentMessages, stoppedTasks, url: `http://127.0.0.1:${server.address().port}/` };
 }
 
 test("seven projects stay compact and switch the whole task context", async () => {
-  const { server, sentMessages, url } = await startServer();
+  const { server, sentMessages, stoppedTasks, url } = await startServer();
   let browser;
   try {
     fs.mkdirSync(evidenceRoot, { recursive: true });
-    browser = await chromium.launch({ headless: true, executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
+    browser = await chromium.launch(browserLaunchOptions());
     for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 760 }]) {
       const page = await browser.newPage({ viewport });
       await page.goto(url, { waitUntil: "networkidle" });
       await page.locator("#project-picker-label").filter({ hasText: "项目 1" }).waitFor();
 
       const picker = await page.locator("#project-picker-button").boundingBox();
-      const create = await page.locator("#new-project-button").boundingBox();
+      await page.locator("#project-picker-button").click();
+      const create = await page.locator("#project-popover-new").boundingBox();
+      await page.keyboard.press("Escape");
       const topbar = await page.locator(".topbar").boundingBox();
-      assert.ok(picker && create && topbar);
+      const workspaceTabs = await page.locator(".workspace-tabs").boundingBox();
+      const taskButton = await page.locator("#task-center-button").boundingBox();
+      assert.ok(picker && create && topbar && workspaceTabs && taskButton);
       assert.ok(picker.height >= 44 && create.height >= 44);
-      assert.ok(picker.y >= topbar.y && create.y + create.height <= topbar.y + topbar.height + 1);
+      assert.ok(taskButton.height >= 44);
+      assert.ok(picker.y >= topbar.y && picker.y + picker.height <= topbar.y + topbar.height + 1);
+      assert.ok(create.y >= topbar.y + topbar.height && create.y + create.height <= viewport.height);
+      assert.ok(picker.x + picker.width + 8 <= workspaceTabs.x, "project and workspace groups stay visually separate");
+      assert.ok(workspaceTabs.x + workspaceTabs.width + 8 <= taskButton.x, "workspace and action groups stay visually separate");
       assert.equal(await page.locator("body").evaluate((node) => node.scrollHeight <= node.clientHeight), true);
+
+      await page.locator("#task-center-button").click();
+      await page.locator("#task-list .task-card").first().waitFor();
+      const taskPopover = await page.locator("#task-center-popover").boundingBox();
+      assert.ok(taskPopover && taskPopover.x >= 0 && taskPopover.x + taskPopover.width <= viewport.width);
+      assert.ok(taskPopover.y + taskPopover.height <= viewport.height);
+      assert.equal(await page.locator("#task-list .task-card").count(), 2);
+      assert.equal(await page.locator(".task-history-toggle").textContent(), "查看最近完成（1）");
+      assert.equal(await page.locator('[data-task-id="task-fast8"] .task-progress').getAttribute("aria-valuenow"), "50");
+      assert.equal(await page.locator('[data-task-id="task-4x3"] .task-progress').getAttribute("aria-valuenow"), null);
+      if (viewport.width === 1440) {
+        await page.locator('[data-task-id="task-fast8"] .task-stop').click();
+        assert.deepEqual(stoppedTasks, ["task-fast8"]);
+      }
+      await page.locator('[data-task-id="task-4x3"] .task-card-main').click();
+      await page.locator("#project-picker-label").filter({ hasText: "项目 2" }).waitFor();
+      await page.locator("#active-conversation-title").filter({ hasText: "项目 2 最近对话" }).waitFor();
+      assert.equal(await page.locator('[data-workspace="outline"]').getAttribute("aria-current"), "page");
+      await page.locator("#project-picker-button").click();
+      await page.locator(".project-option-row").first().locator(".deck-button").click();
+      await page.locator("#project-picker-label").filter({ hasText: "项目 1" }).waitFor();
+      await page.locator("#task-center-button").click();
+      await page.locator(".task-history-toggle").click();
+      assert.equal(await page.locator("#task-list .task-card").count(), 3);
+      await page.keyboard.press("Escape");
 
       const composer = page.locator("#message-input");
       const sentBefore = sentMessages.length;
@@ -262,7 +349,8 @@ test("seven projects stay compact and switch the whole task context", async () =
         await page.locator("#project-picker-button").click();
         assert.equal(await page.locator(".project-option-row").count(), 6);
         await page.keyboard.press("Escape");
-        await page.locator("#new-project-button").click();
+        await page.locator("#project-picker-button").click();
+        await page.locator("#project-popover-new").click();
         await page.locator("#existing-outline-button").click();
         await page.locator("#project-picker-label").filter({ hasText: "项目 4" }).waitFor();
         await page.locator("#project-picker-button").click();

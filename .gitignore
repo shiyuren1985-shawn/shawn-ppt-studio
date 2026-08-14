@@ -22,8 +22,14 @@ tests/*
 !tests/backend-codex-interaction-v2/**
 !tests/backend-project-switcher-v1/
 !tests/backend-project-switcher-v1/**
+!tests/backend-task-center-v1/
+!tests/backend-task-center-v1/**
 !tests/ui-project-switcher-v1/
 !tests/ui-project-switcher-v1/**
+!tests/ui-task-center-v1/
+!tests/ui-task-center-v1/**
+!tests/desktop/
+!tests/desktop/**
 docs/qa/
 docs/audits/
 docs/

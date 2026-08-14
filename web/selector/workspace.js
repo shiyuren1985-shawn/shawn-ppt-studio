@@ -1,5 +1,6 @@
 import { selectorApi } from "./api.js";
 import {
+  exportFormatsCopy,
   formatCandidateDate,
   normalizeExportReadiness,
   normalizeExportResult,
@@ -226,7 +227,9 @@ export function mountSelectorWorkspace({
     nodes.exportOpenFolder.disabled = view.exportBusy;
     if (view.exportBusy) {
       nodes.exportTitle.textContent = result ? "正在打开 Finder…" : (readiness ? "正在生成成品…" : "正在检查…");
-      nodes.exportMessage.textContent = result ? "请稍候。" : (readiness ? "PPTX、PDF 和页面图片正在生成，请稍候。" : "正在确认每一页是否已经选好图片。");
+      nodes.exportMessage.textContent = result
+        ? "请稍候。"
+        : (readiness ? `${exportFormatsCopy(readiness.formats)}正在生成，请稍候。` : "正在确认每一页是否已经选好图片。");
       return;
     }
     if (view.exportError) {
