@@ -42,10 +42,11 @@ const state = {
   submitting: false,
   interrupting: false,
   creatingConversation: false,
+  removeTargetDeckId: "",
 };
 
 const ids = [
-  "main-content", "deck-label", "deck-switcher", "outline-slide-count", "outline-slide-list", "retouch-slide-count",
+  "main-content", "deck-switcher", "outline-slide-count", "outline-slide-list", "retouch-slide-count",
   "retouch-slide-list", "current-page-label", "current-page-title", "composer-page", "composer-scope-copy", "selection-count",
   "current-page-context-copy", "retouch-page-label", "retouch-page-title",
   "selected-preview", "outline-version", "outline-reading-view", "active-conversation-title",
@@ -58,6 +59,8 @@ const ids = [
   "outline-left-toggle", "retouch-left-toggle", "outline-content-toggle", "retouch-content-toggle", "retouch-stage",
   "image-dialog", "image-dialog-close", "image-dialog-toggle", "image-dialog-content", "page-comparison", "toast",
   "new-project-button", "project-dialog", "project-dialog-close", "blank-project-button", "existing-outline-button", "project-dialog-status",
+  "project-picker-button", "project-picker-label", "project-picker-meta", "project-popover", "project-search", "project-popover-new",
+  "remove-project-dialog", "remove-project-name", "remove-project-cancel", "remove-project-confirm", "remove-project-status",
 ];
 const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
@@ -164,14 +167,127 @@ function setWorkspace(workspace) {
 
 function renderDeckSwitcher() {
   el["deck-switcher"].replaceChildren();
+  const active = currentDeck();
+  el["project-picker-label"].textContent = active?.label || "选择一份 PPT";
+  el["project-picker-meta"].textContent = active
+    ? (active.slides.length ? `${active.slides.length} 页` : "大纲草稿")
+    : (state.decks.length ? `${state.decks.length} 个项目` : "还没有项目");
   for (const deck of state.decks) {
+    const row = document.createElement("div");
+    row.className = "project-option-row";
+    row.dataset.searchValue = `${deck.label || ""} ${deck.deck_id}`.toLocaleLowerCase("zh-CN");
     const button = document.createElement("button");
     button.type = "button";
     button.className = "deck-button";
-    button.textContent = deck.label || deck.deck_id;
-    button.setAttribute("aria-current", String(deck.deck_id === state.deckId));
-    button.addEventListener("click", () => selectDeck(deck.deck_id));
-    el["deck-switcher"].append(button);
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", String(deck.deck_id === state.deckId));
+    const check = document.createElement("span");
+    check.className = "deck-option-check";
+    check.textContent = deck.deck_id === state.deckId ? "✓" : "";
+    const copy = document.createElement("span");
+    copy.className = "deck-option-copy";
+    const label = document.createElement("strong");
+    label.textContent = deck.label || deck.deck_id;
+    const meta = document.createElement("small");
+    meta.textContent = deck.slides.length ? `${deck.slides.length} 页` : "大纲草稿";
+    copy.append(label, meta);
+    button.append(check, copy);
+    button.addEventListener("click", async () => {
+      closeProjectPicker();
+      await selectDeck(deck.deck_id);
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "project-remove-button";
+    remove.setAttribute("aria-label", `从列表移除 ${deck.label || deck.deck_id}`);
+    remove.title = "从列表移除";
+    remove.textContent = "⋯";
+    remove.addEventListener("click", () => openRemoveProjectDialog(deck.deck_id));
+    row.append(button, remove);
+    el["deck-switcher"].append(row);
+  }
+  filterProjectOptions();
+}
+
+function openProjectPicker() {
+  el["project-popover"].hidden = false;
+  el["project-picker-button"].setAttribute("aria-expanded", "true");
+  el["project-search"].value = "";
+  filterProjectOptions();
+  requestAnimationFrame(() => el["project-search"].focus());
+}
+
+function closeProjectPicker({ focusButton = false } = {}) {
+  el["project-popover"].hidden = true;
+  el["project-picker-button"].setAttribute("aria-expanded", "false");
+  if (focusButton) el["project-picker-button"].focus();
+}
+
+function toggleProjectPicker() {
+  if (el["project-popover"].hidden) openProjectPicker();
+  else closeProjectPicker();
+}
+
+function filterProjectOptions() {
+  const query = (el["project-search"]?.value || "").trim().toLocaleLowerCase("zh-CN");
+  let visible = 0;
+  for (const row of el["deck-switcher"].querySelectorAll(".project-option-row")) {
+    row.hidden = Boolean(query) && !row.dataset.searchValue.includes(query);
+    if (!row.hidden) visible += 1;
+  }
+  el["deck-switcher"].querySelector(".project-empty-result")?.remove();
+  if (!visible) {
+    const empty = document.createElement("p");
+    empty.className = "project-empty-result";
+    empty.textContent = "没有找到这份 PPT";
+    el["deck-switcher"].append(empty);
+  }
+}
+
+function openRemoveProjectDialog(deckId) {
+  const deck = state.decks.find((item) => item.deck_id === deckId);
+  if (!deck) return;
+  state.removeTargetDeckId = deckId;
+  closeProjectPicker();
+  el["remove-project-name"].textContent = deck.label || deck.deck_id;
+  el["remove-project-status"].hidden = true;
+  el["remove-project-confirm"].disabled = false;
+  el["remove-project-cancel"].disabled = false;
+  el["remove-project-dialog"].showModal();
+}
+
+function closeRemoveProjectDialog() {
+  if (el["remove-project-dialog"].open) el["remove-project-dialog"].close();
+  state.removeTargetDeckId = "";
+}
+
+async function confirmRemoveProject() {
+  const deckId = state.removeTargetDeckId;
+  if (!deckId) return;
+  el["remove-project-confirm"].disabled = true;
+  el["remove-project-cancel"].disabled = true;
+  el["remove-project-status"].hidden = false;
+  el["remove-project-status"].textContent = "正在从列表移除…";
+  try {
+    await api.hideProject(deckId);
+    if (deckId === state.deckId) {
+      state.deckId = "";
+      state.slideUid = "";
+      state.activeConversationId = "";
+      state.conversations = [];
+      state.messages = [];
+      stopEventStream();
+      setActiveTurn(null);
+    }
+    closeRemoveProjectDialog();
+    await refreshAll();
+    await loadConversations();
+    persist();
+    toast("已从列表移除。大纲、图片和输出文件都还在原文件夹里。");
+  } catch (error) {
+    el["remove-project-status"].textContent = `暂时无法移除：${error.message}`;
+    el["remove-project-confirm"].disabled = false;
+    el["remove-project-cancel"].disabled = false;
   }
 }
 
@@ -269,10 +385,8 @@ async function selectDeck(deckId) {
   state.draftMarkdown = "";
   stopEventStream();
   setActiveTurn(null);
-  el["deck-label"].textContent = deck.label || deck.deck_id;
   renderDeckSwitcher();
   renderSlideLists();
-  setWorkspace("outline");
   await Promise.all([loadCurrentPage(), loadConversations()]);
   if (state.workspace === "selector") void syncSelectorWorkspace();
   persist();
@@ -475,7 +589,6 @@ async function synchronizeFromSelector({ deckId, slideUid } = {}) {
     stopEventStream();
     setActiveTurn(null);
   }
-  el["deck-label"].textContent = deck.label || deck.deck_id;
   renderDeckSwitcher();
   renderSlideLists();
   await loadCurrentPage();
@@ -1356,7 +1469,6 @@ async function refreshAll() {
     state.deckId = chosen.deckId;
     state.slideUid = chosen.slideUid;
     const deck = currentDeck();
-    el["deck-label"].textContent = deck?.label || "没有可用的 PPT";
     renderDeckSwitcher();
     renderSlideLists();
     await loadCurrentPage();
@@ -1372,13 +1484,58 @@ function bindEvents() {
   for (const button of document.querySelectorAll("[data-workspace]")) button.addEventListener("click", () => setWorkspace(button.dataset.workspace));
   document.addEventListener("click", (event) => {
     if (event.target.closest("[data-open-selector]")) setWorkspace("selector");
+    if (!event.target.closest(".project-picker")) closeProjectPicker();
   });
   el["conversation-menu-button"].addEventListener("click", openConversationDrawer);
   el["new-project-button"].addEventListener("click", openProjectDialog);
+  el["project-picker-button"].addEventListener("click", toggleProjectPicker);
+  el["project-picker-button"].addEventListener("keydown", (event) => {
+    if (!new Set(["ArrowDown", "Enter", " "]).has(event.key)) return;
+    event.preventDefault();
+    openProjectPicker();
+  });
+  el["project-search"].addEventListener("input", filterProjectOptions);
+  el["project-search"].addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeProjectPicker({ focusButton: true });
+      return;
+    }
+    if (event.key !== "ArrowDown") return;
+    const first = [...el["deck-switcher"].querySelectorAll(".deck-button")]
+      .find((button) => !button.closest(".project-option-row")?.hidden);
+    if (first) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  el["deck-switcher"].addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeProjectPicker({ focusButton: true });
+      return;
+    }
+    if (!new Set(["ArrowDown", "ArrowUp"]).has(event.key)) return;
+    const buttons = [...el["deck-switcher"].querySelectorAll(".deck-button")]
+      .filter((button) => !button.closest(".project-option-row")?.hidden);
+    const index = buttons.indexOf(document.activeElement);
+    const next = event.key === "ArrowDown" ? Math.min(index + 1, buttons.length - 1) : Math.max(index - 1, 0);
+    if (buttons[next]) {
+      event.preventDefault();
+      buttons[next].focus();
+    }
+  });
+  el["project-popover-new"].addEventListener("click", () => {
+    closeProjectPicker();
+    openProjectDialog();
+  });
   el["project-dialog-close"].addEventListener("click", closeProjectDialog);
   el["project-dialog"].addEventListener("click", (event) => { if (event.target === el["project-dialog"]) closeProjectDialog(); });
   el["blank-project-button"].addEventListener("click", () => startProject("blank"));
   el["existing-outline-button"].addEventListener("click", () => startProject("existing"));
+  el["remove-project-cancel"].addEventListener("click", closeRemoveProjectDialog);
+  el["remove-project-confirm"].addEventListener("click", confirmRemoveProject);
+  el["remove-project-dialog"].addEventListener("click", (event) => { if (event.target === el["remove-project-dialog"]) closeRemoveProjectDialog(); });
   el["close-conversation-drawer"].addEventListener("click", closeConversationDrawer);
   el["drawer-backdrop"].addEventListener("click", closeConversationDrawer);
   el["drawer-new-conversation"].addEventListener("click", () => createConversation());

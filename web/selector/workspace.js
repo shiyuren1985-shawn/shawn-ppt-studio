@@ -73,7 +73,6 @@ export function mountSelectorWorkspace({
   shell.dataset.testid = "selector-native-workspace";
   shell.innerHTML = `
     <aside class="selector-sidebar" aria-label="PPT 页面">
-      <div class="selector-decks" data-selector-decks></div>
       <div class="selector-sidebar-heading"><strong>页面</strong><span data-selector-page-count>0</span></div>
       <nav class="selector-page-list" data-testid="selector-page-list" data-selector-page-list aria-label="选稿页面"></nav>
     </aside>
@@ -131,7 +130,6 @@ export function mountSelectorWorkspace({
 
   const find = (selector) => shell.querySelector(selector);
   const nodes = {
-    decks: find("[data-selector-decks]"),
     pageCount: find("[data-selector-page-count]"),
     pageList: find("[data-selector-page-list]"),
     pageLabel: find("[data-selector-page-label]"),
@@ -177,20 +175,6 @@ export function mountSelectorWorkspace({
     view.slideUid = page?.slide_uid || view.slideUid;
     view.error = "";
     view.deleteConfirmId = "";
-  }
-
-  function renderDecks() {
-    nodes.decks.replaceChildren();
-    if (view.decks.length < 2) return;
-    for (const deck of view.decks) {
-      const deckId = deck.deck_id || deck.id;
-      if (!deckId) continue;
-      const button = element("button", "selector-deck-button", deck.label || deck.deck_label || "PPT");
-      button.type = "button";
-      button.dataset.deckId = deckId;
-      button.setAttribute("aria-current", deckId === view.deckId ? "true" : "false");
-      nodes.decks.append(button);
-    }
   }
 
   function renderPages() {
@@ -421,7 +405,6 @@ export function mountSelectorWorkspace({
 
   function render() {
     if (view.destroyed) return;
-    renderDecks();
     renderPages();
     const catalog = view.catalog;
     const page = view.page;
@@ -609,11 +592,6 @@ export function mountSelectorWorkspace({
   }
 
   shell.addEventListener("click", (event) => {
-    const deckButton = event.target.closest("[data-deck-id]");
-    if (deckButton) {
-      controller.setContext({ deckId: deckButton.dataset.deckId, slideUid: "" });
-      return;
-    }
     const pageButton = event.target.closest("[data-slide-uid]");
     if (pageButton) {
       selectSlide(pageButton.dataset.slideUid);

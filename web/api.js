@@ -58,6 +58,12 @@ export async function createProject(body) {
   }));
 }
 
+export async function hideProject(deckId) {
+  return readJson(await fetch(`/api/projects/${encodeURIComponent(deckId)}/hide`, {
+    method: "POST", headers: MUTATION_HEADERS, body: JSON.stringify({}),
+  }));
+}
+
 export async function getProjectOutline(deckId) {
   return readJson(await fetch(`/api/decks/${encodeURIComponent(deckId)}/outline`, { cache: "no-store" }));
 }

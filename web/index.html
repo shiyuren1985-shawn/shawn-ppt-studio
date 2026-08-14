@@ -17,8 +17,24 @@
           <span class="brand-mark" aria-hidden="true">S</span>
           <div>
             <h1>Shawn PPT Studio</h1>
-            <p id="deck-label">正在读取 PPT…</p>
+            <p>PPT 工作台</p>
           </div>
+        </div>
+
+        <div class="topbar-project-context" aria-label="当前任务">
+          <div class="project-picker">
+            <button class="project-picker-button" id="project-picker-button" type="button" role="combobox" aria-label="选择 PPT" aria-haspopup="dialog" aria-controls="project-popover" aria-expanded="false">
+              <span><strong id="project-picker-label">正在读取…</strong><small id="project-picker-meta"></small></span>
+              <span class="project-picker-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="project-popover" id="project-popover" role="dialog" aria-label="选择 PPT" hidden>
+              <label class="project-search-label" for="project-search">搜索 PPT</label>
+              <input class="project-search" id="project-search" type="search" autocomplete="off" placeholder="输入名称搜索" />
+              <div class="deck-switcher" id="deck-switcher" role="listbox" aria-label="PPT 列表"></div>
+              <button class="project-popover-new" id="project-popover-new" type="button">＋ 新建或打开 PPT</button>
+            </div>
+          </div>
+          <button class="topbar-new-project" id="new-project-button" type="button" data-testid="new-project">＋ 新建PPT</button>
         </div>
 
         <nav class="workspace-tabs" aria-label="主要工作区">
@@ -36,8 +52,6 @@
       <main id="main-content" class="main-frame">
         <section class="workspace active" id="outline-workspace" data-workspace-panel="outline" data-testid="workspace-outline" aria-label="大纲工作区">
           <aside class="slide-sidebar" id="outline-sidebar" aria-label="PPT 页面">
-            <div class="project-switcher-heading"><span>PPT</span><button id="new-project-button" type="button" data-testid="new-project">＋ 新建PPT</button></div>
-            <div class="deck-switcher" id="deck-switcher"></div>
             <div class="sidebar-heading">
               <div><strong>页面</strong><span id="outline-slide-count">0</span></div>
               <button class="column-toggle" id="outline-left-toggle" data-column-toggle="left" data-testid="outline-left-column-toggle" type="button" aria-expanded="true">收起</button>
@@ -178,6 +192,16 @@
         <button id="existing-outline-button" type="button" data-testid="existing-outline"><strong>打开已有大纲</strong><span>选择一个 Markdown 大纲，继续使用原文件</span></button>
       </div>
       <p class="project-dialog-status" id="project-dialog-status" role="status" hidden></p>
+    </dialog>
+
+    <dialog class="project-dialog remove-project-dialog" id="remove-project-dialog" aria-labelledby="remove-project-dialog-title">
+      <h2 id="remove-project-dialog-title">从列表移除这份 PPT？</h2>
+      <p><strong id="remove-project-name"></strong> 将不再显示在 Studio 中，但大纲、图片、对话和导出文件都不会删除。以后重新打开原大纲，它会恢复到列表里。</p>
+      <div class="dialog-actions">
+        <button class="secondary-button" id="remove-project-cancel" type="button">取消</button>
+        <button class="danger-button" id="remove-project-confirm" type="button">从列表移除</button>
+      </div>
+      <p class="project-dialog-status" id="remove-project-status" role="status" hidden></p>
     </dialog>
 
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>

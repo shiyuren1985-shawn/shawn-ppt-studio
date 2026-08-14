@@ -20,6 +20,10 @@ tests/*
 !tests/backend-codex-interaction-v1/**
 !tests/backend-codex-interaction-v2/
 !tests/backend-codex-interaction-v2/**
+!tests/backend-project-switcher-v1/
+!tests/backend-project-switcher-v1/**
+!tests/ui-project-switcher-v1/
+!tests/ui-project-switcher-v1/**
 docs/qa/
 docs/audits/
 docs/

@@ -677,6 +677,11 @@ export function createLabHttpServer(context) {
             label: body.label,
           });
         } else if (body.mode === "existing") {
+          const restored = await context.discovery.restoreExistingOutline(body.outline_path);
+          if (restored) {
+            json(res, 200, { contract_version: 1, project: restored, reused: true, restored: true });
+            return;
+          }
           let requestedOutline = null;
           try {
             requestedOutline = await realpath(body.outline_path);
@@ -704,6 +709,22 @@ export function createLabHttpServer(context) {
           contract_version: 1,
           project: await context.discovery.getOutline(record.deck_id),
           reused,
+        });
+        return;
+      }
+
+      const hideProjectMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/hide$/);
+      if (req.method === "POST" && hideProjectMatch) {
+        await readJson(req);
+        const deckId = decodeURIComponent(hideProjectMatch[1]);
+        await context.discovery.hideDeck(deckId);
+        const listing = await context.discovery.listDecks();
+        json(res, 200, {
+          contract_version: 1,
+          hidden: true,
+          deck_id: deckId,
+          default_deck: listing.default_deck,
+          remaining_count: listing.decks.length,
         });
         return;
       }
