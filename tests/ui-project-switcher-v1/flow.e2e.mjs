@@ -44,6 +44,7 @@ async function readBody(request) {
 
 async function startServer() {
   const hidden = new Set();
+  const sentMessages = [];
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/api/projects") {
@@ -93,6 +94,21 @@ async function startServer() {
     if (request.method === "GET" && /^\/api\/decks\/project-\d+\/conversations\/chat-\d+$/.test(url.pathname)) {
       return json(response, { active_turn: null, turns: [] });
     }
+    if (request.method === "POST" && /^\/api\/decks\/project-\d+\/conversations\/chat-\d+\/messages$/.test(url.pathname)) {
+      const body = await readBody(request);
+      sentMessages.push(body.message);
+      const turnId = `keyboard-turn-${sentMessages.length}`;
+      response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store" });
+      const events = [
+        { method: "turn/started", params: { turn: { id: turnId, status: "inProgress" } } },
+        { method: "item/started", params: { turnId, item: { id: `${turnId}-user`, type: "userMessage", content: [{ type: "text", text: body.message }] } } },
+        { method: "turn/completed", params: { turn: { id: turnId, status: "completed" } } },
+      ];
+      for (const [index, event] of events.entries()) {
+        response.write(`id: ${index + 1}\nevent: codex\ndata: ${JSON.stringify({ contract_version: 1, sequence: index + 1, turn_id: turnId, ...event })}\n\n`);
+      }
+      return response.end();
+    }
     const selector = url.pathname.match(/^\/api\/selector-workspace\/decks\/(project-\d+)\/catalog(?:\/refresh)?$/);
     if (selector) {
       const project = projects.find((item) => item.deck_id === selector[1]);
@@ -137,11 +153,11 @@ async function startServer() {
     return json(response, { error: "not found" }, 404);
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { server, url: `http://127.0.0.1:${server.address().port}/` };
+  return { server, sentMessages, url: `http://127.0.0.1:${server.address().port}/` };
 }
 
 test("seven projects stay compact and switch the whole task context", async () => {
-  const { server, url } = await startServer();
+  const { server, sentMessages, url } = await startServer();
   let browser;
   try {
     fs.mkdirSync(evidenceRoot, { recursive: true });
@@ -158,6 +174,22 @@ test("seven projects stay compact and switch the whole task context", async () =
       assert.ok(picker.height >= 44 && create.height >= 44);
       assert.ok(picker.y >= topbar.y && create.y + create.height <= topbar.y + topbar.height + 1);
       assert.equal(await page.locator("body").evaluate((node) => node.scrollHeight <= node.clientHeight), true);
+
+      const composer = page.locator("#message-input");
+      const sentBefore = sentMessages.length;
+      await composer.fill("中文输入中");
+      await composer.evaluate((node) => node.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true })));
+      assert.equal(await composer.inputValue(), "中文输入中");
+      assert.equal(sentMessages.length, sentBefore);
+      await composer.fill("第一行");
+      await composer.press("Shift+Enter");
+      assert.equal(await composer.inputValue(), "第一行\n");
+      assert.equal(sentMessages.length, sentBefore);
+      await composer.fill("按回车发送");
+      const sent = page.waitForResponse((candidate) => candidate.request().method() === "POST" && /\/conversations\/chat-\d+\/messages$/.test(new URL(candidate.url()).pathname));
+      await composer.press("Enter");
+      await sent;
+      assert.equal(sentMessages.at(-1), "按回车发送");
 
       await page.locator("#project-picker-button").click();
       assert.equal(await page.locator(".project-option-row").count(), 7);

@@ -31,3 +31,10 @@ test("remove means hide from the list, never delete project files", () => {
   assert.match(api, /\/api\/projects\/\$\{encodeURIComponent\(deckId\)\}\/hide/);
   assert.doesNotMatch(api, /method:\s*"DELETE"/);
 });
+
+test("the composer follows Codex keyboard behavior", () => {
+  assert.match(app, /event\.key !== "Enter" \|\| event\.shiftKey/);
+  assert.match(app, /event\.isComposing \|\| event\.keyCode === 229/);
+  assert.match(app, /event\.preventDefault\(\)/);
+  assert.match(app, /conversation-form"\]\.requestSubmit\(\)/);
+});

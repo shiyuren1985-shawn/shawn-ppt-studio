@@ -1546,7 +1546,9 @@ function bindEvents() {
   el["stop-button"].addEventListener("click", interruptActiveTurn);
   el["message-input"].addEventListener("input", updateSendState);
   el["message-input"].addEventListener("keydown", (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") el["conversation-form"].requestSubmit();
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    if (!el["send-button"].disabled) el["conversation-form"].requestSubmit();
   });
   el["message-input"].addEventListener("paste", (event) => {
     if (event.clipboardData?.getData("text/plain")) return;
