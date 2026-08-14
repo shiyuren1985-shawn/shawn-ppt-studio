@@ -6,6 +6,7 @@ import readline from "node:readline";
 const DEFAULT_CODEX_APP = "/Applications/ChatGPT.app/Contents/Resources/codex";
 
 export function resolveCodexExecutable(env = process.env) {
+  if (env.CODEX_BIN) return env.CODEX_BIN;
   if (env.PPT_AI_LAB_CODEX_BIN) return env.PPT_AI_LAB_CODEX_BIN;
   if (existsSync(DEFAULT_CODEX_APP)) return DEFAULT_CODEX_APP;
   return "codex";

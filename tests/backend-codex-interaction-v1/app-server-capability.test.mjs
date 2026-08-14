@@ -4,7 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { AppServerClient } from "../../server/app-server-client.mjs";
+import { AppServerClient, resolveCodexExecutable } from "../../server/app-server-client.mjs";
+
+test("public CODEX_BIN override takes precedence over the legacy variable", () => {
+  assert.equal(
+    resolveCodexExecutable({ CODEX_BIN: "/opt/codex", PPT_AI_LAB_CODEX_BIN: "/legacy/codex" }),
+    "/opt/codex",
+  );
+});
 
 test("App Server connection opts into experimental fields used by turn/start", async () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "studio-app-server-capability-"));
