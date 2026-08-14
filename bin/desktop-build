@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+
+STUDIO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+PNPM_BIN=${SHAWN_PPT_STUDIO_PNPM:-$(command -v pnpm || true)}
+NODE_DIR=${SHAWN_PPT_STUDIO_NODE_DIR:-$(dirname "${SHAWN_PPT_STUDIO_NODE:-$(command -v node || true)}")}
+
+if [ -z "$PNPM_BIN" ] || [ ! -x "$PNPM_BIN" ]; then
+  echo "pnpm is required. Install it with Corepack or set SHAWN_PPT_STUDIO_PNPM." >&2
+  exit 127
+fi
+if [ -z "$NODE_DIR" ] || [ ! -x "$NODE_DIR/node" ]; then
+  echo "Node.js 24 is required. Set SHAWN_PPT_STUDIO_NODE or SHAWN_PPT_STUDIO_NODE_DIR." >&2
+  exit 127
+fi
+
+export PATH="$NODE_DIR:$PATH"
+cd "$STUDIO_ROOT/desktop"
+if [ ! -x node_modules/.bin/tauri ]; then
+  "$PNPM_BIN" install --frozen-lockfile
+fi
+"$PNPM_BIN" tauri build
+
+APP="$STUDIO_ROOT/desktop/src-tauri/target/release/bundle/macos/Shawn PPT Studio.app"
+if [ -d "$APP" ] && command -v codesign >/dev/null 2>&1; then
+  SIGNING_IDENTITY=${SHAWN_PPT_STUDIO_SIGNING_IDENTITY:-${PPT_AI_LAB_SIGNING_IDENTITY:--}}
+  codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP"
+  codesign --verify --deep --strict "$APP"
+fi
+
+test -x "$APP/Contents/MacOS/shawn-ppt-studio"
+test -f "$APP/Contents/Resources/studio/server/server.mjs"
+test -f "$APP/Contents/Resources/studio/web/index.html"
+test -d "$APP/Contents/Resources/studio/integrations"
+echo "Built local development app: $APP"
+echo "Distribution note: this build is not Developer ID signed or notarized unless an identity is supplied."

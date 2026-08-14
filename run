@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+LAB_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if [ -n "${SHAWN_PPT_STUDIO_NODE:-}" ]; then
+  NODE_BIN=$SHAWN_PPT_STUDIO_NODE
+elif command -v node >/dev/null 2>&1; then
+  NODE_BIN=$(command -v node)
+elif [ -x "${HOME:-}/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node" ]; then
+  NODE_BIN="${HOME}/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
+else
+  echo "Shawn PPT Studio requires Node.js 24. Set SHAWN_PPT_STUDIO_NODE to its executable." >&2
+  exit 127
+fi
+
+exec "$NODE_BIN" "$LAB_DIR/server/server.mjs" "$@"

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.shawn/ppt-ai-lab/shawn-single-page.contract.json",
+  "title": "Shawn PPT Image single-page workbench request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "deck_uid",
+    "slide_uid",
+    "outline_path",
+    "expected_revision",
+    "user_request"
+  ],
+  "properties": {
+    "deck_uid": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "slide_uid": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "outline_path": {
+      "type": "string",
+      "description": "Absolute path to the one authoritative Markdown outline."
+    },
+    "expected_revision": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "user_request": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000
+    }
+  }
+}

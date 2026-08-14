@@ -1,0 +1,1437 @@
+import * as api from "./api.js";
+import {
+  chooseScope,
+  codexHistoryTurns,
+  codexItemPresentation,
+  codexItemText,
+  codexPlanSteps,
+  formatConversationTime,
+  normalizeConversations,
+  normalizeDecks,
+  normalizeSelection,
+  outlineReadingModel,
+  safeAttachmentPaths,
+  scopeFromSlide,
+  retouchDisplayLabel,
+} from "./model.js";
+
+const STORAGE_KEY = "shawn-ppt-studio.ui.v5";
+const state = {
+  workspace: "outline",
+  decks: [],
+  defaultDeckId: "",
+  deckId: "",
+  slideUid: "",
+  scope: null,
+  draftMarkdown: "",
+  selection: normalizeSelection({ status: "unavailable" }),
+  selectorController: null,
+  selectorMounting: null,
+  columns: { left: true, content: true, conversation: true },
+  conversations: [],
+  activeConversationId: "",
+  messages: [],
+  activeHistoryFallback: null,
+  attachments: [],
+  activeTurnId: "",
+  activeTurnStatus: "",
+  eventSequence: 0,
+  eventController: null,
+  itemViews: new Map(),
+  userMessageViews: new Map(),
+  submitting: false,
+  interrupting: false,
+  creatingConversation: false,
+};
+
+const ids = [
+  "main-content", "deck-label", "deck-switcher", "outline-slide-count", "outline-slide-list", "retouch-slide-count",
+  "retouch-slide-list", "current-page-label", "current-page-title", "composer-page", "composer-scope-copy", "selection-count",
+  "current-page-context-copy", "retouch-page-label", "retouch-page-title",
+  "selected-preview", "outline-version", "outline-reading-view", "active-conversation-title",
+  "active-conversation-time", "message-list", "conversation-form", "message-input", "attachment-list",
+  "attachment-input", "attach-button", "send-button", "conversation-menu-button", "conversation-drawer",
+  "stop-button", "turn-status", "turn-status-copy",
+  "close-conversation-drawer", "drawer-backdrop", "drawer-new-conversation",
+  "conversation-list", "refresh-button", "selector-workspace", "retouch-gallery",
+  "conversation-panel", "outline-conversation-host", "retouch-conversation-host", "conversation-column-toggle",
+  "outline-left-toggle", "retouch-left-toggle", "outline-content-toggle", "retouch-content-toggle", "retouch-stage",
+  "image-dialog", "image-dialog-close", "image-dialog-toggle", "image-dialog-content", "page-comparison", "toast",
+  "new-project-button", "project-dialog", "project-dialog-close", "blank-project-button", "existing-outline-button", "project-dialog-status",
+];
+const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
+
+function savedState() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
+  catch { return {}; }
+}
+
+function persist() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    workspace: state.workspace,
+    deckId: state.deckId,
+    slideUid: state.slideUid,
+    sidebarWidth: getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width").trim(),
+    conversationWidth: getComputedStyle(document.documentElement).getPropertyValue("--conversation-width").trim(),
+    outlineImageHeight: getComputedStyle(document.documentElement).getPropertyValue("--outline-image-height").trim(),
+    columns: state.columns,
+  }));
+}
+
+function toast(message) {
+  el.toast.textContent = message;
+  el.toast.hidden = false;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { el.toast.hidden = true; }, 3200);
+}
+
+function currentDeck() {
+  return state.decks.find((deck) => deck.deck_id === state.deckId) || null;
+}
+
+function currentSlide() {
+  return currentDeck()?.slides.find((slide) => slide.slide_uid === state.slideUid) || null;
+}
+
+function updateComposerContext() {
+  const page = state.scope?.page_label || currentSlide()?.page_label || (currentDeck() ? "整套 PPT" : "当前页");
+  el["composer-page"].textContent = page;
+  if (!state.slideUid && currentDeck()) {
+    el["message-input"].placeholder = "例如：这份 PPT 讲海外项目交付，请先帮我整理整体故事线。";
+    el["composer-scope-copy"].textContent = "，处理范围：整套 PPT";
+  } else if (state.workspace === "retouch") {
+    el["message-input"].placeholder = "例如：把这一页 Logo 去掉；或者改 P04-A / P08 的图片细节。";
+    el["composer-scope-copy"].textContent = "，可直接说“这一页”或图片名称";
+  } else {
+    el["message-input"].placeholder = "例如：第 5 页的表达还不够直接，请结合整套大纲调整；再为第 5、8 页各做几种图片方案。";
+    el["composer-scope-copy"].textContent = "，处理范围：整套 PPT";
+  }
+}
+
+function attachConversationPanel(workspace) {
+  const host = workspace === "retouch" ? el["retouch-conversation-host"] : el["outline-conversation-host"];
+  if (host && el["conversation-panel"].parentElement !== host) host.append(el["conversation-panel"]);
+  updateComposerContext();
+}
+
+function applyColumnState({ save = true } = {}) {
+  const root = document.documentElement;
+  root.dataset.leftColumn = state.columns.left ? "open" : "collapsed";
+  root.dataset.contentColumn = state.columns.content ? "open" : "collapsed";
+  root.dataset.conversationColumn = state.columns.conversation ? "open" : "collapsed";
+  const names = { left: "页面", content: "内容", conversation: "对话" };
+  for (const button of document.querySelectorAll("[data-column-toggle]")) {
+    const column = button.dataset.columnToggle;
+    const open = Boolean(state.columns[column]);
+    const name = names[column] || "这一栏";
+    button.setAttribute("aria-expanded", String(open));
+    button.setAttribute("aria-label", open ? `收起${name}` : `打开${name}`);
+    button.textContent = open ? "收起" : `打开${name}`;
+  }
+  for (const resizer of document.querySelectorAll("[data-column-resizer='left']")) {
+    resizer.setAttribute("aria-disabled", String(!state.columns.left));
+  }
+  for (const resizer of document.querySelectorAll("[data-column-resizer='conversation']")) {
+    resizer.setAttribute("aria-disabled", String(!state.columns.content || !state.columns.conversation));
+  }
+  if (save) persist();
+}
+
+function toggleColumn(column) {
+  if (!Object.hasOwn(state.columns, column)) return;
+  const next = !state.columns[column];
+  if (column === "content" && !next && !state.columns.conversation) state.columns.conversation = true;
+  if (column === "conversation" && !next && !state.columns.content) state.columns.content = true;
+  state.columns[column] = next;
+  applyColumnState();
+}
+
+function setWorkspace(workspace) {
+  if (!new Set(["outline", "selector", "retouch"]).has(workspace)) return;
+  state.workspace = workspace;
+  for (const button of document.querySelectorAll("[data-workspace]")) {
+    if (button.dataset.workspace === workspace) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  }
+  for (const panel of document.querySelectorAll("[data-workspace-panel]")) {
+    panel.hidden = panel.dataset.workspacePanel !== workspace;
+  }
+  if (workspace === "outline" || workspace === "retouch") attachConversationPanel(workspace);
+  if (workspace === "selector") void syncSelectorWorkspace();
+  if ((workspace === "outline" || workspace === "retouch") && state.deckId) loadCurrentPage();
+  persist();
+}
+
+function renderDeckSwitcher() {
+  el["deck-switcher"].replaceChildren();
+  for (const deck of state.decks) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "deck-button";
+    button.textContent = deck.label || deck.deck_id;
+    button.setAttribute("aria-current", String(deck.deck_id === state.deckId));
+    button.addEventListener("click", () => selectDeck(deck.deck_id));
+    el["deck-switcher"].append(button);
+  }
+}
+
+function openProjectDialog() {
+  setProjectDialogBusy(false, "");
+  el["project-dialog"].showModal();
+}
+
+function closeProjectDialog() {
+  el["project-dialog"].close();
+}
+
+function setProjectDialogBusy(busy, message = "") {
+  el["blank-project-button"].disabled = busy;
+  el["existing-outline-button"].disabled = busy;
+  el["project-dialog-status"].hidden = !message;
+  el["project-dialog-status"].textContent = message;
+}
+
+async function startProject(mode) {
+  setProjectDialogBusy(true, mode === "blank" ? "正在选择文件夹…" : "正在选择大纲…");
+  try {
+    const picked = mode === "blank" ? await api.pickProjectFolder() : await api.pickOutlineFile();
+    if (picked?.cancelled || !picked?.selection?.path) {
+      setProjectDialogBusy(false, "");
+      return;
+    }
+    setProjectDialogBusy(true, "正在打开…");
+    const created = await api.createProject(mode === "blank"
+      ? { mode: "blank", folder_path: picked.selection.path }
+      : { mode: "existing", outline_path: picked.selection.path });
+    const project = created?.project;
+    if (!project?.deck_id) throw new Error("没有创建成功");
+    state.deckId = project.deck_id;
+    state.slideUid = project.default_slide_uid || project.slides?.[0]?.slide_uid || "";
+    state.activeConversationId = "";
+    state.conversations = [];
+    state.messages = [];
+    state.draftMarkdown = "";
+    stopEventStream();
+    setActiveTurn(null);
+    closeProjectDialog();
+    setWorkspace("outline");
+    await refreshAll();
+    await loadConversations();
+    persist();
+    el["message-input"].focus();
+  } catch (error) {
+    const message = error.code === "project_already_registered"
+      ? "这份大纲已经在左侧列表中。"
+      : error.code === "project_file_exists"
+        ? "这个文件夹里已经有一份同名大纲，请选择另一个文件夹。"
+        : `暂时无法打开：${error.message}`;
+    setProjectDialogBusy(false, message);
+  }
+}
+
+function slideButton(slide, target) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "slide-button";
+  button.dataset.testid = "slide-item";
+  button.setAttribute("aria-current", slide.slide_uid === state.slideUid ? "page" : "false");
+  const number = document.createElement("span");
+  number.className = "slide-number";
+  number.textContent = slide.page_label || `P${String(slide.order).padStart(2, "0")}`;
+  const title = document.createElement("span");
+  title.className = "slide-title";
+  title.textContent = slide.title || "未命名页面";
+  button.append(number, title);
+  button.addEventListener("click", () => selectSlide(slide.slide_uid));
+  target.append(button);
+}
+
+function renderSlideLists() {
+  const slides = currentDeck()?.slides || [];
+  el["outline-slide-list"].replaceChildren();
+  el["retouch-slide-list"].replaceChildren();
+  for (const slide of slides) {
+    slideButton(slide, el["outline-slide-list"]);
+    slideButton(slide, el["retouch-slide-list"]);
+  }
+  el["outline-slide-count"].textContent = String(slides.length);
+  el["retouch-slide-count"].textContent = String(slides.length);
+}
+
+async function selectDeck(deckId) {
+  const deck = state.decks.find((item) => item.deck_id === deckId);
+  if (!deck || deck.deck_id === state.deckId) return;
+  state.deckId = deck.deck_id;
+  state.slideUid = deck.default_slide_uid || deck.slides[0]?.slide_uid || "";
+  state.activeConversationId = "";
+  state.conversations = [];
+  state.messages = [];
+  state.draftMarkdown = "";
+  stopEventStream();
+  setActiveTurn(null);
+  el["deck-label"].textContent = deck.label || deck.deck_id;
+  renderDeckSwitcher();
+  renderSlideLists();
+  setWorkspace("outline");
+  await Promise.all([loadCurrentPage(), loadConversations()]);
+  if (state.workspace === "selector") void syncSelectorWorkspace();
+  persist();
+}
+
+async function selectSlide(slideUid) {
+  if (!slideUid || slideUid === state.slideUid) return;
+  state.slideUid = slideUid;
+  renderSlideLists();
+  await loadCurrentPage();
+  if (state.workspace === "selector") void syncSelectorWorkspace();
+  persist();
+}
+
+function renderOutline() {
+  const slide = currentSlide();
+  el["current-page-label"].textContent = state.scope?.page_label || slide?.page_label || "—";
+  el["current-page-title"].textContent = state.scope?.title || slide?.title || "请选择一页";
+  el["composer-page"].textContent = state.scope?.page_label || "未选择页面";
+  el["retouch-page-label"].textContent = state.scope?.page_label || slide?.page_label || "—";
+  el["retouch-page-title"].textContent = state.scope?.title || slide?.title || "修图";
+  updateComposerContext();
+  el["current-page-context-copy"].textContent = state.scope?.page_label
+    ? `你正在查看 ${state.scope.page_label}。AI 会把它作为参考，但仍会结合整套 PPT 理解你的要求。`
+    : "当前页会作为参考；下方对话仍面向整套 PPT。";
+  el["outline-version"].textContent = currentDeck()?.version_label || "";
+  const model = outlineReadingModel(state.scope?.outline_markdown, state.scope?.title || slide?.title);
+  el["outline-reading-view"].replaceChildren();
+  const heading = document.createElement("h4");
+  heading.textContent = model.title;
+  el["outline-reading-view"].append(heading);
+  if (!model.sections.length) {
+    const empty = document.createElement("p");
+    empty.className = "loading-copy";
+    empty.textContent = "这页暂时没有可预览的大纲内容。";
+    el["outline-reading-view"].append(empty);
+    return;
+  }
+  const list = document.createElement("dl");
+  for (const section of model.sections) {
+    const row = document.createElement("div");
+    const term = document.createElement("dt");
+    term.textContent = section.label;
+    const value = document.createElement("dd");
+    value.textContent = section.value;
+    row.append(term, value);
+    list.append(row);
+  }
+  el["outline-reading-view"].append(list);
+}
+
+function projectEmptyNode(title, copy) {
+  const empty = document.createElement("div");
+  empty.className = "project-empty";
+  const strong = document.createElement("strong");
+  strong.textContent = title;
+  const paragraph = document.createElement("p");
+  paragraph.textContent = copy;
+  empty.append(strong, paragraph);
+  return empty;
+}
+
+function renderProjectWithoutSlides() {
+  const deck = currentDeck();
+  el["current-page-label"].textContent = "";
+  el["current-page-title"].textContent = deck?.label || "新的 PPT";
+  el["current-page-context-copy"].textContent = deck?.outline_kind === "draft" ? "大纲草稿" : "";
+  el["composer-page"].textContent = "整套 PPT";
+  el["composer-scope-copy"].textContent = "，处理范围：整套 PPT";
+  el["outline-version"].textContent = deck?.status_label || "";
+  el["selected-preview"].replaceChildren(projectEmptyNode("还没有页面", "先在右侧告诉 AI 这份 PPT 要讲什么。"));
+  el["selection-count"].textContent = "";
+  el["outline-reading-view"].replaceChildren();
+  if (state.draftMarkdown.trim()) {
+    const note = document.createElement("p");
+    note.className = "draft-note";
+    note.textContent = "这是现有的大纲草稿。可以直接在右侧和 AI 讨论；需要时，告诉 AI 整理成逐页大纲。";
+    const draft = document.createElement("div");
+    draft.className = "draft-reading-view";
+    draft.textContent = state.draftMarkdown;
+    el["outline-reading-view"].append(note, draft);
+  } else {
+    el["outline-reading-view"].append(projectEmptyNode("还没有页面", "先在右侧告诉 AI 这份 PPT 要讲什么。"));
+  }
+  el["retouch-page-label"].textContent = "";
+  el["retouch-page-title"].textContent = deck?.label || "修图";
+  el["retouch-gallery"].replaceChildren(projectEmptyNode("暂无图片", "先完成至少一页大纲，再开始生成和修改图片。"));
+  updateSendState();
+}
+
+function selectorEmpty(message) {
+  const empty = document.createElement("div");
+  empty.className = "empty-state";
+  const title = document.createElement("strong");
+  title.textContent = "这一页还没有选定图片";
+  const copy = document.createElement("p");
+  const normalizedMessage = String(message || "").replace(/[。！!？?\s]/g, "");
+  copy.textContent = normalizedMessage === "这一页还没有选定图片"
+    ? "先去选稿，确定准备使用的图片。"
+    : message || "先去选稿，确定准备使用的图片。";
+  const action = document.createElement("button");
+  action.type = "button";
+  action.className = "secondary-button";
+  action.dataset.openSelector = "";
+  action.dataset.testid = "go-selector";
+  action.textContent = "去选稿";
+  empty.append(title, copy, action);
+  return empty;
+}
+
+function renderSelection() {
+  el["selected-preview"].replaceChildren();
+  const candidates = state.selection.candidates;
+  el["selection-count"].textContent = candidates.length > 1 ? `已选 ${candidates.length} 张` : candidates.length === 1 ? "已选 1 张" : "";
+  if (!candidates.length) {
+    el["selected-preview"].append(selectorEmpty(state.selection.message));
+    return;
+  }
+  for (const candidate of candidates) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "preview-button";
+    button.title = "点击放大";
+    const image = document.createElement("img");
+    image.src = candidate.preview_url;
+    image.alt = `${state.scope?.page_label || "当前页"} 已选图片`;
+    image.loading = "lazy";
+    button.append(image);
+    button.addEventListener("click", () => openImage(candidate.preview_url));
+    el["selected-preview"].append(button);
+  }
+}
+
+async function loadCurrentPage() {
+  const deckId = state.deckId;
+  const slideUid = state.slideUid;
+  if (!deckId) return;
+  if (!slideUid) {
+    const deck = currentDeck();
+    try {
+      const outline = await api.getProjectOutline(deckId);
+      if (deckId !== state.deckId) return;
+      state.draftMarkdown = typeof outline?.draft_markdown === "string" ? outline.draft_markdown : "";
+      state.scope = {
+        deck_id: deckId,
+        deck_uid: deck?.deck_uid || "",
+        slide_uid: null,
+        page_label: null,
+        title: deck?.label || "",
+      };
+      state.selection = normalizeSelection({ status: "empty", message: "" });
+      renderProjectWithoutSlides();
+    } catch (error) {
+      toast(`无法读取这份大纲：${error.message}`);
+    }
+    return;
+  }
+  const slideRequest = api.getSlide(deckId, slideUid);
+  const selectionRequest = api.getSelection(deckId, slideUid).catch((error) => ({
+    status: "unavailable",
+    message: error.status === 404 ? "选稿信息尚未接入。" : "暂时无法读取选中的图片。",
+  }));
+  try {
+    const [detail, selectionPayload] = await Promise.all([slideRequest, selectionRequest]);
+    if (deckId !== state.deckId || slideUid !== state.slideUid) return;
+    state.scope = scopeFromSlide(detail);
+    state.selection = normalizeSelection(selectionPayload);
+    renderOutline();
+    renderSelection();
+    renderRetouch();
+    updateSendState();
+  } catch (error) {
+    toast(`无法读取这一页：${error.message}`);
+  }
+}
+
+function openImage(url) {
+  if (!url) return;
+  el["image-dialog-content"].src = url;
+  el["image-dialog"].showModal();
+}
+
+function closeImage() {
+  el["image-dialog"].close();
+  el["image-dialog-content"].removeAttribute("src");
+}
+
+async function synchronizeFromSelector({ deckId, slideUid } = {}) {
+  const deck = state.decks.find((item) => item.deck_id === deckId);
+  if (!deck) return;
+  const slide = deck.slides.find((item) => item.slide_uid === slideUid) || deck.slides[0];
+  if (!slide) return;
+  const deckChanged = deck.deck_id !== state.deckId;
+  state.deckId = deck.deck_id;
+  state.slideUid = slide.slide_uid;
+  if (deckChanged) {
+    state.activeConversationId = "";
+    state.conversations = [];
+    state.messages = [];
+    stopEventStream();
+    setActiveTurn(null);
+  }
+  el["deck-label"].textContent = deck.label || deck.deck_id;
+  renderDeckSwitcher();
+  renderSlideLists();
+  await loadCurrentPage();
+  if (deckChanged) await loadConversations();
+  persist();
+}
+
+async function mountSelectorWorkspaceIfNeeded() {
+  if (state.selectorController) return state.selectorController;
+  if (state.selectorMounting) return state.selectorMounting;
+  state.selectorMounting = (async () => {
+    try {
+      const [{ mountSelectorWorkspace }, { selectorApi }] = await Promise.all([
+        import("./selector/workspace.js"),
+        import("./selector/api.js"),
+      ]);
+      state.selectorController = await mountSelectorWorkspace({
+        root: el["selector-workspace"],
+        api: selectorApi,
+        state: { deckId: state.deckId, slideUid: state.slideUid, decks: state.decks },
+        onSlideChange: (context) => { void synchronizeFromSelector(context); },
+        onSelectionChange: (context) => {
+          if (context?.deckId === state.deckId && context?.slideUid === state.slideUid) void loadCurrentPage();
+        },
+        onError: (error) => toast(error?.message || "选稿台暂时无法读取，请稍后重试"),
+      });
+      return state.selectorController;
+    } catch (error) {
+      el["selector-workspace"].replaceChildren();
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      const title = document.createElement("strong");
+      title.textContent = "选稿台暂时无法读取";
+      const copy = document.createElement("p");
+      copy.textContent = "请稍后再试，你的大纲和正式选图不会受到影响。";
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "secondary-button";
+      retry.textContent = "重新读取";
+      retry.addEventListener("click", () => {
+        state.selectorMounting = null;
+        void syncSelectorWorkspace();
+      });
+      empty.append(title, copy, retry);
+      el["selector-workspace"].append(empty);
+      throw error;
+    } finally {
+      state.selectorMounting = null;
+    }
+  })();
+  return state.selectorMounting;
+}
+
+async function syncSelectorWorkspace() {
+  if (!state.slideUid) {
+    el["selector-workspace"].replaceChildren(projectEmptyNode("暂无选稿", "先完成至少一页大纲，再开始生成和选择图片。"));
+    state.selectorController = null;
+    state.selectorMounting = null;
+    return;
+  }
+  try {
+    const alreadyMounted = Boolean(state.selectorController);
+    const controller = await mountSelectorWorkspaceIfNeeded();
+    if (alreadyMounted) await controller?.setContext?.({ deckId: state.deckId, slideUid: state.slideUid, decks: state.decks });
+  } catch { /* The selector workspace already shows a plain-language retry state. */ }
+}
+
+function renderRetouch() {
+  if (!el["retouch-gallery"]) return;
+  el["retouch-gallery"].replaceChildren();
+  if (!state.slideUid) {
+    el["retouch-gallery"].append(projectEmptyNode("暂无图片", "先完成至少一页大纲，再开始生成和修改图片。"));
+    return;
+  }
+  const candidates = state.selection.candidates;
+  if (!candidates.length) {
+    el["retouch-gallery"].append(selectorEmpty(state.selection.message));
+    return;
+  }
+  const pageLabel = state.scope?.page_label || currentSlide()?.page_label || "当前页";
+  candidates.forEach((candidate, index) => {
+    const displayLabel = retouchDisplayLabel(pageLabel, index, candidates.length, candidate.display_label);
+    const card = document.createElement("article");
+    card.className = "retouch-card";
+    card.dataset.testid = "retouch-image-card";
+    const imageButton = document.createElement("button");
+    imageButton.type = "button";
+    imageButton.className = "image-button";
+    imageButton.dataset.testid = "retouch-image-preview";
+    imageButton.title = `查看 ${displayLabel} 大图`;
+    const image = document.createElement("img");
+    image.src = candidate.preview_url;
+    image.alt = `${displayLabel} 正式图片`;
+    imageButton.append(image);
+    imageButton.addEventListener("click", () => openImage(candidate.preview_url));
+    const caption = document.createElement("div");
+    caption.className = "retouch-card-caption";
+    const label = document.createElement("strong");
+    label.dataset.testid = "retouch-display-label";
+    label.textContent = displayLabel;
+    const copy = document.createElement("span");
+    copy.textContent = "正式图片";
+    caption.append(label, copy);
+    card.append(imageButton, caption);
+    el["retouch-gallery"].append(card);
+  });
+}
+
+function openConversationDrawer() {
+  el["conversation-drawer"].hidden = false;
+  el["drawer-backdrop"].hidden = false;
+  el["conversation-menu-button"].setAttribute("aria-expanded", "true");
+  el["close-conversation-drawer"].focus();
+}
+
+function closeConversationDrawer() {
+  el["conversation-drawer"].hidden = true;
+  el["drawer-backdrop"].hidden = true;
+  el["conversation-menu-button"].setAttribute("aria-expanded", "false");
+  el["conversation-menu-button"].focus();
+}
+
+function renderConversationList() {
+  el["conversation-list"].replaceChildren();
+  if (!state.conversations.length) {
+    const empty = document.createElement("p");
+    empty.className = "loading-copy";
+    empty.textContent = "还没有历史对话。";
+    el["conversation-list"].append(empty);
+  }
+  for (const conversation of state.conversations) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "conversation-item";
+    button.setAttribute("aria-current", String(conversation.conversation_id === state.activeConversationId));
+    const title = document.createElement("strong");
+    title.textContent = conversation.title;
+    const time = document.createElement("span");
+    time.textContent = formatConversationTime(conversation.last_used_at || conversation.created_at);
+    button.append(title, time);
+    button.addEventListener("click", () => activateConversation(conversation.conversation_id));
+    el["conversation-list"].append(button);
+  }
+  const active = state.conversations.find((item) => item.conversation_id === state.activeConversationId);
+  el["active-conversation-title"].textContent = active?.title || "和 AI 讨论这份 PPT";
+  el["active-conversation-time"].textContent = active ? `${formatConversationTime(active.last_used_at)} · 自动保存` : "自动保存";
+}
+
+function renderMessages() {
+  el["message-list"].replaceChildren();
+  state.itemViews.clear();
+  state.userMessageViews.clear();
+  if (!state.messages.length) {
+    const welcome = document.createElement("div");
+    welcome.className = "welcome-message";
+    welcome.innerHTML = "<strong>可以直接告诉 AI 你想做什么</strong><p>你可以讨论或修改大纲，也可以要求为一页、几页或整套 PPT 作图。当前页面会作为参考，但不会限制 AI 只能处理这一页。</p>";
+    el["message-list"].append(welcome);
+    return;
+  }
+  for (const turn of state.messages) {
+    for (const item of turn.items || []) {
+      renderCodexItem(
+        { ...item, __turnId: turn.turn_id, __source: "history" },
+        { scroll: false, authoritative: true },
+      );
+    }
+  }
+  el["message-list"].scrollTop = el["message-list"].scrollHeight;
+}
+
+function appendMessage(role, text, { streaming = false, scroll = true } = {}) {
+  const article = document.createElement("article");
+  article.className = `message ${role}${streaming ? " streaming" : ""}`;
+  const meta = document.createElement("div");
+  meta.className = "message-meta";
+  meta.textContent = role === "user" ? "你" : role === "assistant" ? "AI" : "提示";
+  const body = document.createElement("div");
+  body.className = "message-body";
+  body.textContent = text;
+  article.append(meta, body);
+  el["message-list"].append(article);
+  if (scroll) el["message-list"].scrollTop = el["message-list"].scrollHeight;
+  return { article, body };
+}
+
+function scrollTimeline() {
+  el["message-list"].scrollTop = el["message-list"].scrollHeight;
+}
+
+function statusLabel(status) {
+  return ({
+    inProgress: "进行中",
+    completed: "已完成",
+    failed: "失败",
+    declined: "已拒绝",
+    interrupted: "已停止",
+    pending: "等待中",
+  })[status] || status || "";
+}
+
+function renderPlan(value, { scroll = true } = {}) {
+  const steps = codexPlanSteps(value);
+  if (!steps.length) return null;
+  const itemId = String(value?.itemId || value?.item_id || "active-plan");
+  let view = state.itemViews.get(itemId);
+  if (!view) {
+    const article = document.createElement("article");
+    article.className = "codex-item codex-plan";
+    article.dataset.itemId = itemId;
+    const title = document.createElement("strong");
+    title.textContent = "计划";
+    const list = document.createElement("ol");
+    article.append(title, list);
+    el["message-list"].append(article);
+    view = { article, list, type: "plan" };
+    state.itemViews.set(itemId, view);
+  }
+  view.list.replaceChildren();
+  for (const step of steps) {
+    const row = document.createElement("li");
+    row.textContent = step.text;
+    row.className = step.status === "inProgress" ? "in-progress" : step.status;
+    view.list.append(row);
+  }
+  if (scroll) scrollTimeline();
+  return view;
+}
+
+function renderCodexItem(item, { scroll = true, authoritative = false, streaming = false } = {}) {
+  if (!item || typeof item !== "object") return null;
+  const itemId = String(item.id || item.itemId || item.item_id || "");
+  if (!itemId) return null;
+  if (item.type === "plan") return renderPlan({ ...item, itemId }, { scroll });
+  let view = state.itemViews.get(itemId);
+  if (view) {
+    if (view.type === "agentMessage") {
+      const commentary = item.phase === "commentary";
+      view.article.classList.toggle("commentary", commentary);
+      view.article.classList.toggle("final-answer", !commentary);
+      view.meta.textContent = commentary ? "Codex · 进展" : "Codex";
+      if (authoritative) view.body.textContent = codexItemText(item);
+    }
+    if (view.type === "step") {
+      const presentation = codexItemPresentation(item);
+      view.title.textContent = presentation.title;
+      view.status.textContent = statusLabel(presentation.status);
+      if (presentation.detail) view.detail.textContent = presentation.detail;
+    }
+    view.article.classList.toggle("streaming", streaming && !authoritative);
+    if (authoritative) view.article.classList.remove("streaming");
+    if (scroll) scrollTimeline();
+    return view;
+  }
+
+  if (item.type === "userMessage") {
+    const text = codexItemText(item);
+    const semanticKey = item.__turnId && text ? `${item.__turnId}\u0000${text}` : "";
+    const prior = semanticKey
+      ? (state.userMessageViews.get(semanticKey) || []).find((entry) => (
+          entry.source && item.__source && entry.source !== item.__source
+        ))
+      : null;
+    if (prior) {
+      state.itemViews.set(itemId, prior.view);
+      return prior.view;
+    }
+    const message = appendMessage("user", text, { scroll: false });
+    message.article.dataset.itemId = itemId;
+    view = { ...message, type: "userMessage" };
+    if (semanticKey) {
+      const entries = state.userMessageViews.get(semanticKey) || [];
+      entries.push({ source: item.__source || "", view });
+      state.userMessageViews.set(semanticKey, entries);
+    }
+  } else if (item.type === "agentMessage") {
+    const article = document.createElement("article");
+    const phase = item.phase === "commentary" ? "commentary" : "final-answer";
+    article.className = `codex-item agent-message ${phase}${streaming ? " streaming" : ""}`;
+    article.dataset.itemId = itemId;
+    const meta = document.createElement("div");
+    meta.className = "message-meta";
+    meta.textContent = item.phase === "commentary" ? "Codex · 进展" : "Codex";
+    const body = document.createElement("div");
+    body.className = "message-body";
+    body.textContent = codexItemText(item);
+    article.append(meta, body);
+    el["message-list"].append(article);
+    view = { article, meta, body, type: "agentMessage" };
+  } else {
+    const presentation = codexItemPresentation(item);
+    const article = document.createElement("article");
+    article.className = "codex-item";
+    article.dataset.itemId = itemId;
+    const details = document.createElement("details");
+    details.className = "codex-step";
+    const summary = document.createElement("summary");
+    const title = document.createElement("span");
+    title.className = "codex-step-title";
+    title.textContent = presentation.title;
+    const status = document.createElement("span");
+    status.className = "codex-step-status";
+    status.textContent = statusLabel(presentation.status);
+    summary.append(title, status);
+    const detail = document.createElement("pre");
+    detail.className = "codex-step-detail";
+    detail.textContent = presentation.detail || "暂无更多细节";
+    details.append(summary, detail);
+    article.append(details);
+    el["message-list"].append(article);
+    view = { article, details, title, status, detail, type: "step" };
+  }
+  state.itemViews.set(itemId, view);
+  if (scroll) scrollTimeline();
+  return view;
+}
+
+async function loadConversations() {
+  const deck = currentDeck();
+  if (!deck) return;
+  try {
+    let directory = normalizeConversations(await api.getConversations(deck.deck_id));
+    state.conversations = directory.conversations;
+    state.activeConversationId = directory.active_conversation_id || state.conversations[0]?.conversation_id || "";
+    if (!state.activeConversationId) {
+      await createConversation({ silent: true });
+      return;
+    }
+    renderConversationList();
+    await loadConversationHistory(state.activeConversationId);
+  } catch (error) {
+    state.conversations = [];
+    state.activeConversationId = "";
+    state.messages = [];
+    renderConversationList();
+    renderMessages();
+    if (error.status !== 404) toast("历史对话暂时无法读取，你仍可以查看大纲和选稿。");
+  }
+  updateSendState();
+}
+
+async function createConversation({ silent = false } = {}) {
+  if (state.creatingConversation) return;
+  const deck = currentDeck();
+  if (!deck) return;
+  state.creatingConversation = true;
+  el["drawer-new-conversation"].disabled = true;
+  try {
+    const payload = await api.createConversation(deck.deck_id);
+    const created = payload?.conversation || payload;
+    if (!created?.conversation_id) throw new Error("没有创建成功");
+    const directory = normalizeConversations(await api.getConversations(deck.deck_id));
+    state.conversations = directory.conversations;
+    state.activeConversationId = created.conversation_id;
+    state.messages = [];
+    stopEventStream();
+    setActiveTurn(null);
+    renderConversationList();
+    renderMessages();
+    closeConversationDrawerIfOpen();
+    if (!silent) toast("已新建对话，原来的对话仍保留在历史对话中");
+  } catch (error) {
+    if (!silent) toast(`无法新建对话：${error.message}`);
+  } finally {
+    state.creatingConversation = false;
+    el["drawer-new-conversation"].disabled = false;
+    updateSendState();
+  }
+}
+
+function closeConversationDrawerIfOpen() {
+  if (!el["conversation-drawer"].hidden) closeConversationDrawer();
+}
+
+async function activateConversation(conversationId) {
+  if (!conversationId || conversationId === state.activeConversationId) return;
+  const deck = currentDeck();
+  if (!deck) return;
+  try {
+    stopEventStream();
+    setActiveTurn(null);
+    await api.activateConversation(deck.deck_id, conversationId);
+    state.activeConversationId = conversationId;
+    renderConversationList();
+    await loadConversationHistory(conversationId);
+    closeConversationDrawerIfOpen();
+  } catch (error) {
+    toast(`无法打开这个对话：${error.message}`);
+  }
+}
+
+async function loadConversationHistory(conversationId) {
+  const deck = currentDeck();
+  if (!deck || !conversationId) return;
+  try {
+    const payload = await api.getConversationHistory(deck.deck_id, conversationId);
+    const turns = codexHistoryTurns(payload);
+    const activeTurnId = String(payload?.active_turn?.turn_id || "");
+    state.activeHistoryFallback = activeTurnId
+      ? turns.find((turn) => turn.turn_id === activeTurnId) || null
+      : null;
+    // An active turn has two representations: thread/read history and the
+    // relay replay. Render only the relay while it is available, otherwise the
+    // same user/commentary items appear twice with different App Server IDs.
+    state.messages = activeTurnId
+      ? turns.filter((turn) => turn.turn_id !== activeTurnId)
+      : turns;
+    setActiveTurn(payload?.active_turn || null);
+    renderMessages();
+    if (state.activeTurnId) attachToActiveTurn();
+  } catch (error) {
+    state.messages = [];
+    setActiveTurn(null);
+    renderMessages();
+    toast(`对话内容暂时无法读取：${error.message}`);
+  }
+}
+
+function setActiveTurn(active) {
+  const turnId = String(active?.turn_id || active?.id || "");
+  const status = String(active?.status || "");
+  state.activeTurnId = turnId;
+  state.activeTurnStatus = turnId ? status || "inProgress" : "";
+  if (!turnId) state.activeHistoryFallback = null;
+  el["turn-status"].hidden = !turnId;
+  el["turn-status-copy"].textContent = state.interrupting ? "正在停止…" : "Codex 正在处理";
+  el["stop-button"].hidden = !turnId;
+  el["stop-button"].disabled = !turnId || state.interrupting;
+  updateSendState();
+}
+
+function stopEventStream() {
+  state.eventController?.abort();
+  state.eventController = null;
+  state.eventSequence = 0;
+}
+
+function attachToActiveTurn() {
+  if (!state.activeTurnId || !state.activeConversationId || state.eventController) return;
+  const deckId = state.deckId;
+  const conversationId = state.activeConversationId;
+  const turnId = state.activeTurnId;
+  const controller = new AbortController();
+  state.eventController = controller;
+  void api.streamConversationEvents(deckId, conversationId, turnId, state.eventSequence, onConversationEvent, controller.signal)
+    .catch((error) => {
+      if (error.name === "AbortError" || state.activeTurnId !== turnId) return;
+      if (error.status === 404 && state.activeHistoryFallback?.turn_id === turnId) {
+        for (const item of state.activeHistoryFallback.items || []) {
+          renderCodexItem(item, { authoritative: true });
+        }
+        state.activeHistoryFallback = null;
+        return;
+      }
+      toast(`无法继续显示 AI 进度：${error.message}`);
+    })
+    .finally(() => {
+      if (state.eventController === controller) state.eventController = null;
+    });
+}
+
+function renderAttachments() {
+  el["attachment-list"].replaceChildren();
+  el["attachment-list"].hidden = !state.attachments.length;
+  for (const [index, attachment] of state.attachments.entries()) {
+    const chip = document.createElement("div");
+    chip.className = "attachment-chip";
+    const name = document.createElement("span");
+    name.textContent = attachment.name;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "text-button";
+    remove.textContent = "移除";
+    remove.addEventListener("click", () => {
+      state.attachments.splice(index, 1);
+      renderAttachments();
+    });
+    chip.append(name, remove);
+    el["attachment-list"].append(chip);
+  }
+}
+
+async function uploadReferenceFiles(files) {
+  const allowed = new Set(["image/png", "image/jpeg", "image/webp"]);
+  const usable = [...files].filter((file) => allowed.has(file.type));
+  if (!usable.length) {
+    toast("请添加 PNG、JPEG 或 WebP 图片；本地路径也可以直接写进对话。 ");
+    return;
+  }
+  el["attach-button"].disabled = true;
+  const attachments = await Promise.all(usable.map(async (file) => {
+    try {
+      const payload = await api.uploadAttachment(file);
+      if (payload?.attachment?.path) return { name: file.name || "粘贴的截图", path: payload.attachment.path };
+      throw new Error("服务没有返回附件");
+    } catch (error) {
+      toast(`无法添加 ${file.name || "截图"}：${error.message}`);
+      return null;
+    }
+  }));
+  state.attachments.push(...attachments.filter(Boolean));
+  renderAttachments();
+  el["attach-button"].disabled = false;
+}
+
+function updateSendState() {
+  el["send-button"].disabled = state.submitting || !state.activeConversationId || !state.scope || !el["message-input"].value.trim();
+  el["send-button"].textContent = "发送";
+}
+
+function appendPermissionRequest(request) {
+  if (!request?.request_id || el["message-list"].querySelector(`[data-request-id="${CSS.escape(request.request_id)}"]`)) return null;
+  const params = request.params || request;
+  const card = document.createElement("article");
+  card.className = "action-confirmation";
+  card.dataset.testid = "codex-permission-request";
+  card.dataset.requestId = request.request_id;
+  const header = document.createElement("div");
+  header.className = "action-confirmation-header";
+  const copy = document.createElement("div");
+  copy.className = "action-confirmation-copy";
+  const strong = document.createElement("strong");
+  strong.textContent = "Codex 需要你的允许";
+  const summaryText = document.createElement("span");
+  summaryText.textContent = params.reason || "Codex 正在请求额外权限。";
+  copy.append(strong, summaryText);
+  header.append(copy);
+  const detail = document.createElement("details");
+  const detailSummary = document.createElement("summary");
+  detailSummary.textContent = "查看访问范围";
+  const list = document.createElement("ul");
+  list.className = "action-details";
+  const details = [
+    params.command ? `命令：${params.command}` : null,
+    params.grantRoot ? `位置：${params.grantRoot}` : params.grant_root ? `位置：${params.grant_root}` : params.cwd ? `位置：${params.cwd}` : null,
+  ].filter(Boolean);
+  for (const item of details) {
+    const row = document.createElement("li");
+    row.textContent = item;
+    list.append(row);
+  }
+  detail.append(detailSummary, list);
+  const status = document.createElement("p");
+  status.className = "action-status";
+  status.textContent = "请选择 Codex 提供的一个选项。";
+  const actions = document.createElement("div");
+  actions.className = "permission-actions";
+  const resolve = async (decision) => {
+    for (const button of actions.querySelectorAll("button")) button.disabled = true;
+    try {
+      await api.resolveCodexApproval(request.request_id, decision);
+      const selected = (request.choices || []).find((choice) => JSON.stringify(choice.decision) === JSON.stringify(decision));
+      summaryText.textContent = `已选择：${selected?.label || "已回复"}`;
+      actions.hidden = true;
+      detail.open = false;
+      detail.hidden = true;
+      status.hidden = true;
+      card.classList.add("completed");
+    } catch (error) {
+      status.textContent = `没有提交成功：${error.message}`;
+      for (const button of actions.querySelectorAll("button")) button.disabled = false;
+    }
+  };
+  for (const [index, choice] of (request.choices || []).entries()) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = index === 0 ? "action-confirm-button" : "secondary-button";
+    button.textContent = choice.label;
+    button.addEventListener("click", () => resolve(choice.decision));
+    actions.append(button);
+  }
+  if (!actions.childElementCount) status.textContent = "Codex 没有返回可用的选项。";
+  card.append(header, detail, status, actions);
+  el["message-list"].append(card);
+  el["message-list"].scrollTop = el["message-list"].scrollHeight;
+  return card;
+}
+
+function appendTurnOutcome(status) {
+  if (!status || status === "completed") return;
+  const note = document.createElement("p");
+  note.className = "codex-item codex-context-note";
+  note.textContent = status === "interrupted" ? "已停止" : status === "failed" ? "这轮工作失败" : statusLabel(status);
+  el["message-list"].append(note);
+  scrollTimeline();
+}
+
+function onConversationEvent(event) {
+  const data = event.data;
+  if (event.event === "approval") {
+    appendPermissionRequest(data);
+    return;
+  }
+  if (event.event === "error") {
+    toast(data?.message || "Codex 返回了一个错误");
+    return;
+  }
+  if (event.event !== "codex" || !data?.method) return;
+  if (Number.isFinite(data.sequence)) state.eventSequence = Math.max(state.eventSequence, data.sequence);
+  const params = data.params || {};
+  const method = data.method;
+  const turnId = String(data.turn_id || params.turnId || params.turn?.id || state.activeTurnId || "");
+  if (method === "turn/started") {
+    state.submitting = false;
+    setActiveTurn({ turn_id: turnId, status: params.turn?.status || "inProgress" });
+    return;
+  }
+  if (method === "item/started") {
+    renderCodexItem({
+      ...(params.item || {}),
+      id: params.item?.id || params.itemId,
+      __turnId: turnId,
+      __source: "event",
+    }, { streaming: true });
+    return;
+  }
+  if (method === "item/agentMessage/delta") {
+    const itemId = String(params.itemId || "");
+    if (!itemId || typeof params.delta !== "string") return;
+    const view = renderCodexItem({ id: itemId, type: "agentMessage", phase: params.phase || "commentary" }, { streaming: true });
+    view.body.textContent += params.delta;
+    scrollTimeline();
+    return;
+  }
+  if (method === "item/commandExecution/outputDelta") {
+    const itemId = String(params.itemId || "");
+    if (!itemId || typeof params.delta !== "string") return;
+    const view = renderCodexItem({ id: itemId, type: "commandExecution", status: "inProgress" }, { streaming: true });
+    view.detail.textContent = view.detail.textContent === "暂无更多细节" ? params.delta : view.detail.textContent + params.delta;
+    return;
+  }
+  if (method.includes("reasoning") && method.endsWith("Delta") && typeof params.delta === "string") {
+    const itemId = String(params.itemId || `reasoning-${turnId}`);
+    const view = renderCodexItem({ id: itemId, type: "reasoning", status: "inProgress" }, { streaming: true });
+    view.detail.textContent = view.detail.textContent === "暂无更多细节" ? params.delta : view.detail.textContent + params.delta;
+    return;
+  }
+  if (method === "item/completed") {
+    renderCodexItem({
+      ...(params.item || {}),
+      id: params.item?.id || params.itemId,
+      __turnId: turnId,
+      __source: "event",
+    }, { authoritative: true });
+    return;
+  }
+  if (method === "turn/plan/updated") {
+    renderPlan({ ...params, itemId: `plan-${turnId}` });
+    return;
+  }
+  if (method === "turn/completed") {
+    const status = String(params.turn?.status || params.status || "completed");
+    appendTurnOutcome(status);
+    if (!state.activeTurnId || state.activeTurnId === turnId) {
+      state.interrupting = false;
+      setActiveTurn(null);
+    }
+    for (const view of state.itemViews.values()) view.article?.classList.remove("streaming");
+    void refreshAll();
+  }
+}
+
+async function submitConversation(event) {
+  event.preventDefault();
+  if (state.submitting || !state.activeConversationId || !state.scope) return;
+  const message = el["message-input"].value.trim();
+  if (!message) return;
+  const attachments = safeAttachmentPaths(state.attachments);
+  const retouchContext = state.workspace === "retouch";
+  const expectedTurnId = state.activeTurnId;
+  state.submitting = true;
+  el["message-input"].value = "";
+  state.attachments = [];
+  renderAttachments();
+  updateSendState();
+  const requestBody = {
+    message,
+    current_slide_uid: state.scope.slide_uid,
+    reference_images: attachments.map((item) => ({ path: item.path })),
+  };
+  if (retouchContext) requestBody.retouch_context = true;
+  try {
+    if (expectedTurnId) {
+      try {
+        await api.steerConversationTurn(state.deckId, state.activeConversationId, {
+          message,
+          expected_turn_id: expectedTurnId,
+          reference_images: requestBody.reference_images,
+        });
+      } catch (error) {
+        if (error.status !== 409 || error.code !== "turn_not_active") throw error;
+        setActiveTurn(null);
+        await api.streamConversationTurn(state.deckId, state.activeConversationId, requestBody, onConversationEvent);
+      }
+    } else {
+      try {
+        await api.streamConversationTurn(state.deckId, state.activeConversationId, requestBody, onConversationEvent);
+      } catch (error) {
+        if (error.status !== 409 || error.code !== "turn_already_active") throw error;
+        const current = await api.getConversationHistory(state.deckId, state.activeConversationId);
+        const recoveredTurnId = String(current?.active_turn?.turn_id || "");
+        if (!recoveredTurnId) throw error;
+        setActiveTurn(current.active_turn);
+        attachToActiveTurn();
+        await api.steerConversationTurn(state.deckId, state.activeConversationId, {
+          message,
+          expected_turn_id: recoveredTurnId,
+          reference_images: requestBody.reference_images,
+        });
+      }
+    }
+    const deck = currentDeck();
+    if (deck) {
+      const directory = normalizeConversations(await api.getConversations(deck.deck_id));
+      state.conversations = directory.conversations;
+      renderConversationList();
+    }
+  } catch (error) {
+    toast(`这次没有发送成功：${error.message}`);
+  } finally {
+    state.submitting = false;
+    updateSendState();
+    el["message-input"].focus();
+  }
+}
+
+async function interruptActiveTurn() {
+  if (!state.activeTurnId || state.interrupting) return;
+  state.interrupting = true;
+  setActiveTurn({ turn_id: state.activeTurnId, status: state.activeTurnStatus });
+  try {
+    await api.interruptConversationTurn(state.deckId, state.activeConversationId, state.activeTurnId);
+  } catch (error) {
+    state.interrupting = false;
+    setActiveTurn({ turn_id: state.activeTurnId, status: state.activeTurnStatus });
+    toast(`无法停止：${error.message}`);
+  }
+}
+
+function initializeResizers() {
+  const saved = savedState();
+  if (/^\d+px$/.test(saved.sidebarWidth || "")) document.documentElement.style.setProperty("--sidebar-width", saved.sidebarWidth);
+  if (/^\d+px$/.test(saved.conversationWidth || "")) document.documentElement.style.setProperty("--conversation-width", saved.conversationWidth);
+  if (/^\d+px$/.test(saved.outlineImageHeight || "")) document.documentElement.style.setProperty("--outline-image-height", saved.outlineImageHeight);
+
+  const clampSidebar = (value) => Math.max(150, Math.min(340, value));
+  const conversationMaximum = () => {
+    const workspace = document.querySelector(".workspace:not([hidden]):not(.selector-workspace)");
+    const available = workspace?.getBoundingClientRect().width || window.innerWidth;
+    const sidebar = state.columns.left ? Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width")) || 218 : 58;
+    return Math.max(300, Math.min(620, available - sidebar - 360));
+  };
+  const clampConversation = (value) => Math.max(300, Math.min(conversationMaximum(), value));
+
+  for (const resizer of document.querySelectorAll("[data-column-resizer='left']")) {
+    let startX = 0;
+    let startWidth = 0;
+    const move = (event) => {
+      const next = clampSidebar(startWidth + event.clientX - startX);
+      document.documentElement.style.setProperty("--sidebar-width", `${Math.round(next)}px`);
+    };
+    const stop = () => {
+      resizer.classList.remove("dragging");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      persist();
+    };
+    resizer.addEventListener("pointerdown", (event) => {
+      if (!state.columns.left) return;
+      startX = event.clientX;
+      startWidth = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width")) || 218;
+      resizer.classList.add("dragging");
+      resizer.setPointerCapture?.(event.pointerId);
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", stop, { once: true });
+    });
+    resizer.addEventListener("keydown", (event) => {
+      if (!state.columns.left || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const current = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width")) || 218;
+      const next = event.key === "Home" ? 150 : event.key === "End" ? 340 : clampSidebar(current + (event.key === "ArrowRight" ? 12 : -12));
+      document.documentElement.style.setProperty("--sidebar-width", `${Math.round(next)}px`);
+      persist();
+    });
+  }
+
+  for (const resizer of document.querySelectorAll("[data-column-resizer='conversation']")) {
+    let startX = 0;
+    let startWidth = 0;
+    const move = (event) => {
+      const next = clampConversation(startWidth - (event.clientX - startX));
+      document.documentElement.style.setProperty("--conversation-width", `${Math.round(next)}px`);
+    };
+    const stop = () => {
+      resizer.classList.remove("dragging");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      persist();
+    };
+    resizer.addEventListener("pointerdown", (event) => {
+      if (!state.columns.content || !state.columns.conversation) return;
+      startX = event.clientX;
+      startWidth = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--conversation-width")) || 400;
+      resizer.classList.add("dragging");
+      resizer.setPointerCapture?.(event.pointerId);
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", stop, { once: true });
+    });
+    resizer.addEventListener("keydown", (event) => {
+      if (!state.columns.content || !state.columns.conversation || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const current = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--conversation-width")) || 400;
+      const next = event.key === "Home" ? 300 : event.key === "End" ? conversationMaximum() : clampConversation(current + (event.key === "ArrowLeft" ? 12 : -12));
+      document.documentElement.style.setProperty("--conversation-width", `${Math.round(next)}px`);
+      persist();
+    });
+  }
+
+  const rowResizer = document.querySelector("[data-row-resizer='outline-preview']");
+  const rowBounds = () => {
+    const comparison = el["page-comparison"];
+    const available = comparison?.clientHeight ? comparison.clientHeight - 30 : 0;
+    return { minimum: 140, maximum: Math.max(140, available - 180) };
+  };
+  const setImageHeight = (value) => {
+    const bounds = rowBounds();
+    const next = Math.max(bounds.minimum, Math.min(bounds.maximum, value));
+    document.documentElement.style.setProperty("--outline-image-height", `${Math.round(next)}px`);
+    rowResizer?.setAttribute("aria-valuemax", String(Math.round(bounds.maximum)));
+    rowResizer?.setAttribute("aria-valuenow", String(Math.round(next)));
+    return next;
+  };
+  if (rowResizer) {
+    let startY = 0;
+    let startHeight = 0;
+    const move = (event) => setImageHeight(startHeight + event.clientY - startY);
+    const stop = () => {
+      rowResizer.classList.remove("dragging");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      persist();
+    };
+    rowResizer.addEventListener("pointerdown", (event) => {
+      startY = event.clientY;
+      startHeight = document.querySelector(".preview-card")?.getBoundingClientRect().height || 240;
+      rowResizer.classList.add("dragging");
+      rowResizer.setPointerCapture?.(event.pointerId);
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", stop, { once: true });
+    });
+    rowResizer.addEventListener("keydown", (event) => {
+      if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const bounds = rowBounds();
+      const current = document.querySelector(".preview-card")?.getBoundingClientRect().height || bounds.minimum;
+      const next = event.key === "Home" ? bounds.minimum : event.key === "End" ? bounds.maximum : current + (event.key === "ArrowDown" ? 16 : -16);
+      setImageHeight(next);
+      persist();
+    });
+  }
+
+  const keepWidthsInBounds = () => {
+    const current = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--conversation-width")) || 400;
+    document.documentElement.style.setProperty("--conversation-width", `${Math.round(clampConversation(current))}px`);
+    const imageHeight = document.querySelector(".preview-card")?.getBoundingClientRect().height;
+    if (imageHeight && el["page-comparison"]?.clientHeight) setImageHeight(imageHeight);
+  };
+  window.addEventListener("resize", keepWidthsInBounds);
+  requestAnimationFrame(keepWidthsInBounds);
+}
+
+async function refreshAll() {
+  el["refresh-button"].disabled = true;
+  try {
+    const payload = await api.getProjects();
+    state.defaultDeckId = payload?.default_deck || "";
+    state.decks = normalizeDecks(payload);
+    const chosen = chooseScope(state.decks, { deckId: state.deckId, slideUid: state.slideUid }, state.defaultDeckId);
+    state.deckId = chosen.deckId;
+    state.slideUid = chosen.slideUid;
+    const deck = currentDeck();
+    el["deck-label"].textContent = deck?.label || "没有可用的 PPT";
+    renderDeckSwitcher();
+    renderSlideLists();
+    await loadCurrentPage();
+    if (state.workspace === "selector") await syncSelectorWorkspace();
+  } catch (error) {
+    toast(`无法打开 PPT：${error.message}`);
+  } finally {
+    el["refresh-button"].disabled = false;
+  }
+}
+
+function bindEvents() {
+  for (const button of document.querySelectorAll("[data-workspace]")) button.addEventListener("click", () => setWorkspace(button.dataset.workspace));
+  document.addEventListener("click", (event) => {
+    if (event.target.closest("[data-open-selector]")) setWorkspace("selector");
+  });
+  el["conversation-menu-button"].addEventListener("click", openConversationDrawer);
+  el["new-project-button"].addEventListener("click", openProjectDialog);
+  el["project-dialog-close"].addEventListener("click", closeProjectDialog);
+  el["project-dialog"].addEventListener("click", (event) => { if (event.target === el["project-dialog"]) closeProjectDialog(); });
+  el["blank-project-button"].addEventListener("click", () => startProject("blank"));
+  el["existing-outline-button"].addEventListener("click", () => startProject("existing"));
+  el["close-conversation-drawer"].addEventListener("click", closeConversationDrawer);
+  el["drawer-backdrop"].addEventListener("click", closeConversationDrawer);
+  el["drawer-new-conversation"].addEventListener("click", () => createConversation());
+  for (const button of document.querySelectorAll("[data-column-toggle]")) {
+    button.addEventListener("click", () => toggleColumn(button.dataset.columnToggle));
+  }
+  el["conversation-form"].addEventListener("submit", submitConversation);
+  el["stop-button"].addEventListener("click", interruptActiveTurn);
+  el["message-input"].addEventListener("input", updateSendState);
+  el["message-input"].addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") el["conversation-form"].requestSubmit();
+  });
+  el["message-input"].addEventListener("paste", (event) => {
+    if (event.clipboardData?.getData("text/plain")) return;
+    const images = [...(event.clipboardData?.files || [])].filter((file) => file.type.startsWith("image/"));
+    if (!images.length) return;
+    event.preventDefault();
+    uploadReferenceFiles(images);
+  });
+  el["attach-button"].addEventListener("click", () => el["attachment-input"].click());
+  el["attachment-input"].addEventListener("change", () => {
+    const files = [...el["attachment-input"].files];
+    el["attachment-input"].value = "";
+    if (!files.length) return;
+    uploadReferenceFiles(files);
+  });
+  el["refresh-button"].addEventListener("click", refreshAll);
+  el["image-dialog-close"].addEventListener("click", closeImage);
+  el["image-dialog"].addEventListener("click", (event) => { if (event.target === el["image-dialog"]) closeImage(); });
+  el["image-dialog-toggle"].addEventListener("click", closeImage);
+  el["image-dialog"].addEventListener("close", () => el["image-dialog-content"].removeAttribute("src"));
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !el["conversation-drawer"].hidden) closeConversationDrawer(); });
+}
+
+async function initialize() {
+  const saved = savedState();
+  state.workspace = ["outline", "selector", "retouch"].includes(saved.workspace) ? saved.workspace : "outline";
+  state.deckId = typeof saved.deckId === "string" ? saved.deckId : "";
+  state.slideUid = typeof saved.slideUid === "string" ? saved.slideUid : "";
+  if (saved.columns && typeof saved.columns === "object") {
+    state.columns = {
+      left: saved.columns.left !== false,
+      content: saved.columns.content !== false,
+      conversation: saved.columns.conversation !== false,
+    };
+  }
+  if (!state.columns.content && !state.columns.conversation) state.columns.conversation = true;
+  bindEvents();
+  initializeResizers();
+  applyColumnState({ save: false });
+  setWorkspace(state.workspace);
+  await refreshAll();
+  await loadConversations();
+}
+
+initialize();

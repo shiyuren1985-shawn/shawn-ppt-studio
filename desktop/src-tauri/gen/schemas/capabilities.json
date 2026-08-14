@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"No Tauri IPC is exposed to the loopback web application.","local":false,"windows":["main"],"permissions":[]}}

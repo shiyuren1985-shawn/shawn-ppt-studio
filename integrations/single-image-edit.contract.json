@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.shawn/shawn-ppt-studio/single-image-edit.contract.json",
+  "title": "Shawn PPT canonical single-image edit request",
+  "$defs": {
+    "host_finalize_marker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "status", "state_path"],
+      "properties": {
+        "contract_version": { "const": 1 },
+        "status": { "const": "host_finalize_required" },
+        "state_path": { "type": "string", "minLength": 1 }
+      }
+    },
+    "canonical_command_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "args"],
+      "properties": {
+        "command": { "const": "python3" },
+        "args": { "type": "array", "items": { "type": "string" }, "minItems": 4 }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "deck_uid",
+    "slide_uid",
+    "outline_path",
+    "expected_revision",
+    "user_request"
+  ],
+  "oneOf": [
+    { "required": ["parent"], "not": { "required": ["direct_parent_refs"] } },
+    { "required": ["direct_parent_refs"], "not": { "required": ["parent"] } }
+  ],
+  "properties": {
+    "deck_uid": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "slide_uid": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "outline_path": { "type": "string", "minLength": 1 },
+    "expected_revision": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "user_request": { "type": "string", "minLength": 1, "maxLength": 8000 },
+    "parent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handoff_path", "candidate_id"],
+      "properties": {
+        "handoff_path": { "type": "string", "minLength": 1 },
+        "candidate_id": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "direct_parent_refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deck_uid",
+        "slide_uid",
+        "candidate_id",
+        "path",
+        "sha256",
+        "width",
+        "height",
+        "source_revision_status"
+      ],
+      "properties": {
+        "deck_uid": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "slide_uid": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "candidate_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "width": { "type": "integer", "minimum": 1000 },
+        "height": { "type": "integer", "minimum": 500 },
+        "source_revision_status": { "const": "unrecorded" }
+      }
+    }
+  }
+}

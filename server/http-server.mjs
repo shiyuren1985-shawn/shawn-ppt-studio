@@ -1,0 +1,1318 @@
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
+import http from "node:http";
+import path from "node:path";
+import { URL } from "node:url";
+
+import { HttpError, publicError } from "./errors.mjs";
+import {
+  approvalResult,
+  CodexInteractionRelay,
+} from "./codex-interaction.mjs";
+import { sanitizeForBrowser } from "./path-policy.mjs";
+import { handleSelectorProjectionRequest } from "./selector-http.mjs";
+import { handleSelectorWorkspaceRequest } from "./selector-workspace-http.mjs";
+import {
+  buildTurn,
+  buildWorkspaceTurn,
+  buildWorkspaceSteerInput,
+  extractWorkspaceUserMessage,
+  parseWorkspaceResponse,
+  threadResumeParams,
+  threadStartParams,
+} from "./turns.mjs";
+
+const BODY_LIMIT = 1024 * 1024;
+const ATTACHMENT_LIMIT = 20 * 1024 * 1024;
+const APP_ID = "shawn-ppt-studio";
+const WRITE_HEADER = "x-shawn-ppt-studio";
+
+const CONTENT_TYPES = new Map([
+  [".html", "text/html; charset=utf-8"],
+  [".js", "text/javascript; charset=utf-8"],
+  [".mjs", "text/javascript; charset=utf-8"],
+  [".css", "text/css; charset=utf-8"],
+  [".json", "application/json; charset=utf-8"],
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".webp", "image/webp"],
+  [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  [".pdf", "application/pdf"],
+  [".zip", "application/zip"],
+]);
+
+function json(res, statusCode, value) {
+  const payload = JSON.stringify(sanitizeForBrowser(value));
+  res.writeHead(statusCode, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(payload),
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
+  res.end(payload);
+}
+
+function attachmentName(value) {
+  return `attachment; filename*=UTF-8''${encodeURIComponent(value).replaceAll("'", "%27")}`;
+}
+
+async function serveExportFile(res, resolved) {
+  const info = await stat(resolved.path);
+  res.writeHead(200, {
+    "content-type": CONTENT_TYPES.get(path.extname(resolved.path).toLowerCase()) || "application/octet-stream",
+    "content-length": info.size,
+    "content-disposition": attachmentName(resolved.filename),
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
+  createReadStream(resolved.path).pipe(res);
+}
+
+async function readJson(req) {
+  if (!String(req.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
+    throw new HttpError(415, "content-type must be application/json", "unsupported_media_type");
+  }
+
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of req) {
+    length += chunk.length;
+    if (length > BODY_LIMIT) {
+      throw new HttpError(413, "request body is too large", "body_too_large");
+    }
+    chunks.push(chunk);
+  }
+
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  } catch {
+    throw new HttpError(400, "request body is not valid JSON", "invalid_json");
+  }
+}
+
+async function readBytes(req, limit = ATTACHMENT_LIMIT) {
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of req) {
+    length += chunk.length;
+    if (length > limit) throw new HttpError(413, "attachment is too large", "attachment_too_large");
+    chunks.push(chunk);
+  }
+  if (!length) throw new HttpError(400, "attachment is empty", "empty_attachment");
+  return Buffer.concat(chunks);
+}
+
+function sanitizeAccount(account) {
+  if (!account) return { authenticated: false, type: null, plan_type: null };
+  return {
+    authenticated: true,
+    type: account.type || account.authMode || null,
+    plan_type: account.planType || null,
+  };
+}
+
+function sse(res, event, value) {
+  if (res.destroyed || res.writableEnded) return;
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(sanitizeForBrowser(value))}\n\n`);
+}
+
+function sseRecord(res, record) {
+  if (res.destroyed || res.writableEnded) return;
+  res.write(`id: ${record.sequence}\n`);
+  res.write(`event: ${record.event}\n`);
+  res.write(`data: ${JSON.stringify(sanitizeForBrowser(record))}\n\n`);
+}
+
+function threadIdOf(params) {
+  return params?.threadId || params?.thread?.id || null;
+}
+
+function turnIdOf(params) {
+  return params?.turnId || params?.turn?.id || null;
+}
+
+function completionPayload(params, fallbackThreadId) {
+  const turn = params?.turn || {};
+  return {
+    thread_id: threadIdOf(params) || fallbackThreadId,
+    turn_id: turn.id || params?.turnId || null,
+    status: turn.status || params?.status || "completed",
+    error: turn.error || params?.error || null,
+  };
+}
+
+function publicItem(item) {
+  if (item?.type !== "imageGeneration") return item;
+  return {
+    id: item.id || null,
+    type: "imageGeneration",
+    status: item.status || null,
+    savedPath: item.savedPath || null,
+    revisedPrompt: item.revisedPrompt || null,
+  };
+}
+
+function historyContent(item) {
+  if (!item || typeof item !== "object") return null;
+  if (item.type === "userMessage") {
+    const content = item.content || [];
+    const text = content
+      .filter((content) => content?.type === "text")
+      .map((content) => content.text || "")
+      .join("\n");
+    const message = extractWorkspaceUserMessage(text) || text;
+    const attachments = content
+      .filter((entry) => entry?.type === "localImage" && typeof entry.path === "string")
+      .map((entry) => ({ type: "local_image", path: entry.path }));
+    return message ? { role: "user", text: message, attachments } : null;
+  }
+  if (item.type === "agentMessage" && typeof item.text === "string") {
+    const structured = parseWorkspaceResponse(item.text);
+    return structured
+      ? { role: "assistant", text: structured.message, response: structured }
+      : { role: "assistant", text: item.text, response: null };
+  }
+  if (item.type === "message" && item.role === "assistant" && Array.isArray(item.content)) {
+    const text = item.content
+      .filter((entry) => entry?.type === "output_text" && typeof entry.text === "string")
+      .map((entry) => entry.text)
+      .join("\n");
+    return text ? { role: "assistant", text, response: null } : null;
+  }
+  return null;
+}
+
+function projectConversationHistory(thread) {
+  return (thread?.turns || []).map((turn) => ({
+    turn_id: turn.id || null,
+    status: turn.status || null,
+    messages: (turn.items || []).map(historyContent).filter(Boolean),
+  }));
+}
+
+function requestOriginAllowed(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    const parsed = new URL(origin);
+    return (
+      parsed.protocol === "http:" &&
+      ["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsed.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function enforceLoopbackRequest(req) {
+  const host = String(req.headers.host || "").split(":")[0].replace(/^\[|\]$/g, "");
+  if (!["127.0.0.1", "localhost", "::1"].includes(host)) {
+    throw new HttpError(403, "request host is not allowed", "invalid_host");
+  }
+  if (!requestOriginAllowed(req)) {
+    throw new HttpError(403, "request origin is not allowed", "invalid_origin");
+  }
+  const fetchSite = String(req.headers["sec-fetch-site"] || "").toLowerCase();
+  if (fetchSite === "cross-site") {
+    throw new HttpError(403, "cross-site requests are not allowed", "cross_site_request");
+  }
+  if (
+    !["GET", "HEAD", "OPTIONS"].includes(req.method || "GET") &&
+    (req.headers.origin || req.headers["sec-fetch-site"]) &&
+    req.headers[WRITE_HEADER] !== "1"
+  ) {
+    throw new HttpError(403, `missing ${WRITE_HEADER} request header`, "missing_write_header");
+  }
+}
+
+async function handleTurn(req, res, context) {
+  const body = await readJson(req);
+  if (!context.client.ready) {
+    throw new HttpError(503, "Codex App Server is not ready", "app_server_unavailable");
+  }
+
+  const { params } = await buildTurn(body, context);
+  const requestedThreadId = params.threadId;
+  let activeTurnId = null;
+  let finished = false;
+
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+    "x-content-type-options": "nosniff",
+  });
+  res.flushHeaders?.();
+
+  async function routeNotification(notification) {
+    const eventParams = notification.params || {};
+    const eventThreadId = threadIdOf(eventParams);
+    if (eventThreadId && eventThreadId !== requestedThreadId) return;
+    const eventTurnId = turnIdOf(eventParams);
+    if (activeTurnId && eventTurnId && eventTurnId !== activeTurnId) return;
+
+    if (notification.method === "turn/started") {
+      activeTurnId = eventTurnId || activeTurnId;
+      sse(res, "turn", {
+        thread_id: requestedThreadId,
+        turn_id: activeTurnId,
+        status: eventParams.turn?.status || "inProgress",
+      });
+      return;
+    }
+
+    if (notification.method === "item/agentMessage/delta") {
+      sse(res, "message_delta", {
+        thread_id: requestedThreadId,
+        turn_id: eventParams.turnId || activeTurnId,
+        item_id: eventParams.itemId || null,
+        delta: eventParams.delta || "",
+      });
+      return;
+    }
+
+    if (notification.method === "item/started" || notification.method === "item/completed") {
+      const phase = notification.method === "item/started" ? "started" : "completed";
+      const item = eventParams.item || {};
+      sse(res, "item", {
+        phase,
+        thread_id: requestedThreadId,
+        turn_id: eventParams.turnId || activeTurnId,
+        item: publicItem(item),
+      });
+
+      if (item.type === "imageGeneration") {
+        let savedPath = null;
+        try {
+          if (item.savedPath) savedPath = await context.pathPolicy.validateGeneratedImage(item.savedPath);
+        } catch (error) {
+          sse(res, "error", { message: error.message, code: error.code || "invalid_image_output" });
+          return;
+        }
+        if (
+          context.ledger &&
+          savedPath &&
+          (phase === "completed" || item.status === "completed")
+        ) {
+          try {
+            await context.ledger.recordImageImport({
+              threadId: requestedThreadId,
+              turnId: eventParams.turnId || activeTurnId,
+              itemId: item.id || null,
+              mode: body.mode,
+              sourcePath: item.savedPath,
+              importedPath: savedPath,
+              inputImagePath: body.mode === "image_edit" ? body.image_path : null,
+              revisedPrompt: item.revisedPrompt || null,
+            });
+          } catch (error) {
+            sse(res, "error", {
+              message: error.message,
+              code: error.code || "image_ledger_failed",
+            });
+          }
+        }
+        sse(res, "image", {
+          path: savedPath,
+          status: item.status || phase,
+          revised_prompt: item.revisedPrompt || null,
+        });
+      }
+      return;
+    }
+
+    if (notification.method === "turn/completed") {
+      finished = true;
+      sse(res, "completed", completionPayload(eventParams, requestedThreadId));
+      unsubscribe();
+      res.end();
+      return;
+    }
+
+    if (notification.method === "error") {
+      sse(res, "error", {
+        message: eventParams.error?.message || eventParams.message || "Codex App Server error",
+        code: eventParams.error?.code || eventParams.code || "codex_error",
+      });
+    }
+  }
+
+  // EventEmitter does not await async listeners. Serialize notifications so a
+  // savedPath validation from item/completed always finishes before the
+  // following turn/completed closes the SSE stream.
+  let notificationQueue = Promise.resolve();
+  const unsubscribe = context.client.subscribe((notification) => {
+    notificationQueue = notificationQueue
+      .then(() => routeNotification(notification))
+      .catch((error) => {
+        sse(res, "error", {
+          message: error.message || "Failed to route Codex notification",
+          code: error.code || "notification_routing_failed",
+        });
+      });
+  });
+
+  res.once("close", () => {
+    if (!finished) unsubscribe();
+  });
+
+  try {
+    const result = await context.client.request("turn/start", params);
+    activeTurnId = result?.turn?.id || activeTurnId;
+    sse(res, "turn", {
+      thread_id: requestedThreadId,
+      turn_id: activeTurnId,
+      status: result?.turn?.status || "inProgress",
+    });
+  } catch (error) {
+    unsubscribe();
+    sse(res, "error", { message: error.message, code: error.code || "turn_start_failed" });
+    res.end();
+  }
+}
+
+async function confirmedSelectionRefs(deck, selectionProjection) {
+  if (!selectionProjection) return [];
+  const refs = [];
+  for (const slide of deck.outline.slides) {
+    const selection = await selectionProjection.get(deck.deck_id, slide.slide_uid);
+    if (selection?.status !== "selected" || selection.confirmed !== true) continue;
+    const candidates = selection.selected_candidates || [];
+    candidates.forEach((candidate, index) => {
+      refs.push({
+        display_label: candidates.length === 1
+          ? slide.page_label
+          : `${slide.page_label}-${String.fromCharCode(65 + index)}`,
+        deck_uid: deck.outline.deck_uid,
+        slide_uid: slide.slide_uid,
+        candidate_id: candidate.candidate_id,
+        path: candidate.path,
+        file_sha256: candidate.file_sha256,
+        width: candidate.width,
+        height: candidate.height,
+      });
+    });
+  }
+  return refs;
+}
+
+async function streamWorkspaceTurn(req, res, context, route) {
+  const body = await readJson(req);
+  if (!context.client.ready) {
+    throw new HttpError(503, "Codex App Server is not ready", "app_server_unavailable");
+  }
+  if (!context.conversations?.ready) {
+    throw new HttpError(503, "conversation history is unavailable", "conversation_index_unavailable");
+  }
+  const deck = await context.discovery.readDeck(route.deckId);
+  const threadId = context.conversations.threadIdFor(
+    deck.outline.deck_uid,
+    route.conversationId,
+  );
+  await context.client.request(
+    "thread/resume",
+    threadResumeParams(context.dataRoot || context.labRoot, threadId),
+  );
+  const relay = context.codexInteraction;
+  if (!relay.markStarting(threadId)) {
+    throw new HttpError(409, "this conversation already has an active turn", "turn_already_active");
+  }
+  let params;
+  let message;
+  try {
+    ({ params, message } = await buildWorkspaceTurn(body, {
+      dataRoot: context.dataRoot || context.labRoot,
+      deck,
+      conversationId: route.conversationId,
+      threadId,
+      pathPolicy: context.pathPolicy,
+      confirmedSelections: await confirmedSelectionRefs(deck, context.selectionProjection),
+      monitoringRoot: context.monitoringRoot,
+    }));
+    context.singleEditTurnFinalizer?.registerStarting?.(threadId, {
+      transport: "studio_app_server_v1",
+      deckUid: deck.outline.deck_uid,
+      candidateRoots: (deck.candidate_roots || []).map((root) => root.path),
+    });
+  } catch (error) {
+    relay.clearStarting(threadId);
+    context.singleEditTurnFinalizer?.clearStarting?.(threadId);
+    throw error;
+  }
+
+  let ended = false;
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+    "x-content-type-options": "nosniff",
+  });
+  res.flushHeaders?.();
+  const unsubscribe = relay.subscribe({
+    threadId,
+    listener(record) {
+      sseRecord(res, record);
+      if (record.method !== "turn/completed") return;
+      ended = true;
+      void context.conversations.touch(deck.outline.deck_uid, route.conversationId, {
+        firstMessage: message,
+      }).catch(() => {});
+      unsubscribe();
+      res.end();
+    },
+  });
+  res.once("close", () => {
+    if (!ended) unsubscribe();
+  });
+
+  try {
+    await context.client.request("turn/start", params);
+  } catch (error) {
+    relay.clearStarting(threadId);
+    context.singleEditTurnFinalizer?.clearStarting?.(threadId);
+    unsubscribe();
+    sse(res, "error", {
+      contract_version: 1,
+      message: error.message,
+      code: error.code || "turn_start_failed",
+    });
+    res.end();
+  }
+}
+
+async function serveRuntimeFile(res, requestUrl, context) {
+  const requested = requestUrl.searchParams.get("path");
+  const filePath = await context.pathPolicy.requireImageFile(requested);
+  const info = await stat(filePath);
+  res.writeHead(200, {
+    "content-type": CONTENT_TYPES.get(path.extname(filePath).toLowerCase()) || "application/octet-stream",
+    "content-length": info.size,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
+  createReadStream(filePath).pipe(res);
+}
+
+async function serveStatic(res, pathname, context) {
+  const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const webRoot = path.join(context.codeRoot || context.labRoot, "web");
+  const candidate = path.resolve(webRoot, relative);
+  const rel = path.relative(webRoot, candidate);
+  if (rel.startsWith(`..${path.sep}`) || rel === "..") return false;
+
+  let rootReal;
+  let fileReal;
+  let info;
+  try {
+    [rootReal, fileReal, info] = await Promise.all([realpath(webRoot), realpath(candidate), stat(candidate)]);
+  } catch {
+    return false;
+  }
+  if (!fileReal.startsWith(`${rootReal}${path.sep}`) || !info.isFile()) return false;
+
+  res.writeHead(200, {
+    "content-type": CONTENT_TYPES.get(path.extname(fileReal).toLowerCase()) || "application/octet-stream",
+    "content-length": info.size,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+  });
+  createReadStream(fileReal).pipe(res);
+  return true;
+}
+
+export function createLabHttpServer(context) {
+  if (context.client) {
+    context.codexInteraction ||= new CodexInteractionRelay({
+      client: context.client,
+      turnObserver: context.singleEditTurnFinalizer || null,
+    });
+  }
+  return http.createServer(async (req, res) => {
+    try {
+      enforceLoopbackRequest(req);
+      const requestUrl = new URL(req.url, "http://127.0.0.1");
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/health") {
+        json(res, 200, {
+          app_id: context.appId || APP_ID,
+          contract_version: 1,
+          ok: context.client.ready,
+          app_server: {
+            ready: context.client.ready,
+            pid: context.client.pid,
+            error: context.client.lastError?.message || null,
+          },
+          account: sanitizeAccount(context.client.account),
+          runtime: {
+            data_root: context.dataRoot || context.labRoot,
+            image_root: context.pathPolicy.imageRoot,
+          },
+          services: {
+            projects: context.projects?.health?.() || {
+              ready: false,
+              project_count: 0,
+              error: "project registry is not configured",
+            },
+            ledger: context.ledger?.health?.() || {
+              ready: false,
+              record_count: 0,
+              error: "ledger adapter is not configured",
+            },
+            conversations: context.conversations?.health?.() || {
+              ready: false,
+              conversation_count: 0,
+              error: "conversation adapter is not configured",
+            },
+            discovery: context.discovery?.health?.() || {
+              ready: false,
+              deck_count: null,
+              error: "discovery adapter is not configured",
+            },
+            production: context.production?.health?.() || {
+              ready: false,
+              intent_count: 0,
+              active_count: 0,
+              error: "production intent service is not configured",
+            },
+            candidate_edits: context.candidateEdits?.health?.() || {
+              ready: false,
+              edit_count: 0,
+              active_count: 0,
+              error: "candidate edit service is not configured",
+            },
+            selector_workspace: context.selectorWorkspace?.health?.() || {
+              ready: false,
+              refreshed_deck_count: 0,
+            },
+            exports: context.exports?.health?.() || {
+              ready: false,
+              missing: [],
+              message: "export service is not configured",
+            },
+          },
+        });
+        return;
+      }
+
+      const approvalMatch = requestUrl.pathname.match(/^\/api\/codex\/approvals\/([^/]+)$/);
+      if (req.method === "POST" && approvalMatch) {
+        const requestId = decodeURIComponent(approvalMatch[1]);
+        const request = context.client.serverRequest(requestId);
+        if (!request) {
+          throw new HttpError(404, "permission request is no longer active", "approval_request_not_found");
+        }
+        const body = await readJson(req);
+        if (!body || !Object.hasOwn(body, "decision")) {
+          throw new HttpError(400, "decision is required", "invalid_approval_decision");
+        }
+        let result;
+        try {
+          result = approvalResult(request, body.decision);
+        } catch (error) {
+          throw new HttpError(400, error.message, error.code || "invalid_approval_decision");
+        }
+        context.client.respondToServerRequest(requestId, result);
+        json(res, 200, { resolved: true, decision: body.decision });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/threads") {
+        if (!context.client.ready) {
+          throw new HttpError(503, "Codex App Server is not ready", "app_server_unavailable");
+        }
+        const body = await readJson(req);
+        const existing = typeof body.thread_id === "string" && body.thread_id.trim() !== "";
+        const result = existing
+          ? await context.client.request("thread/resume", threadResumeParams(context.labRoot, body.thread_id))
+          : await context.client.request("thread/start", threadStartParams(context.labRoot));
+        const thread = result?.thread;
+        if (!thread?.id) throw new Error("Codex App Server did not return a thread id");
+        await context.ledger?.recordThread?.({
+          threadId: thread.id,
+          action: existing ? "resumed" : "started",
+        });
+        json(res, 200, {
+          thread_id: thread.id,
+          resumed: existing,
+          thread,
+          imported_images: context.ledger?.importedImages?.(thread.id) || [],
+        });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/projects") {
+        json(res, 200, await context.discovery.listDecks());
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/projects/pick-folder") {
+        await readJson(req);
+        if (!context.projectPicker) throw new HttpError(503, "project picker is unavailable", "picker_unavailable");
+        json(res, 200, await context.projectPicker.pickFolder());
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/projects/pick-outline") {
+        await readJson(req);
+        if (!context.projectPicker) throw new HttpError(503, "project picker is unavailable", "picker_unavailable");
+        json(res, 200, await context.projectPicker.pickOutline());
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/projects") {
+        if (!context.projects?.ready) {
+          throw new HttpError(503, "project registry is unavailable", "project_registry_unavailable");
+        }
+        const body = await readJson(req);
+        let record;
+        if (body.mode === "blank") {
+          record = await context.projects.createBlank({
+            folderPath: body.folder_path,
+            label: body.label,
+          });
+        } else if (body.mode === "existing") {
+          let requestedOutline = null;
+          try {
+            requestedOutline = await realpath(body.outline_path);
+          } catch {
+            // The registry provides the user-facing not-found error below.
+          }
+          const existing = requestedOutline
+            ? (await context.discovery.listDecks()).decks.find(
+                (project) => project.outline_path === requestedOutline,
+              )
+            : null;
+          if (existing) {
+            json(res, 200, { contract_version: 1, project: existing, reused: true });
+            return;
+          }
+          record = await context.projects.openExisting({
+            outlinePath: body.outline_path,
+            label: body.label,
+          });
+        } else {
+          throw new HttpError(400, "mode must be blank or existing", "invalid_project_mode");
+        }
+        const reused = record.already_registered === true;
+        json(res, reused ? 200 : 201, {
+          contract_version: 1,
+          project: await context.discovery.getOutline(record.deck_id),
+          reused,
+        });
+        return;
+      }
+
+      const conversationCollectionMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/conversations$/,
+      );
+      if (req.method === "GET" && conversationCollectionMatch) {
+        if (!context.conversations?.ready) {
+          throw new HttpError(503, "conversation history is unavailable", "conversation_index_unavailable");
+        }
+        const deck = await context.discovery.readDeck(
+          decodeURIComponent(conversationCollectionMatch[1]),
+        );
+        const listing = context.conversations.list(deck.outline.deck_uid);
+        const records = context.conversations.records(deck.outline.deck_uid);
+        const summaries = await Promise.all(
+          records.map(async (record) => {
+            try {
+              const result = await context.client.request("thread/read", {
+                threadId: record.thread_id,
+                includeTurns: false,
+              });
+              return [record.conversation_id, result?.thread?.preview || null];
+            } catch {
+              return [record.conversation_id, null];
+            }
+          }),
+        );
+        const summaryById = new Map(summaries);
+        json(res, 200, {
+          ...listing,
+          conversations: listing.conversations.map((conversation) => ({
+            ...conversation,
+            summary: summaryById.get(conversation.conversation_id) || null,
+          })),
+        });
+        return;
+      }
+
+      if (req.method === "POST" && conversationCollectionMatch) {
+        if (!context.client.ready || !context.conversations?.ready) {
+          throw new HttpError(503, "conversation service is unavailable", "conversation_unavailable");
+        }
+        const body = await readJson(req);
+        const deck = await context.discovery.readDeck(
+          decodeURIComponent(conversationCollectionMatch[1]),
+        );
+        const result = await context.client.request(
+          "thread/start",
+          threadStartParams(context.dataRoot || context.labRoot),
+        );
+        if (!result?.thread?.id) throw new Error("Codex App Server did not return a thread id");
+        const conversation = await context.conversations.create({
+          deckId: deck.deck_id,
+          deckUid: deck.outline.deck_uid,
+          threadId: result.thread.id,
+          title: body.title,
+        });
+        await context.client.request("thread/name/set", {
+          threadId: result.thread.id,
+          name: `${deck.label} · ${conversation.title}`,
+        }).catch(() => {});
+        json(res, 201, { contract_version: 1, deck_uid: deck.outline.deck_uid, conversation });
+        return;
+      }
+
+      const conversationMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/conversations\/([^/]+)$/,
+      );
+      if (req.method === "GET" && conversationMatch) {
+        if (!context.client.ready || !context.conversations?.ready) {
+          throw new HttpError(503, "conversation service is unavailable", "conversation_unavailable");
+        }
+        const deck = await context.discovery.readDeck(decodeURIComponent(conversationMatch[1]));
+        const conversationId = decodeURIComponent(conversationMatch[2]);
+        const conversation = context.conversations.get(deck.outline.deck_uid, conversationId);
+        const threadId = context.conversations.threadIdFor(deck.outline.deck_uid, conversationId);
+        const result = await context.client.request("thread/read", {
+          threadId,
+          includeTurns: true,
+        });
+        const storedActiveTurn = [...(result?.thread?.turns || [])]
+          .reverse()
+          .find((turn) => turn?.status === "inProgress")?.id || null;
+        const activeTurnId = context.codexInteraction.activeTurn(threadId) || storedActiveTurn;
+        json(res, 200, {
+          contract_version: 1,
+          deck_uid: deck.outline.deck_uid,
+          conversation,
+          thread: result?.thread || null,
+          active_turn: activeTurnId
+            ? { turn_id: activeTurnId, status: "inProgress" }
+            : null,
+          turns: result?.thread?.turns || [],
+        });
+        return;
+      }
+
+      const conversationOpenMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/conversations\/([^/]+)\/open$/,
+      );
+      if (req.method === "POST" && conversationOpenMatch) {
+        if (!context.client.ready || !context.conversations?.ready) {
+          throw new HttpError(503, "conversation service is unavailable", "conversation_unavailable");
+        }
+        const deck = await context.discovery.readDeck(decodeURIComponent(conversationOpenMatch[1]));
+        const conversationId = decodeURIComponent(conversationOpenMatch[2]);
+        const threadId = context.conversations.threadIdFor(deck.outline.deck_uid, conversationId);
+        await context.client.request(
+          "thread/resume",
+          threadResumeParams(context.dataRoot || context.labRoot, threadId),
+        );
+        const conversation = await context.conversations.activate(
+          deck.outline.deck_uid,
+          conversationId,
+        );
+        json(res, 200, { contract_version: 1, deck_uid: deck.outline.deck_uid, conversation });
+        return;
+      }
+
+      const conversationMessageMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/conversations\/([^/]+)\/messages$/,
+      );
+      if (req.method === "POST" && conversationMessageMatch) {
+        await streamWorkspaceTurn(req, res, context, {
+          deckId: decodeURIComponent(conversationMessageMatch[1]),
+          conversationId: decodeURIComponent(conversationMessageMatch[2]),
+        });
+        return;
+      }
+
+      const conversationSteerMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/conversations\/([^/]+)\/steer$/,
+      );
+      if (req.method === "POST" && conversationSteerMatch) {
+        const body = await readJson(req);
+        const deck = await context.discovery.readDeck(decodeURIComponent(conversationSteerMatch[1]));
+        const conversationId = decodeURIComponent(conversationSteerMatch[2]);
+        const threadId = context.conversations.threadIdFor(deck.outline.deck_uid, conversationId);
+        const expectedTurnId = typeof body.expected_turn_id === "string" ? body.expected_turn_id : "";
+        if (!expectedTurnId || context.codexInteraction.activeTurn(threadId) !== expectedTurnId) {
+          throw new HttpError(409, "the expected turn is no longer active", "turn_not_active");
+        }
+        const { input } = await buildWorkspaceSteerInput(body, { pathPolicy: context.pathPolicy });
+        let result;
+        try {
+          result = await context.client.request("turn/steer", {
+            threadId,
+            input,
+            expectedTurnId,
+          });
+        } catch (error) {
+          throw new HttpError(409, error.message, "turn_not_active");
+        }
+        json(res, 202, {
+          contract_version: 1,
+          thread_id: threadId,
+          turn_id: result?.turnId || expectedTurnId,
+          accepted: true,
+        });
+        return;
+      }
+
+      const conversationInterruptMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/conversations\/([^/]+)\/interrupt$/,
+      );
+      if (req.method === "POST" && conversationInterruptMatch) {
+        const body = await readJson(req);
+        const deck = await context.discovery.readDeck(decodeURIComponent(conversationInterruptMatch[1]));
+        const conversationId = decodeURIComponent(conversationInterruptMatch[2]);
+        const threadId = context.conversations.threadIdFor(deck.outline.deck_uid, conversationId);
+        const turnId = typeof body.turn_id === "string" ? body.turn_id : "";
+        if (!turnId || context.codexInteraction.activeTurn(threadId) !== turnId) {
+          throw new HttpError(409, "the requested turn is no longer active", "turn_not_active");
+        }
+        await context.client.request("turn/interrupt", { threadId, turnId });
+        json(res, 202, {
+          contract_version: 1,
+          thread_id: threadId,
+          turn_id: turnId,
+          interrupt_requested: true,
+        });
+        return;
+      }
+
+      const conversationEventsMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/conversations\/([^/]+)\/events$/,
+      );
+      if (req.method === "GET" && conversationEventsMatch) {
+        const deck = await context.discovery.readDeck(decodeURIComponent(conversationEventsMatch[1]));
+        const conversationId = decodeURIComponent(conversationEventsMatch[2]);
+        const threadId = context.conversations.threadIdFor(deck.outline.deck_uid, conversationId);
+        const turnId = requestUrl.searchParams.get("turn_id");
+        const after = Number(requestUrl.searchParams.get("after") || 0);
+        if (!turnId || !Number.isSafeInteger(after) || after < 0) {
+          throw new HttpError(400, "turn_id and a valid after cursor are required", "invalid_event_cursor");
+        }
+        const records = context.codexInteraction.records(threadId, turnId, after);
+        if (records === null) {
+          throw new HttpError(404, "turn event stream is unknown", "turn_events_not_found");
+        }
+        res.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-store",
+          connection: "keep-alive",
+          "x-accel-buffering": "no",
+        });
+        res.flushHeaders?.();
+        records.forEach((record) => sseRecord(res, record));
+        if (records.some((record) => record.method === "turn/completed")) {
+          res.end();
+          return;
+        }
+        const unsubscribe = context.codexInteraction.subscribe({
+          threadId,
+          turnId,
+          listener(record) {
+            sseRecord(res, record);
+            if (record.method === "turn/completed") {
+              unsubscribe();
+              res.end();
+            }
+          },
+        });
+        res.once("close", unsubscribe);
+        return;
+      }
+
+      const threadMatch = requestUrl.pathname.match(/^\/api\/threads\/([^/]+)$/);
+      if (req.method === "GET" && threadMatch) {
+        if (!context.client.ready) {
+          throw new HttpError(503, "Codex App Server is not ready", "app_server_unavailable");
+        }
+        const threadId = decodeURIComponent(threadMatch[1]);
+        const result = await context.client.request("thread/read", { threadId, includeTurns: true });
+        json(res, 200, {
+          ...result,
+          imported_images: context.ledger?.importedImages?.(threadId) || [],
+        });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/decks") {
+        if (!context.discovery) {
+          throw new HttpError(503, "deck discovery is unavailable", "deck_discovery_unavailable");
+        }
+        json(res, 200, await context.discovery.listDecks());
+        return;
+      }
+
+      const exportReadinessMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/export-readiness$/,
+      );
+      if (req.method === "GET" && exportReadinessMatch) {
+        if (!context.exports) {
+          throw new HttpError(503, "导出服务暂时不可用。", "export_unavailable");
+        }
+        const { publicReadiness } = await import("./export-service.mjs");
+        json(
+          res,
+          200,
+          publicReadiness(await context.exports.readiness(decodeURIComponent(exportReadinessMatch[1]))),
+        );
+        return;
+      }
+
+      const exportCollectionMatch = requestUrl.pathname.match(/^\/api\/decks\/([^/]+)\/exports$/);
+      if (req.method === "POST" && exportCollectionMatch) {
+        if (!context.exports) {
+          throw new HttpError(503, "导出服务暂时不可用。", "export_unavailable");
+        }
+        const result = await context.exports.create(
+          decodeURIComponent(exportCollectionMatch[1]),
+          await readJson(req),
+        );
+        json(res, 201, result);
+        return;
+      }
+
+      const exportFileMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/exports\/([^/]+)\/files\/(pptx|pdf|images_zip|manifest|qa)$/,
+      );
+      if (req.method === "GET" && exportFileMatch) {
+        if (!context.exports) {
+          throw new HttpError(503, "导出服务暂时不可用。", "export_unavailable");
+        }
+        await serveExportFile(
+          res,
+          await context.exports.resolveFile(
+            decodeURIComponent(exportFileMatch[1]),
+            decodeURIComponent(exportFileMatch[2]),
+            exportFileMatch[3],
+          ),
+        );
+        return;
+      }
+
+      const exportOpenMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/exports\/([^/]+)\/open-folder$/,
+      );
+      if (req.method === "POST" && exportOpenMatch) {
+        if (!context.exports) {
+          throw new HttpError(503, "导出服务暂时不可用。", "export_unavailable");
+        }
+        await readJson(req);
+        json(
+          res,
+          200,
+          await context.exports.showInFinder(
+            decodeURIComponent(exportOpenMatch[1]),
+            decodeURIComponent(exportOpenMatch[2]),
+          ),
+        );
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/selector") {
+        if (!context.discovery) {
+          throw new HttpError(503, "deck discovery is unavailable", "deck_discovery_unavailable");
+        }
+        const deckId = requestUrl.searchParams.get("deck");
+        json(res, 200, await context.discovery.getSelectorMetadata(deckId));
+        return;
+      }
+
+      const outlineMatch = requestUrl.pathname.match(/^\/api\/decks\/([^/]+)\/outline$/);
+      if (req.method === "GET" && outlineMatch) {
+        if (!context.discovery) {
+          throw new HttpError(503, "deck discovery is unavailable", "deck_discovery_unavailable");
+        }
+        json(res, 200, await context.discovery.getOutline(decodeURIComponent(outlineMatch[1])));
+        return;
+      }
+
+      if (req.method === "PATCH" && outlineMatch) {
+        if (!context.outlineStore) {
+          throw new HttpError(503, "outline store is unavailable", "outline_store_unavailable");
+        }
+        const body = await readJson(req);
+        const deckId = decodeURIComponent(outlineMatch[1]);
+        if (body.deck_id !== undefined && body.deck_id !== deckId) {
+          throw new HttpError(400, "deck_id does not match route", "outline_scope_mismatch");
+        }
+        json(res, 200, await context.outlineStore.applyRows({ ...body, deck_id: deckId }));
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/attachments") {
+        const mediaType = String(req.headers["content-type"] || "").split(";", 1)[0].toLowerCase();
+        const extension = new Map([
+          ["image/png", ".png"],
+          ["image/jpeg", ".jpg"],
+          ["image/webp", ".webp"],
+        ]).get(mediaType);
+        if (!extension) {
+          throw new HttpError(415, "attachment must be PNG, JPEG, or WebP", "unsupported_attachment");
+        }
+        const bytes = await readBytes(req);
+        const root = path.join(context.dataRoot || context.labRoot, "runtime", "attachments");
+        await mkdir(root, { recursive: true });
+        const attachmentPath = path.join(root, `${randomUUID()}${extension}`);
+        await writeFile(attachmentPath, bytes, { flag: "wx", mode: 0o600 });
+        json(res, 201, {
+          contract_version: 1,
+          attachment: {
+            path: attachmentPath,
+            media_type: mediaType,
+            size: bytes.length,
+            sha256: createHash("sha256").update(bytes).digest("hex"),
+            created_at: new Date().toISOString(),
+          },
+        });
+        return;
+      }
+
+      const slideMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/slides\/([^/]+)$/,
+      );
+      if (req.method === "GET" && slideMatch) {
+        if (!context.discovery) {
+          throw new HttpError(503, "deck discovery is unavailable", "deck_discovery_unavailable");
+        }
+        json(
+          res,
+          200,
+          await context.discovery.getSlide(
+            decodeURIComponent(slideMatch[1]),
+            decodeURIComponent(slideMatch[2]),
+          ),
+        );
+        return;
+      }
+
+      const slideOutlineMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/slides\/([^/]+)\/outline$/,
+      );
+      if (req.method === "PATCH" && slideOutlineMatch) {
+        if (!context.outlineStore) {
+          throw new HttpError(503, "outline store is unavailable", "outline_store_unavailable");
+        }
+        const body = await readJson(req);
+        const deckId = decodeURIComponent(slideOutlineMatch[1]);
+        const slideUid = decodeURIComponent(slideOutlineMatch[2]);
+        if (body.deck_id !== undefined && body.deck_id !== deckId) {
+          throw new HttpError(400, "deck_id does not match route", "outline_scope_mismatch");
+        }
+        if (body.slide_uid !== slideUid) {
+          throw new HttpError(400, "slide_uid does not match route", "outline_scope_mismatch");
+        }
+        json(res, 200, await context.outlineStore.applyRow({ ...body, deck_id: deckId }));
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/outlines/apply") {
+        if (!context.outlineStore) {
+          throw new HttpError(503, "outline store is unavailable", "outline_store_unavailable");
+        }
+        json(res, 200, await context.outlineStore.applyRow(await readJson(req)));
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/production/intents") {
+        if (!context.production) {
+          throw new HttpError(503, "production intent service is unavailable", "production_unavailable");
+        }
+        json(res, 201, await context.production.create(await readJson(req)));
+        return;
+      }
+
+      const productionIntentMatch = requestUrl.pathname.match(
+        /^\/api\/production\/intents\/([^/]+)$/,
+      );
+      if (req.method === "GET" && productionIntentMatch) {
+        if (!context.production) {
+          throw new HttpError(503, "production intent service is unavailable", "production_unavailable");
+        }
+        json(
+          res,
+          200,
+          await context.production.get(decodeURIComponent(productionIntentMatch[1])),
+        );
+        return;
+      }
+
+      const productionExecuteMatch = requestUrl.pathname.match(
+        /^\/api\/production\/intents\/([^/]+)\/execute$/,
+      );
+      if (req.method === "POST" && productionExecuteMatch) {
+        if (!context.production) {
+          throw new HttpError(503, "production intent service is unavailable", "production_unavailable");
+        }
+        json(
+          res,
+          202,
+          await context.production.execute(
+            decodeURIComponent(productionExecuteMatch[1]),
+            await readJson(req),
+          ),
+        );
+        return;
+      }
+
+      const productionEventsMatch = requestUrl.pathname.match(
+        /^\/api\/production\/intents\/([^/]+)\/events$/,
+      );
+      if (req.method === "GET" && productionEventsMatch) {
+        if (!context.production) {
+          throw new HttpError(503, "production intent service is unavailable", "production_unavailable");
+        }
+        const rawAfter = requestUrl.searchParams.get("after") || "0";
+        if (!/^\d+$/.test(rawAfter)) {
+          throw new HttpError(400, "after must be a non-negative integer", "invalid_event_cursor");
+        }
+        json(
+          res,
+          200,
+          context.production.events(
+            decodeURIComponent(productionEventsMatch[1]),
+            Number(rawAfter),
+          ),
+        );
+        return;
+      }
+
+      const productionCandidatesMatch = requestUrl.pathname.match(
+        /^\/api\/production\/intents\/([^/]+)\/candidates$/,
+      );
+      if (req.method === "GET" && productionCandidatesMatch) {
+        if (!context.production) {
+          throw new HttpError(503, "production intent service is unavailable", "production_unavailable");
+        }
+        json(
+          res,
+          200,
+          await context.production.candidates(decodeURIComponent(productionCandidatesMatch[1])),
+        );
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/production/candidate-edits") {
+        if (!context.candidateEdits) {
+          throw new HttpError(503, "candidate edit service is unavailable", "candidate_edit_unavailable");
+        }
+        json(res, 201, await context.candidateEdits.create(await readJson(req)));
+        return;
+      }
+
+      const candidateEditMatch = requestUrl.pathname.match(
+        /^\/api\/production\/candidate-edits\/([^/]+)$/,
+      );
+      if (req.method === "GET" && candidateEditMatch) {
+        if (!context.candidateEdits) {
+          throw new HttpError(503, "candidate edit service is unavailable", "candidate_edit_unavailable");
+        }
+        json(res, 200, await context.candidateEdits.get(decodeURIComponent(candidateEditMatch[1])));
+        return;
+      }
+
+      const candidateEditExecuteMatch = requestUrl.pathname.match(
+        /^\/api\/production\/candidate-edits\/([^/]+)\/execute$/,
+      );
+      if (req.method === "POST" && candidateEditExecuteMatch) {
+        if (!context.candidateEdits) {
+          throw new HttpError(503, "candidate edit service is unavailable", "candidate_edit_unavailable");
+        }
+        json(
+          res,
+          202,
+          await context.candidateEdits.execute(
+            decodeURIComponent(candidateEditExecuteMatch[1]),
+            await readJson(req),
+          ),
+        );
+        return;
+      }
+
+      const candidateEditCandidatesMatch = requestUrl.pathname.match(
+        /^\/api\/production\/candidate-edits\/([^/]+)\/candidates$/,
+      );
+      if (req.method === "GET" && candidateEditCandidatesMatch) {
+        if (!context.candidateEdits) {
+          throw new HttpError(503, "candidate edit service is unavailable", "candidate_edit_unavailable");
+        }
+        json(
+          res,
+          200,
+          await context.candidateEdits.candidates(
+            decodeURIComponent(candidateEditCandidatesMatch[1]),
+          ),
+        );
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/turns") {
+        await handleTurn(req, res, context);
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/runtime-file") {
+        await serveRuntimeFile(res, requestUrl, context);
+        return;
+      }
+
+      if (
+        context.selectorWorkspace &&
+        (await handleSelectorWorkspaceRequest(
+          req,
+          res,
+          requestUrl,
+          context.selectorWorkspace,
+          readJson,
+        ))
+      ) {
+        return;
+      }
+
+      if (
+        context.selectionProjection &&
+        (await handleSelectorProjectionRequest(
+          req,
+          res,
+          requestUrl,
+          context.selectionProjection,
+        ))
+      ) {
+        return;
+      }
+
+      if (req.method === "GET" && !requestUrl.pathname.startsWith("/api/")) {
+        if (await serveStatic(res, requestUrl.pathname, context)) return;
+      }
+
+      throw new HttpError(404, "route not found", "not_found");
+    } catch (error) {
+      if (res.headersSent) {
+        if (!res.writableEnded) res.end();
+        return;
+      }
+      if (error?.code === "export_not_ready") {
+        json(res, 409, {
+          error: "export_not_ready",
+          message: error.message,
+          missing_pages: error.missingPages || [],
+        });
+        return;
+      }
+      const failure = publicError(error);
+      json(res, failure.statusCode, failure.body);
+    }
+  });
+}

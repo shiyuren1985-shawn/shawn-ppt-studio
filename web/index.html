@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN" data-app="shawn-ppt-studio">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Shawn PPT Studio：阅读大纲、与 AI 协作、选稿和修图。" />
+    <title>Shawn PPT Studio</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+    <div class="app-frame">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">S</span>
+          <div>
+            <h1>Shawn PPT Studio</h1>
+            <p id="deck-label">正在读取 PPT…</p>
+          </div>
+        </div>
+
+        <nav class="workspace-tabs" aria-label="主要工作区">
+          <button type="button" data-workspace="outline" aria-current="page">大纲</button>
+          <button type="button" data-workspace="selector">选稿</button>
+          <button type="button" data-workspace="retouch">修图</button>
+        </nav>
+
+        <div class="top-actions">
+          <button class="quiet-button" id="conversation-menu-button" type="button" aria-expanded="false" aria-controls="conversation-drawer">历史对话</button>
+          <button class="icon-button" id="refresh-button" type="button" aria-label="刷新当前内容" title="刷新">↻</button>
+        </div>
+      </header>
+
+      <main id="main-content" class="main-frame">
+        <section class="workspace active" id="outline-workspace" data-workspace-panel="outline" data-testid="workspace-outline" aria-label="大纲工作区">
+          <aside class="slide-sidebar" id="outline-sidebar" aria-label="PPT 页面">
+            <div class="project-switcher-heading"><span>PPT</span><button id="new-project-button" type="button" data-testid="new-project">＋ 新建PPT</button></div>
+            <div class="deck-switcher" id="deck-switcher"></div>
+            <div class="sidebar-heading">
+              <div><strong>页面</strong><span id="outline-slide-count">0</span></div>
+              <button class="column-toggle" id="outline-left-toggle" data-column-toggle="left" data-testid="outline-left-column-toggle" type="button" aria-expanded="true">收起</button>
+            </div>
+            <nav class="slide-list" id="outline-slide-list" data-testid="slide-list" aria-label="大纲页面"></nav>
+          </aside>
+          <div class="column-resizer" data-column-resizer="left" data-testid="sidebar-resizer" role="separator" aria-label="调整页面列表宽度" aria-orientation="vertical" tabindex="0"></div>
+
+          <section class="outline-stage">
+            <button class="column-toggle content-column-toggle" id="outline-content-toggle" data-column-toggle="content" data-testid="outline-content-column-toggle" type="button" aria-expanded="true">收起</button>
+            <div class="page-context-bar content-titlebar" data-testid="current-page-context">
+              <div>
+                <span id="current-page-label">—</span>
+                <h2 id="current-page-title">请选择一页</h2>
+              </div>
+              <p id="current-page-context-copy">当前页作为参考</p>
+            </div>
+
+            <div class="page-comparison" id="page-comparison">
+              <section class="preview-card" aria-labelledby="preview-title">
+                <div class="card-heading">
+                  <h3 id="preview-title">当前选图</h3>
+                  <span id="selection-count"></span>
+                </div>
+                <div class="selected-preview" id="selected-preview" data-testid="selected-image">
+                  <div class="empty-state">
+                    <strong>还没有读取到选中的图片</strong>
+                    <p>你可以先去选稿，确定这页准备使用的版本。</p>
+                    <button class="secondary-button" type="button" data-open-selector data-testid="go-selector">去选稿</button>
+                  </div>
+                </div>
+              </section>
+
+              <div class="row-resizer" data-row-resizer="outline-preview" data-testid="outline-row-resizer" role="separator" aria-label="调整图片和大纲的高度" aria-orientation="horizontal" aria-valuemin="140" aria-valuenow="260" tabindex="0"></div>
+
+              <article class="outline-preview-card" aria-labelledby="outline-preview-title">
+                <div class="card-heading">
+                  <h3 id="outline-preview-title">本页大纲</h3>
+                  <span id="outline-version"></span>
+                </div>
+                <div class="outline-reading-view" id="outline-reading-view" data-testid="outline-preview">
+                  <p class="loading-copy">正在读取这一页的大纲…</p>
+                </div>
+              </article>
+            </div>
+          </section>
+          <div class="column-resizer" data-column-resizer="conversation" data-testid="conversation-column-resizer" role="separator" aria-label="调整对话区宽度" aria-orientation="vertical" tabindex="0"></div>
+          <div class="conversation-host" id="outline-conversation-host">
+            <section class="conversation-panel" id="conversation-panel" data-testid="shared-conversation" aria-label="AI 对话">
+              <div class="conversation-heading">
+                <div>
+                  <strong id="active-conversation-title">和 AI 讨论这份 PPT</strong>
+                  <span id="active-conversation-time">自动保存</span>
+                </div>
+                <button class="column-toggle" id="conversation-column-toggle" data-column-toggle="conversation" data-testid="conversation-column-toggle" type="button" aria-expanded="true">收起</button>
+              </div>
+              <div class="message-list" id="message-list" role="log" aria-live="polite">
+                <div class="welcome-message">
+                  <strong>可以直接告诉 AI 你想做什么</strong>
+                  <p>你可以讨论或修改大纲，也可以要求为一页、几页或整套 PPT 作图。当前页面会作为参考，但不会限制 AI 只能处理这一页。</p>
+                </div>
+              </div>
+              <form class="composer" id="conversation-form" data-testid="composer">
+                <div class="turn-status" id="turn-status" role="status" hidden>
+                  <span class="turn-status-dot" aria-hidden="true"></span>
+                  <span id="turn-status-copy">Codex 正在处理</span>
+                </div>
+                <div class="attachment-list" id="attachment-list" hidden></div>
+                <label class="sr-only" for="message-input">给 AI 的要求</label>
+                <textarea id="message-input" rows="2" required placeholder="例如：第 5 页的表达还不够直接，请结合整套大纲调整；再为第 5、8 页各做几种图片方案。"></textarea>
+                <div class="composer-footer">
+                  <div class="composer-tools">
+                    <button class="icon-text-button" id="attach-button" type="button">＋ 添加参考</button>
+                    <input id="attachment-input" class="sr-only" type="file" multiple accept="image/png,image/jpeg,image/webp" />
+                    <span id="composer-hint">当前参考：<b id="composer-page">—</b><span id="composer-scope-copy">，处理范围：整套 PPT</span></span>
+                  </div>
+                  <div class="composer-actions">
+                    <button class="stop-button" id="stop-button" data-testid="stop-turn" type="button" aria-label="停止当前任务" title="停止" hidden><span aria-hidden="true"></span></button>
+                    <button class="primary-button send-button" id="send-button" data-testid="send" type="submit" disabled>发送</button>
+                  </div>
+                </div>
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section class="workspace selector-workspace" id="selector-workspace" data-workspace-panel="selector" data-testid="workspace-selector" aria-label="选稿工作区" hidden>
+          <div class="empty-state"><strong>正在读取候选图片…</strong><p>选稿台会直接显示在这里。</p></div>
+        </section>
+
+        <section class="workspace" id="retouch-workspace" data-workspace-panel="retouch" data-testid="workspace-retouch" aria-label="修图工作区" hidden>
+          <aside class="slide-sidebar" id="retouch-sidebar" aria-label="PPT 页面">
+            <div class="sidebar-heading">
+              <div><strong>页面</strong><span id="retouch-slide-count">0</span></div>
+              <button class="column-toggle" id="retouch-left-toggle" data-column-toggle="left" data-testid="retouch-left-column-toggle" type="button" aria-expanded="true">收起</button>
+            </div>
+            <nav class="slide-list" id="retouch-slide-list" aria-label="修图页面"></nav>
+          </aside>
+          <div class="column-resizer" data-column-resizer="left" role="separator" aria-label="调整页面列表宽度" aria-orientation="vertical" tabindex="0"></div>
+          <section class="retouch-stage" id="retouch-stage">
+            <button class="column-toggle content-column-toggle" id="retouch-content-toggle" data-column-toggle="content" data-testid="retouch-content-column-toggle" type="button" aria-expanded="true">收起</button>
+            <div class="workspace-intro compact content-titlebar retouch-titlebar">
+              <div>
+                <span id="retouch-page-label">—</span>
+                <h2 id="retouch-page-title">修图</h2>
+                <p>查看正式图片后，在右侧对话中说明要改什么。</p>
+              </div>
+            </div>
+            <div class="retouch-gallery" id="retouch-gallery" data-testid="retouch-selected-list">
+              <div class="empty-state"><strong>这一页还没有选定图片</strong><p>先去选稿，确定要进入正式环节的图片。</p><button class="secondary-button" type="button" data-open-selector>去选稿</button></div>
+            </div>
+          </section>
+          <div class="column-resizer" data-column-resizer="conversation" role="separator" aria-label="调整对话区宽度" aria-orientation="vertical" tabindex="0"></div>
+          <div class="conversation-host" id="retouch-conversation-host"></div>
+        </section>
+      </main>
+    </div>
+
+    <aside class="conversation-drawer" id="conversation-drawer" aria-label="历史对话" hidden>
+      <div class="drawer-header"><div><h2>历史对话</h2><p>这套 PPT 的对话都会自动保存</p></div><button class="icon-button light" id="close-conversation-drawer" type="button" aria-label="关闭历史对话">×</button></div>
+      <button class="primary-button full-width" id="drawer-new-conversation" data-testid="new-conversation" type="button">新建对话</button>
+      <div class="conversation-list" id="conversation-list" data-testid="conversation-list"></div>
+    </aside>
+    <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+
+    <dialog class="image-dialog" id="image-dialog" data-testid="image-zoom-dialog">
+      <button class="dialog-close" id="image-dialog-close" type="button" aria-label="关闭大图">×</button>
+      <button class="zoomable-image" id="image-dialog-toggle" data-testid="image-dialog-dismiss" type="button" aria-label="点击图片关闭大图"><img id="image-dialog-content" alt="选中的 PPT 图片大图" /></button>
+      <p>单击图片关闭</p>
+    </dialog>
+
+    <dialog class="project-dialog" id="project-dialog" aria-labelledby="project-dialog-title">
+      <button class="dialog-close light-close" id="project-dialog-close" type="button" aria-label="关闭">×</button>
+      <h2 id="project-dialog-title">新建 PPT</h2>
+      <p>选择一种开始方式。创建后会直接进入这份 PPT。</p>
+      <div class="project-start-options">
+        <button id="blank-project-button" type="button" data-testid="blank-project"><strong>从空白开始</strong><span>选择一个文件夹，然后和 AI 一起整理大纲</span></button>
+        <button id="existing-outline-button" type="button" data-testid="existing-outline"><strong>打开已有大纲</strong><span>选择一个 Markdown 大纲，继续使用原文件</span></button>
+      </div>
+      <p class="project-dialog-status" id="project-dialog-status" role="status" hidden></p>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>
