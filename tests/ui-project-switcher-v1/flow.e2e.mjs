@@ -14,20 +14,24 @@ const { chromium } = require("playwright");
 
 const projects = Array.from({ length: 7 }, (_, index) => {
   const number = index + 1;
-  const slide = {
-    slide_uid: `SLIDE_${number}`,
-    page_id: "P1",
-    page_label: "P01",
-    order: 1,
-    title: `项目 ${number} 的第一页`,
-    markdown: `| P01 | **项目 ${number} 的第一页** | 核心表达 | 内容 | 视觉 |`,
-  };
+  const slideCount = number === 1 ? 24 : 1;
+  const slides = Array.from({ length: slideCount }, (_, slideIndex) => {
+    const pageNumber = slideIndex + 1;
+    return {
+      slide_uid: number === 1 ? `SLIDE_${pageNumber}` : `SLIDE_${number}`,
+      page_id: `P${pageNumber}`,
+      page_label: `P${String(pageNumber).padStart(2, "0")}`,
+      order: pageNumber,
+      title: pageNumber === 1 ? `项目 ${number} 的第一页` : `项目 ${number} 的第 ${pageNumber} 页`,
+      markdown: `| P${pageNumber} | **项目 ${number} 的第 ${pageNumber} 页** | 核心表达 | 内容 | 视觉 |`,
+    };
+  });
   return {
     deck_id: `project-${number}`,
     deck_uid: `PROJECT_${number}`,
     label: `项目 ${number} · 海外交付方案`,
-    default_slide_uid: slide.slide_uid,
-    slides: [slide],
+    default_slide_uid: slides[0].slide_uid,
+    slides,
   };
 });
 
@@ -67,12 +71,13 @@ async function startServer() {
     const detail = url.pathname.match(/^\/api\/decks\/(project-\d+)\/slides\/(SLIDE_\d+)$/);
     if (request.method === "GET" && detail) {
       const project = projects.find((item) => item.deck_id === detail[1]);
+      const slide = project.slides.find((item) => item.slide_uid === detail[2]);
       return json(response, {
         deck_id: project.deck_id,
         deck_uid: project.deck_uid,
         revision_id: "test",
         sha256: "a".repeat(64),
-        slide: project.slides[0],
+        slide,
       });
     }
     if (request.method === "GET" && /^\/api\/decks\/project-\d+\/slides\/SLIDE_\d+\/selection$/.test(url.pathname)) {
@@ -116,26 +121,27 @@ async function startServer() {
         deck_id: project.deck_id,
         label: project.label,
         source_kind: "studio",
-        pages: [{
-          slide_uid: project.slides[0].slide_uid,
-          page_label: "P01",
-          title: project.slides[0].title,
+        pages: project.slides.map((slide) => ({
+          slide_uid: slide.slide_uid,
+          page_label: slide.page_label,
+          title: slide.title,
           included: true,
           confirmed: false,
           resolution: "missing",
           candidates: [],
-        }],
-        summary: { page_count: 1, included_count: 1, confirmed_count: 0, pending_count: 1 },
+        })),
+        summary: { page_count: project.slides.length, included_count: project.slides.length, confirmed_count: 0, pending_count: project.slides.length },
       });
     }
     const selectorPage = url.pathname.match(/^\/api\/selector-workspace\/decks\/(project-\d+)\/slides\/(SLIDE_\d+)$/);
     if (request.method === "GET" && selectorPage) {
       const project = projects.find((item) => item.deck_id === selectorPage[1]);
+      const slide = project.slides.find((item) => item.slide_uid === selectorPage[2]);
       return json(response, {
         page: {
-          slide_uid: project.slides[0].slide_uid,
-          page_label: "P01",
-          title: project.slides[0].title,
+          slide_uid: slide.slide_uid,
+          page_label: slide.page_label,
+          title: slide.title,
           included: true,
           confirmed: false,
           resolution: "missing",
@@ -190,6 +196,38 @@ test("seven projects stay compact and switch the whole task context", async () =
       await composer.press("Enter");
       await sent;
       assert.equal(sentMessages.at(-1), "按回车发送");
+
+      await composer.fill("短要求");
+      const compactHeight = await composer.evaluate((node) => node.getBoundingClientRect().height);
+      await composer.fill("这是一个需要详细说明的修改要求。".repeat(48));
+      const expanded = await composer.evaluate((node) => ({
+        height: node.getBoundingClientRect().height,
+        clientHeight: node.clientHeight,
+        scrollHeight: node.scrollHeight,
+        overflowY: getComputedStyle(node).overflowY,
+      }));
+      assert.ok(expanded.height > compactHeight + 80, "long drafts expand the composer");
+      assert.ok(expanded.height <= 242, "composer growth stays bounded");
+      assert.ok(expanded.scrollHeight > expanded.clientHeight, "overflowing drafts scroll inside the composer");
+      assert.equal(expanded.overflowY, "auto");
+      await composer.fill("");
+      assert.ok(await composer.evaluate((node) => node.getBoundingClientRect().height) <= compactHeight + 1);
+
+      await page.locator("#outline-slide-list .slide-button").nth(19).click();
+      await page.locator("#current-page-label").filter({ hasText: "P20" }).waitFor();
+      await page.locator('#selected-preview [data-testid="go-selector"]').click();
+      await page.locator("[data-selector-page-label]").filter({ hasText: "P20" }).waitFor();
+      const selectorPosition = await page.locator("[data-selector-page-list]").evaluate((list) => {
+        const active = list.querySelector('[aria-current="page"]');
+        const listBox = list.getBoundingClientRect();
+        const activeBox = active?.getBoundingClientRect();
+        return {
+          scrollTop: list.scrollTop,
+          visible: Boolean(activeBox && activeBox.top >= listBox.top && activeBox.bottom <= listBox.bottom),
+        };
+      });
+      assert.ok(selectorPosition.scrollTop > 0, "the page list scrolls to the requested late page");
+      assert.equal(selectorPosition.visible, true, "the requested page is visible in the selector sidebar");
 
       await page.locator("#project-picker-button").click();
       assert.equal(await page.locator(".project-option-row").count(), 7);

@@ -38,3 +38,13 @@ test("the composer follows Codex keyboard behavior", () => {
   assert.match(app, /event\.preventDefault\(\)/);
   assert.match(app, /conversation-form"\]\.requestSubmit\(\)/);
 });
+
+test("the selector keeps the requested page visible and the composer grows to a bounded height", async () => {
+  const selector = await readFile(new URL("../../web/selector/workspace.js", import.meta.url), "utf8");
+  assert.match(selector, /querySelector\('\[aria-current="page"\]'\)/);
+  assert.match(selector, /scrollIntoView\(\{ block: "nearest" \}\)/);
+  assert.match(app, /function resizeMessageInput\(\)/);
+  assert.match(app, /Math\.min\(240, Math\.max\(120, window\.innerHeight \* 0\.32\)\)/);
+  assert.match(css, /max-height: min\(240px, 32vh\)/);
+  assert.match(css, /resize: none; overflow-y: hidden/);
+});

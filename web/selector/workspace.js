@@ -200,6 +200,8 @@ export function mountSelectorWorkspace({
       button.append(number, copy, dot);
       nodes.pageList.append(button);
     }
+    const activePage = nodes.pageList.querySelector('[aria-current="page"]');
+    activePage?.scrollIntoView({ block: "nearest" });
   }
 
   function openImage(candidate) {

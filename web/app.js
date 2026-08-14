@@ -1093,6 +1093,15 @@ async function uploadReferenceFiles(files) {
   el["attach-button"].disabled = false;
 }
 
+function resizeMessageInput() {
+  const input = el["message-input"];
+  input.style.height = "auto";
+  const maximum = Math.min(240, Math.max(120, window.innerHeight * 0.32));
+  const next = Math.max(52, Math.min(input.scrollHeight, maximum));
+  input.style.height = `${Math.ceil(next)}px`;
+  input.style.overflowY = input.scrollHeight > maximum ? "auto" : "hidden";
+}
+
 function updateSendState() {
   el["send-button"].disabled = state.submitting || !state.activeConversationId || !state.scope || !el["message-input"].value.trim();
   el["send-button"].textContent = "发送";
@@ -1260,6 +1269,7 @@ async function submitConversation(event) {
   const expectedTurnId = state.activeTurnId;
   state.submitting = true;
   el["message-input"].value = "";
+  resizeMessageInput();
   state.attachments = [];
   renderAttachments();
   updateSendState();
@@ -1380,6 +1390,7 @@ function initializeResizers() {
     const move = (event) => {
       const next = clampConversation(startWidth - (event.clientX - startX));
       document.documentElement.style.setProperty("--conversation-width", `${Math.round(next)}px`);
+      resizeMessageInput();
     };
     const stop = () => {
       resizer.classList.remove("dragging");
@@ -1402,6 +1413,7 @@ function initializeResizers() {
       const current = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--conversation-width")) || 400;
       const next = event.key === "Home" ? 300 : event.key === "End" ? conversationMaximum() : clampConversation(current + (event.key === "ArrowLeft" ? 12 : -12));
       document.documentElement.style.setProperty("--conversation-width", `${Math.round(next)}px`);
+      resizeMessageInput();
       persist();
     });
   }
@@ -1454,6 +1466,7 @@ function initializeResizers() {
     document.documentElement.style.setProperty("--conversation-width", `${Math.round(clampConversation(current))}px`);
     const imageHeight = document.querySelector(".preview-card")?.getBoundingClientRect().height;
     if (imageHeight && el["page-comparison"]?.clientHeight) setImageHeight(imageHeight);
+    resizeMessageInput();
   };
   window.addEventListener("resize", keepWidthsInBounds);
   requestAnimationFrame(keepWidthsInBounds);
@@ -1544,7 +1557,10 @@ function bindEvents() {
   }
   el["conversation-form"].addEventListener("submit", submitConversation);
   el["stop-button"].addEventListener("click", interruptActiveTurn);
-  el["message-input"].addEventListener("input", updateSendState);
+  el["message-input"].addEventListener("input", () => {
+    resizeMessageInput();
+    updateSendState();
+  });
   el["message-input"].addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
     event.preventDefault();
@@ -1586,6 +1602,7 @@ async function initialize() {
   }
   if (!state.columns.content && !state.columns.conversation) state.columns.conversation = true;
   bindEvents();
+  resizeMessageInput();
   initializeResizers();
   applyColumnState({ save: false });
   setWorkspace(state.workspace);

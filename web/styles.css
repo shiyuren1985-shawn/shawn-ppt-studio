@@ -206,7 +206,7 @@ h3 { margin: 0; font-size: 16px; }
 .action-confirm-button { min-height: 38px; flex: 0 0 auto; padding: 6px 10px; border: 1px solid var(--forest); border-radius: 8px; color: white; background: var(--forest); font-size: 12px; font-weight: 800; }
 .action-confirm-button:hover { background: var(--forest-2); }
 .composer { padding: 7px 11px 8px; border-top: 1px solid var(--line); }
-.composer textarea { width: 100%; min-height: 52px; resize: vertical; max-height: 150px; padding: 8px 10px; border: 1px solid #bfcac4; border-radius: 10px; outline: none; color: var(--ink); background: var(--paper); font-size: 13px; line-height: 1.42; }
+.composer textarea { width: 100%; min-height: 52px; max-height: min(240px, 32vh); resize: none; overflow-y: hidden; padding: 8px 10px; border: 1px solid #bfcac4; border-radius: 10px; outline: none; color: var(--ink); background: var(--paper); font-size: 13px; line-height: 1.42; }
 .composer textarea:focus { border-color: var(--forest-2); box-shadow: 0 0 0 3px rgba(32,96,77,.12); }
 .composer-footer { min-height: 42px; display: flex; justify-content: space-between; align-items: center; gap: 9px; padding-top: 4px; color: var(--muted); font-size: 11px; }
 .composer-tools { min-width: 0; display: flex; align-items: center; gap: 7px; }
