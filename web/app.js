@@ -427,27 +427,35 @@ function renderOutline() {
     ? `你正在查看 ${state.scope.page_label}。AI 会把它作为参考，但仍会结合整套 PPT 理解你的要求。`
     : "当前页会作为参考；下方对话仍面向整套 PPT。";
   el["outline-version"].textContent = currentDeck()?.version_label || "";
-  const model = outlineReadingModel(state.scope?.outline_markdown, state.scope?.title || slide?.title);
+  const model = outlineReadingModel(
+    state.scope?.outline_markdown,
+    state.scope?.title || slide?.title,
+    state.scope?.subtitle || slide?.subtitle,
+  );
   el["outline-reading-view"].replaceChildren();
-  const heading = document.createElement("h4");
-  heading.textContent = model.title;
-  el["outline-reading-view"].append(heading);
+  const list = document.createElement("dl");
+  const appendField = (label, value, className = "") => {
+    const row = document.createElement("div");
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const content = document.createElement("dd");
+    content.textContent = value;
+    if (className) content.className = className;
+    row.append(term, content);
+    list.append(row);
+  };
+  appendField("标题", model.title, "outline-title-value");
+  if (model.subtitle) appendField("副标题", model.subtitle, "outline-subtitle-value");
   if (!model.sections.length) {
+    el["outline-reading-view"].append(list);
     const empty = document.createElement("p");
     empty.className = "loading-copy";
     empty.textContent = "这页暂时没有可预览的大纲内容。";
     el["outline-reading-view"].append(empty);
     return;
   }
-  const list = document.createElement("dl");
   for (const section of model.sections) {
-    const row = document.createElement("div");
-    const term = document.createElement("dt");
-    term.textContent = section.label;
-    const value = document.createElement("dd");
-    value.textContent = section.value;
-    row.append(term, value);
-    list.append(row);
+    appendField(section.label, section.value);
   }
   el["outline-reading-view"].append(list);
 }

@@ -37,6 +37,18 @@ export function splitTableCells(line) {
   return stripped.slice(1, -1).split("|").map((cell) => cell.trim());
 }
 
+function cleanTableCell(value) {
+  return String(value ?? "").replaceAll("**", "").trim();
+}
+
+function isPageHeader(value) {
+  return /^(?:页码|页面|page(?:\s*id)?)$/i.test(cleanTableCell(value));
+}
+
+function subtitleColumnIndex(headers) {
+  return headers.findIndex((header) => /^(?:副标题|subtitle)$/i.test(cleanTableCell(header)));
+}
+
 export function parseOutlineText({ text, bytes, outlinePath, info }) {
   if (!text.startsWith("---\n") && !text.startsWith("---\r\n")) {
     throw new Error("outline is missing YAML front matter");
@@ -69,10 +81,13 @@ export function parseOutlineText({ text, bytes, outlinePath, info }) {
   }
 
   const rows = new Map();
+  let activeHeaders = [];
   let offset = 0;
   for (const rawLine of text.match(/.*(?:\n|$)/g) ?? []) {
     if (rawLine === "") continue;
     const line = rawLine.replace(/\r?\n$/, "");
+    const cells = splitTableCells(line);
+    if (cells.length >= 2 && isPageHeader(cells[0])) activeHeaders = cells;
     const rowMatch = TABLE_ROW.exec(line);
     if (rowMatch) {
       let pageId;
@@ -81,15 +96,17 @@ export function parseOutlineText({ text, bytes, outlinePath, info }) {
       } catch {
         pageId = null;
       }
-      const cells = splitTableCells(line);
       if (pageId && slideUids[pageId] && cells.length >= 2) {
         if (rows.has(pageId)) throw new Error(`outline has duplicate page row: ${pageId}`);
+        const subtitleIndex = subtitleColumnIndex(activeHeaders);
+        const subtitle = subtitleIndex >= 0 ? cleanTableCell(cells[subtitleIndex]) : "";
         rows.set(pageId, {
           page_id: pageId,
           page_label: `P${String(Number(pageId.slice(1))).padStart(2, "0")}`,
           order: Number(pageId.slice(1)),
           slide_uid: slideUids[pageId],
-          title: cells[1].replaceAll("**", "").trim(),
+          title: cleanTableCell(cells[1]),
+          subtitle: subtitle || null,
           markdown: line,
           span: [offset, offset + rawLine.length],
           column_count: cells.length,

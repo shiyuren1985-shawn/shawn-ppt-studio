@@ -82,6 +82,7 @@ export function scopeFromSlide(detail) {
     page_id: detail.slide.page_id,
     page_label: detail.slide.page_label,
     title: detail.slide.title,
+    subtitle: detail.slide.subtitle || null,
     outline_markdown: detail.slide.markdown,
     revision_id: detail.revision_id,
     sha256: detail.sha256,
@@ -270,17 +271,27 @@ export function shortRevision(value) {
   return String(value || "未记录").replace(/^sha256:/, "").slice(0, 12);
 }
 
-export function outlineReadingModel(markdown, fallbackTitle = "") {
+export function outlineReadingModel(markdown, fallbackTitle = "", explicitSubtitle = "") {
   const source = String(markdown || "").trim();
+  const subtitle = String(explicitSubtitle || "").trim();
   if (!source.startsWith("|") || !source.endsWith("|")) {
-    return { title: fallbackTitle || "这一页的大纲", sections: source ? [{ label: "内容", value: source }] : [] };
+    return {
+      title: fallbackTitle || "这一页的大纲",
+      subtitle,
+      sections: source ? [{ label: "内容", value: source }] : [],
+    };
   }
   const cells = source.slice(1, -1).split("|").map((cell) => cell.replaceAll("**", "").trim());
   const values = cells.slice(1).filter(Boolean);
   const title = values.shift() || fallbackTitle || "这一页的大纲";
+  if (subtitle) {
+    const subtitleIndex = values.indexOf(subtitle);
+    if (subtitleIndex >= 0) values.splice(subtitleIndex, 1);
+  }
   const labels = ["核心表达", "内容要点", "讲述逻辑", "视觉建议", "备注"];
   return {
     title,
+    subtitle,
     sections: values.map((value, index) => ({ label: labels[index] || `补充内容 ${index + 1}`, value })),
   };
 }

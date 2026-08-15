@@ -87,6 +87,7 @@ function compactOutlineContext(deck, currentSlideUid) {
       page_label: slide.page_label,
       slide_uid: slide.slide_uid,
       title: slide.title,
+      subtitle: slide.subtitle || null,
     })),
     current_slide: current
       ? {
@@ -94,6 +95,7 @@ function compactOutlineContext(deck, currentSlideUid) {
           page_label: current.page_label,
           slide_uid: current.slide_uid,
           title: current.title,
+          subtitle: current.subtitle || null,
           markdown: current.markdown,
         }
       : null,
