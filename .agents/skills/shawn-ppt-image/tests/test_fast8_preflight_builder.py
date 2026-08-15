@@ -87,6 +87,26 @@ class Fast8PreflightBuilderTests(unittest.TestCase):
             self.assertIn("不存在", result.stderr)
             self.assertFalse(output.exists())
 
+    def test_explicit_light_tone_persists_all_eight_overrides(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fast8_preflight_tone_") as temp:
+            root = Path(temp).resolve()
+            source = root / "outline.md"
+            output = root / "preflight.json"
+            source.write_text("# P24\nTest page\n", encoding="utf-8")
+            result = self.run_builder(
+                "--output", str(output),
+                "--task-name", "P24_all_light",
+                "--page-id", "P24",
+                "--required-file", str(source),
+                "--tone", "light",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(
+                manifest["tone_overrides"],
+                {style: "light" for style in "ABCDEFGH"},
+            )
+
     def test_page_source_rejects_missing_page_before_manifest_write(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fast8_preflight_page_") as temp:
             root = Path(temp).resolve()

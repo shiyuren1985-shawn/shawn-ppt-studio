@@ -92,6 +92,14 @@ def main() -> None:
     )
     parser.add_argument("--request-started-at")
     parser.add_argument(
+        "--tone",
+        choices=("light", "dark"),
+        help=(
+            "Optional explicit user background-tone override for all A-H seats. "
+            "Omit to keep the default mixed dark/light Fast8 matrix."
+        ),
+    )
+    parser.add_argument(
         "--page-source",
         help=(
             "Authoritative multi-page source whose requested page must exist; "
@@ -161,6 +169,10 @@ def main() -> None:
         "optional_files": optional,
         "asset_items": assets,
     }
+    if args.tone:
+        manifest["tone_overrides"] = {
+            style: args.tone for style in "ABCDEFGH"
+        }
     if args.slide_identity_file:
         identity_file = Path(
             existing_absolute_file(
@@ -182,6 +194,7 @@ def main() -> None:
                 "task_name": task_name,
                 "page_id": page_id,
                 "request_started_at": started_at,
+                "tone": args.tone,
                 "page_source_validated": bool(args.page_source),
             },
             ensure_ascii=False,

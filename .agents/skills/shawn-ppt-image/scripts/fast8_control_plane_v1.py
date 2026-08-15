@@ -1043,7 +1043,25 @@ def lean_finalize(state_path: Path) -> dict[str, Any]:
     timing["formal_overview_completed_at"] = completed_at
     timing["process_completed_at"] = completed_at
     target = state.setdefault("timing_target", {})
+    target.setdefault("target_minutes", 15)
+    target.setdefault("hard_deadline", False)
+    target["scope"] = "request_started_at_to_delivery_ready"
+    started_at = timing.get("request_started_at") or timing.get("process_started_at")
+    target["started_at"] = started_at
     target["ended_at"] = completed_at
+    try:
+        if not isinstance(started_at, str) or not started_at.strip():
+            raise ValueError("missing timing start")
+        elapsed_seconds = (
+            pc.parse_time(completed_at) - pc.parse_time(started_at)
+        ).total_seconds()
+    except (AttributeError, TypeError, ValueError):
+        target["elapsed_minutes"] = None
+        target["met"] = None
+    else:
+        target["elapsed_minutes"] = round(elapsed_seconds / 60, 3)
+        target["met"] = elapsed_seconds <= int(target["target_minutes"]) * 60
+    target["soft_target_missed"] = target.get("met") is False
     append = pc.append_event
     append(
         state,

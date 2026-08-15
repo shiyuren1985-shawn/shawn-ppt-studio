@@ -595,6 +595,7 @@ def write_fast8_initial_state(
     request_started_at = str(
         preflight_manifest.get("request_started_at") or process_started_at
     )
+    tone_overrides = preflight_manifest.get("tone_overrides")
 
     def event(sequence: int, name: str, occurred_at: str) -> dict[str, object]:
         return {
@@ -617,6 +618,11 @@ def write_fast8_initial_state(
         "fast8_startup_contract_version": FAST8_STARTUP_CONTRACT_VERSION,
         "fast8_imagegen_slot_policy": FAST8_IMAGEGEN_SLOT_POLICY,
         "status": "running",
+        **(
+            {"tone_overrides": tone_overrides}
+            if tone_overrides is not None
+            else {}
+        ),
         "anchor_page_id": page_id,
         "follower_page_ids": [],
         "deferred_pages": [],
@@ -705,6 +711,15 @@ def validate_fast8_preflight_manifest(
         or len(set(page_ids)) != len(page_ids)
     ):
         raise SystemExit("Fast8 预备清单 page_ids 必须是不重复的非空字符串数组")
+    tone_overrides = value.get("tone_overrides")
+    if tone_overrides is not None:
+        if not isinstance(tone_overrides, dict):
+            raise SystemExit("Fast8 预备清单 tone_overrides 必须是对象")
+        expected_styles = set("ABCDEFGH")
+        if set(tone_overrides) != expected_styles:
+            raise SystemExit("Fast8 预备清单 tone_overrides 必须完整包含 A-H")
+        if any(tone not in {"light", "dark"} for tone in tone_overrides.values()):
+            raise SystemExit("Fast8 预备清单 tone_overrides 只允许 light|dark")
 
     def normalized_files(field: str, required: bool) -> list[dict[str, object]]:
         raw = value.get(field, [])
@@ -786,6 +801,11 @@ def validate_fast8_preflight_manifest(
         "required_files": required_files,
         "optional_files": optional_files,
         "asset_items": assets,
+        **(
+            {"tone_overrides": dict(tone_overrides)}
+            if tone_overrides is not None
+            else {}
+        ),
         **(
             {"slide_identity_file": slide_identity_record}
             if slide_identity_record is not None

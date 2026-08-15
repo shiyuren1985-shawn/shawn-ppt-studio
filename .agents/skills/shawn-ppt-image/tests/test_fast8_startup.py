@@ -44,6 +44,7 @@ class Fast8StartupTest(unittest.TestCase):
                         "required_files": [str(source)],
                         "optional_files": [str(root / "optional_missing.md")],
                         "asset_items": [{"path": str(asset), "role": "official_logo"}],
+                        "tone_overrides": {style: "light" for style in "ABCDEFGH"},
                     },
                     ensure_ascii=False,
                 ),
@@ -91,6 +92,10 @@ class Fast8StartupTest(unittest.TestCase):
             self.assertEqual(state["anchor_page_id"], "18")
             self.assertEqual(state["follower_page_ids"], [])
             self.assertEqual(state["deferred_pages"], [])
+            self.assertEqual(
+                state["tone_overrides"],
+                {style: "light" for style in "ABCDEFGH"},
+            )
             self.assertEqual(
                 [item["name"] for item in state["events"]],
                 ["process_started", "preflight_resolved"],

@@ -1151,6 +1151,10 @@ process.stdout.write(JSON.stringify({{calls,commands,finalText}}));
 
     def test_existing_judge_pass_then_lean_finalize_produces_strict_two_lines(self) -> None:
         self.settle_all_success()
+        started_at = pipeline.now_iso()
+        state_before = pipeline.read_json(self.fixture.state_path)
+        state_before.setdefault("timing", {})["request_started_at"] = started_at
+        write_json(self.fixture.state_path, state_before)
         job_path, _output = self.fixture.make_review()
         report = self.fixture.write_report(job_path, decision="pass")
         self.fixture.call(
@@ -1168,6 +1172,9 @@ process.stdout.write(JSON.stringify({{calls,commands,finalText}}));
         self.assertEqual(lines[1].count("]("), 8)
         state = pipeline.read_json(self.fixture.state_path)
         self.assertEqual(state["fast8_control_plane"]["post_delivery_audit_status"], "pending")
+        self.assertEqual(state["timing_target"]["started_at"], started_at)
+        self.assertIsNotNone(state["timing_target"]["elapsed_minutes"])
+        self.assertIsInstance(state["timing_target"]["met"], bool)
         post = control.post_delivery(self.fixture.state_path)
         self.assertTrue(Path(post["report_path"]).is_file())
         self.assertTrue(Path(result["delivery_message"]).is_file())
