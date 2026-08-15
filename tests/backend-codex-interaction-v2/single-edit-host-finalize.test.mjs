@@ -186,6 +186,7 @@ test("workspace turn explicitly carries the Studio transport marker for the root
     },
     conversationId: "conversation",
     threadId: "thread",
+    overviewPython: path.join(root, "runtime", "python3"),
     pathPolicy: { requireReferenceImage: async (value) => value },
   });
   assert.equal(

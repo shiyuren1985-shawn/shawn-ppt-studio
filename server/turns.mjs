@@ -20,6 +20,14 @@ export { IMAGEGEN_SKILL_PATH, SHAWN_SKILL_PATH } from "../integrations/skill-pat
 const USER_MESSAGE_START = "[SHAWN_PPT_STUDIO_USER_MESSAGE]";
 const USER_MESSAGE_END = "[/SHAWN_PPT_STUDIO_USER_MESSAGE]";
 
+export const STUDIO_COMMUNICATION_RULES = [
+  "Treat these user-facing communication rules as global Shawn PPT Studio requirements for every project and every conversation; they are not optional preferences.",
+  "Keep progress commentary to a few plain-language milestones. Do not narrate hidden reasoning, every command, routine file inspection, hash check, or other mechanical detail.",
+  "In a normal successful user-facing reply, never print SHA or hash values, absolute file paths, internal deck/slide/thread/turn/run/candidate identifiers, status enums, ledger details, control-plane details, or QA bookkeeping. Use human page labels and compact clickable artifact links instead.",
+  "Show technical identifiers or diagnostic details only when the user explicitly asks for them or when a failure cannot be made actionable without them; even then, provide only the minimum necessary detail.",
+  "Do not repeat progress or task-state information already visible in the Studio interface. After substantial work, give a concise final answer led by the actual outcome and the next useful action, if any.",
+];
+
 function outlineSchema(deckUid, slideUid) {
   return {
     type: "object",
@@ -70,6 +78,28 @@ function cleanReferences(references) {
   });
 }
 
+function compactOutlineContext(deck, currentSlideUid) {
+  const slides = Array.isArray(deck?.outline?.slides) ? deck.outline.slides : [];
+  const current = slides.find((slide) => slide.slide_uid === currentSlideUid) || null;
+  return {
+    page_index: slides.map((slide) => ({
+      page_id: slide.page_id,
+      page_label: slide.page_label,
+      slide_uid: slide.slide_uid,
+      title: slide.title,
+    })),
+    current_slide: current
+      ? {
+          page_id: current.page_id,
+          page_label: current.page_label,
+          slide_uid: current.slide_uid,
+          title: current.title,
+          markdown: current.markdown,
+        }
+      : null,
+  };
+}
+
 export function extractWorkspaceUserMessage(value) {
   if (typeof value !== "string") return null;
   const start = value.indexOf(USER_MESSAGE_START);
@@ -108,6 +138,8 @@ export async function buildWorkspaceTurn(
     pathPolicy,
     confirmedSelections = [],
     monitoringRoot = null,
+    overviewPython = null,
+    requestStartedAt = new Date().toISOString(),
   },
 ) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
@@ -131,12 +163,25 @@ export async function buildWorkspaceTurn(
     validatedReferences.push(await pathPolicy.requireReferenceImage(referencePath));
   }
   const outlineRoot = path.dirname(deck.outline.path);
+  const boundOverviewPython =
+    typeof overviewPython === "string" && path.isAbsolute(overviewPython)
+      ? path.normalize(overviewPython)
+      : null;
+  if (!boundOverviewPython) {
+    throw new HttpError(
+      503,
+      "Studio overview runtime is unavailable",
+      "overview_runtime_unavailable",
+    );
+  }
+  const candidateOutputRoots = (deck.candidate_roots || []).map((root) => path.resolve(root.path));
   const writableRoots = [
     path.resolve(dataRoot),
     outlineRoot,
-    ...(deck.candidate_roots || []).map((root) => path.resolve(root.path)),
+    ...candidateOutputRoots,
     ...(monitoringRoot ? [path.resolve(monitoringRoot)] : []),
   ].filter((value, index, values) => values.indexOf(value) === index);
+  const outlineContext = compactOutlineContext(deck, currentSlideUid);
 
   const prompt = [
     USER_MESSAGE_START,
@@ -147,10 +192,16 @@ export async function buildWorkspaceTurn(
     "Respond naturally. Do not emit JSON, a proposal schema, or a host-action envelope.",
     "For a question, brainstorming request, or ambiguous request, discuss it naturally and do not make changes that were not requested.",
     "For a clear instruction to change the outline, generate images, or edit formal selected images, carry out the work inside this same turn. Do not end the turn after merely announcing that a hidden job has started.",
-    "Give concise commentary updates while doing substantial work, then a clear final answer based only on what actually completed.",
+    ...STUDIO_COMMUNICATION_RULES,
     "For outline edits, modify the authoritative outline in place, preserve deck_uid and slide_uid identities, and do not create a second authoritative outline.",
     "If the outline is a zero-page draft, use the exact deck_uid supplied below when converting it to canonical front matter and create stable slide_uids for real pages; never replace the project deck_uid with a new one.",
     "For PPT image generation or image editing, use the supplied shawn-ppt-image skill and its canonical control planes, run state, source snapshot, ImageGen path, and existing sole Judge. Do not create another reviewer, state machine, or image concurrency layer.",
+    "The supplied skill is already attached by the Studio host. For a formal Fast8 request, do not search memory or reopen the entire skill before preflight. After one short acknowledgement, the first mechanical action must build the preflight manifest and initialize the one formal run; read only the stage-gated references when their stage begins.",
+    "For a formal Fast8 run, create its preflight manifest below one supplied candidate_output_root (normally <output_root>/.fast8_preflight), never in /tmp or another unlisted root. In asset_items, the first user-designated style image uses role=primary_style_reference and any additional style images use role=supporting_style_reference. style_anchor_only is an approval scope, never an asset role. Never patch a frozen preflight manifest or canonical state by hand to recover a role mismatch; stop with the exact error instead.",
+    "For a new Fast8 run, never use a distinct slide identity sidecar. When building the preflight manifest, the authoritative page source may also be registered as --slide-identity-file only when it is the exact same canonical outline. When calling init_task_dir.py with that frozen preflight manifest, never pass --slide-identity-file again; init reads the optional identity binding from the manifest. This prevents one request from producing a rejected initialization and a second suffixed preflight.",
+    "Pass the exact studio_request_started_at below to build_fast8_preflight_manifest.py --request-started-at. Never replace it with the time when preflight work happens.",
+    "If the user explicitly requests every Fast8 candidate to use a light or dark background system, pass --tone light or --tone dark to build_fast8_preflight_manifest.py. Do not leave the default mixed A-D dark / E-H light matrix active for an all-light or all-dark request.",
+    "For every formal Fast8 run, use the exact studio_overview_python supplied below as init_task_dir.py --overview-python. It is host-bound and already includes Pillow. Never search for another Python, create a virtual environment, run pip/uv/conda, or request network access to install Pillow. If this exact runtime cannot execute or import Pillow, stop with overview_runtime_unavailable before creating the formal run.",
     "The supplied imagegen skill is the image generation/editing engine. Use it only through the shawn-ppt-image workflow when producing formal PPT candidates.",
     "A generated or edited image is a new candidate. Never mark it selected and never overwrite the canonical selection merely because generation completed.",
     "The user may identify formal images by labels such as P04, P04-A, or natural language. Use only the confirmed selected image references supplied below as formal edit parents; if the target is ambiguous, ask one short question.",
@@ -159,12 +210,17 @@ export async function buildWorkspaceTurn(
     `conversation_id: ${conversationId}`,
     `deck_uid: ${deck.outline.deck_uid}`,
     `outline_revision_id: ${deck.outline.revision_id}`,
+    `authoritative_outline_path: ${deck.outline.path}`,
+    `candidate_output_roots: ${JSON.stringify(candidateOutputRoots)}`,
+    `monitoring_root: ${monitoringRoot ? path.resolve(monitoringRoot) : "none"}`,
+    `studio_overview_python: ${boundOverviewPython}`,
+    `studio_request_started_at: ${requestStartedAt}`,
     `currently_viewed_slide_uid: ${currentSlideUid || "none"}`,
     `reference_image_paths: ${JSON.stringify(validatedReferences)}`,
     `confirmed_selected_image_refs: ${JSON.stringify(confirmedSelections)}`,
-    "Authoritative outline begins:",
-    deck.outline.text,
-    "Authoritative outline ends.",
+    `outline_page_index: ${JSON.stringify(outlineContext.page_index)}`,
+    `currently_viewed_slide: ${JSON.stringify(outlineContext.current_slide)}`,
+    "The compact index and current slide above are navigation context, not a second outline. When another page or the whole deck is needed, read only the relevant portion of authoritative_outline_path. Re-hash it before any write or formal image run.",
   ].join("\n");
 
   return {
@@ -353,6 +409,7 @@ export function threadStartParams(labRoot) {
       "You are the AI collaborator inside Shawn PPT Studio.",
       "Each conversation belongs to an entire PPT deck; a currently viewed slide is context only and never an authority boundary.",
       "Follow normal Codex interaction: natural messages, real streamed work items, commentary while working, and a final answer after the requested work actually finishes.",
+      ...STUDIO_COMMUNICATION_RULES,
       "Do not return a structured proposal or hand work off to an invisible secondary conversation.",
       "Questions, hypotheticals, and brainstorming remain conversation only. Clear instructions are carried out directly in the active turn with no extra Studio confirmation.",
       "For formal PPT image work, use the supplied shawn-ppt-image and imagegen skills and preserve their canonical state, source snapshot, sole Judge, and selection boundaries.",

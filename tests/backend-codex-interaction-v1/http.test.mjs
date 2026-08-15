@@ -12,6 +12,8 @@ class FakeAppServer extends EventEmitter {
     this.pid = 123;
     this.account = { type: "chatgpt" };
     this.calls = [];
+    this.approvalResponses = [];
+    this.serverRequests = new Map();
     this.thread = { id: "thread-1", status: { type: "idle" }, turns: [] };
   }
   subscribe(listener) {
@@ -61,8 +63,17 @@ class FakeAppServer extends EventEmitter {
     }
     throw new Error(`unexpected method: ${method}`);
   }
-  serverRequest() { return null; }
-  respondToServerRequest() {}
+  serverRequest(requestId) { return this.serverRequests.get(String(requestId)) || null; }
+  respondToServerRequest(requestId, result) {
+    const key = String(requestId);
+    if (!this.serverRequests.has(key)) throw new Error("approval request is not active");
+    this.approvalResponses.push({ requestId: key, result });
+    this.serverRequests.delete(key);
+  }
+  emitServerRequest(request) {
+    this.serverRequests.set(String(request.requestId ?? request.id), request);
+    this.emit("serverRequest", request);
+  }
 }
 
 function writeHeaders() {
@@ -111,6 +122,7 @@ function fixtureContext() {
     dataRoot: "/tmp/shawn-studio",
     labRoot: "/tmp/shawn-studio",
     monitoringRoot: "/tmp/shawn-studio/monitoring",
+    overviewPython: "/tmp/shawn-studio/runtime/python3",
     pathPolicy: {
       imageRoot: "/tmp/shawn-studio/runtime/images",
       requireReferenceImage: async (value) => value,
@@ -228,6 +240,85 @@ test("history returns typed App Server items instead of a messages-only projecti
     assert.equal(response.status, 200);
     assert.equal(body.turns[0].items[0].type, "commandExecution");
     assert.equal(body.thread.id, "thread-1");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("approval resolution is recorded and reconnect replay omits the resolved actionable request", async () => {
+  const { client, context } = fixtureContext();
+  const server = createLabHttpServer(context);
+  const baseUrl = await listen(server);
+  try {
+    client.emitServerRequest({
+      id: 71,
+      requestId: "71",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-approval",
+        itemId: "command-approval",
+        availableDecisions: ["acceptForSession", "decline"],
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/api/codex/approvals/71`, {
+      method: "POST",
+      headers: writeHeaders(),
+      body: JSON.stringify({ decision: "acceptForSession" }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { resolved: true, decision: "acceptForSession" });
+    assert.deepEqual(client.approvalResponses, [{
+      requestId: "71",
+      result: { decision: "acceptForSession" },
+    }]);
+
+    const controller = new AbortController();
+    const replayResponse = await fetch(
+      `${baseUrl}/api/decks/fixture/conversations/conversation-1/events?turn_id=turn-approval&after=0`,
+      { signal: controller.signal },
+    );
+    assert.equal(replayResponse.status, 200);
+    const reader = replayResponse.body.getReader();
+    const replay = await waitForText(reader, /approval_resolution/);
+    assert.match(replay, /event: approval_resolution/);
+    assert.match(replay, /"resolved":true/);
+    assert.doesNotMatch(replay, /event: approval\r?\n/);
+    controller.abort();
+    await reader.cancel().catch(() => {});
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("disconnecting the workspace SSE only detaches the viewer and does not interrupt the turn", async () => {
+  const { client, context } = fixtureContext();
+  const server = createLabHttpServer(context);
+  const baseUrl = await listen(server);
+  try {
+    const controller = new AbortController();
+    const response = await fetch(
+      `${baseUrl}/api/decks/fixture/conversations/conversation-1/messages`,
+      {
+        method: "POST",
+        headers: { ...writeHeaders(), accept: "text/event-stream" },
+        body: JSON.stringify({ message: "开始长任务", current_slide_uid: "SLIDE_1" }),
+        signal: controller.signal,
+      },
+    );
+    const reader = response.body.getReader();
+    await waitForText(reader, /item\/agentMessage\/delta/);
+    controller.abort();
+    await reader.cancel().catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(context.codexInteraction.activeTurn("thread-1"), "turn-1");
+    assert.equal(client.calls.some((call) => call.method === "turn/interrupt"), false);
+    client.emit("notification", {
+      method: "turn/completed",
+      params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } },
+    });
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

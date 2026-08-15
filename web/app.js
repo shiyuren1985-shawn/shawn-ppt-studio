@@ -1,6 +1,7 @@
 import * as api from "./api.js";
 import {
   chooseScope,
+  agentMessageSegments,
   codexHistoryTurns,
   codexItemPresentation,
   codexItemText,
@@ -38,7 +39,11 @@ const state = {
   eventSequence: 0,
   eventController: null,
   itemViews: new Map(),
+  turnProcessViews: new Map(),
   userMessageViews: new Map(),
+  pendingApprovals: new Map(),
+  resolvedApprovalIds: new Set(),
+  resolvingApprovalIds: new Set(),
   submitting: false,
   interrupting: false,
   creatingConversation: false,
@@ -578,6 +583,37 @@ function openImage(url) {
   el["image-dialog"].showModal();
 }
 
+function renderAgentMessageBody(body, text) {
+  body.replaceChildren();
+  for (const segment of agentMessageSegments(text)) {
+    if (segment.type === "text") {
+      body.append(document.createTextNode(segment.text));
+      continue;
+    }
+    const link = document.createElement("a");
+    link.className = "conversation-file-link";
+    link.textContent = segment.label;
+    link.title = segment.type === "local_image" ? "点击查看图片" : "在新窗口打开";
+    if (segment.type === "local_image") {
+      const url = api.conversationImageUrl(state.deckId, segment.target);
+      if (!url) {
+        body.append(document.createTextNode(segment.label));
+        continue;
+      }
+      link.href = url;
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        openImage(url);
+      });
+    } else {
+      link.href = segment.target;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+    body.append(link);
+  }
+}
+
 function closeImage() {
   el["image-dialog"].close();
   el["image-dialog-content"].removeAttribute("src");
@@ -749,7 +785,11 @@ function renderConversationList() {
 function renderMessages() {
   el["message-list"].replaceChildren();
   state.itemViews.clear();
+  state.turnProcessViews.clear();
   state.userMessageViews.clear();
+  state.pendingApprovals.clear();
+  state.resolvedApprovalIds.clear();
+  state.resolvingApprovalIds.clear();
   if (!state.messages.length) {
     const welcome = document.createElement("div");
     welcome.className = "welcome-message";
@@ -764,6 +804,8 @@ function renderMessages() {
         { scroll: false, authoritative: true },
       );
     }
+    if (turn.status === "inProgress") ensureTurnProcess(turn.turn_id);
+    else finishTurnProcess(turn.turn_id, turn.status);
   }
   el["message-list"].scrollTop = el["message-list"].scrollHeight;
 }
@@ -798,6 +840,80 @@ function statusLabel(status) {
   })[status] || status || "";
 }
 
+function ensureTurnProcess(turnId) {
+  const id = String(turnId || state.activeTurnId || "current-turn");
+  const active = Boolean(state.activeTurnId) && String(state.activeTurnId) === id;
+  let view = state.turnProcessViews.get(id);
+  if (view) {
+    if (active) {
+      view.details.open = true;
+      view.status.textContent = "进行中";
+    }
+    return view;
+  }
+  const article = document.createElement("article");
+  article.className = "codex-item codex-process";
+  article.dataset.turnId = id;
+  const details = document.createElement("details");
+  details.open = active;
+  const summary = document.createElement("summary");
+  const title = document.createElement("span");
+  title.textContent = "处理过程";
+  const status = document.createElement("span");
+  status.className = "codex-process-status";
+  status.textContent = active ? "进行中" : "已完成";
+  summary.append(title, status);
+  const body = document.createElement("div");
+  body.className = "codex-process-body";
+  details.append(summary, body);
+  article.append(details);
+  el["message-list"].append(article);
+  view = { article, details, status, body, commentaries: [], events: new Map() };
+  state.turnProcessViews.set(id, view);
+  return view;
+}
+
+function finishTurnProcess(turnId, status = "completed") {
+  const view = state.turnProcessViews.get(String(turnId || ""));
+  if (!view) return;
+  view.details.open = false;
+  view.status.textContent = status === "interrupted"
+    ? "已停止"
+    : status === "failed" ? "失败" : "已完成";
+}
+
+function appendProcessCommentary(process, article) {
+  process.body.append(article);
+  process.commentaries.push(article);
+  while (process.commentaries.length > 3) process.commentaries.shift()?.remove();
+}
+
+function processEventView(process, itemId, presentation) {
+  const key = presentation.title || "处理步骤";
+  let aggregate = process.events.get(key);
+  if (!aggregate) {
+    const article = document.createElement("div");
+    article.className = "codex-process-event";
+    const title = document.createElement("span");
+    title.className = "codex-process-event-title";
+    const status = document.createElement("span");
+    status.className = "codex-process-event-status";
+    const detail = document.createElement("pre");
+    detail.hidden = true;
+    article.append(title, status, detail);
+    process.body.append(article);
+    aggregate = { article, title, status, detail, label: key, count: 0, itemIds: new Set() };
+    process.events.set(key, aggregate);
+  }
+  if (!aggregate.itemIds.has(itemId)) {
+    aggregate.itemIds.add(itemId);
+    aggregate.count += 1;
+  }
+  aggregate.title.textContent = aggregate.count > 1 ? `${aggregate.label} ×${aggregate.count}` : aggregate.label;
+  aggregate.status.textContent = statusLabel(presentation.status);
+  return { ...aggregate, type: "step", aggregate };
+}
+
 function renderPlan(value, { scroll = true } = {}) {
   const steps = codexPlanSteps(value);
   if (!steps.length) return null;
@@ -811,7 +927,7 @@ function renderPlan(value, { scroll = true } = {}) {
     title.textContent = "计划";
     const list = document.createElement("ol");
     article.append(title, list);
-    el["message-list"].append(article);
+    ensureTurnProcess(value?.__turnId).body.append(article);
     view = { article, list, type: "plan" };
     state.itemViews.set(itemId, view);
   }
@@ -831,20 +947,37 @@ function renderCodexItem(item, { scroll = true, authoritative = false, streaming
   const itemId = String(item.id || item.itemId || item.item_id || "");
   if (!itemId) return null;
   if (item.type === "plan") return renderPlan({ ...item, itemId }, { scroll });
+  const presentation = item.type === "userMessage" || item.type === "agentMessage"
+    ? null
+    : codexItemPresentation(item);
+  const lowSignal = ["reasoning", "collabAgentToolCall", "collabToolCall", "subAgentActivity", "contextCompaction"].includes(item.type);
+  if (lowSignal && !presentation?.detail && (!streaming || item.type !== "reasoning")) return null;
   let view = state.itemViews.get(itemId);
   if (view) {
     if (view.type === "agentMessage") {
       const commentary = item.phase === "commentary";
       view.article.classList.toggle("commentary", commentary);
       view.article.classList.toggle("final-answer", !commentary);
-      view.meta.textContent = commentary ? "Codex · 进展" : "Codex";
-      if (authoritative) view.body.textContent = codexItemText(item);
+      if (view.meta) view.meta.textContent = commentary ? "Codex · 进展" : "Codex";
+      if (authoritative) renderAgentMessageBody(view.body, codexItemText(item));
     }
     if (view.type === "step") {
-      const presentation = codexItemPresentation(item);
-      view.title.textContent = presentation.title;
-      view.status.textContent = statusLabel(presentation.status);
-      if (presentation.detail) view.detail.textContent = presentation.detail;
+      const nextPresentation = codexItemPresentation(item);
+      if (authoritative && lowSignal && !nextPresentation.detail && !view.aggregate) {
+        view.article.remove();
+        state.itemViews.delete(itemId);
+        return null;
+      }
+      if (view.aggregate) {
+        view.aggregate.label = nextPresentation.title || view.aggregate.label;
+        view.title.textContent = view.aggregate.count > 1
+          ? `${view.aggregate.label} ×${view.aggregate.count}`
+          : view.aggregate.label;
+      } else {
+        view.title.textContent = nextPresentation.title;
+      }
+      view.status.textContent = statusLabel(nextPresentation.status);
+      if (nextPresentation.detail) view.detail.textContent = nextPresentation.detail;
     }
     view.article.classList.toggle("streaming", streaming && !authoritative);
     if (authoritative) view.article.classList.remove("streaming");
@@ -873,41 +1006,35 @@ function renderCodexItem(item, { scroll = true, authoritative = false, streaming
       state.userMessageViews.set(semanticKey, entries);
     }
   } else if (item.type === "agentMessage") {
+    if (item.phase === "commentary") {
+      const process = ensureTurnProcess(item.__turnId);
+      const article = document.createElement("p");
+      article.className = `codex-process-commentary${streaming ? " streaming" : ""}`;
+      article.dataset.itemId = itemId;
+      const body = document.createElement("span");
+      body.className = "message-body";
+      renderAgentMessageBody(body, codexItemText(item));
+      article.append(body);
+      appendProcessCommentary(process, article);
+      view = { article, body, meta: null, type: "agentMessage" };
+    } else {
     const article = document.createElement("article");
-    const phase = item.phase === "commentary" ? "commentary" : "final-answer";
-    article.className = `codex-item agent-message ${phase}${streaming ? " streaming" : ""}`;
+    article.className = `codex-item agent-message final-answer${streaming ? " streaming" : ""}`;
     article.dataset.itemId = itemId;
     const meta = document.createElement("div");
     meta.className = "message-meta";
-    meta.textContent = item.phase === "commentary" ? "Codex · 进展" : "Codex";
+    meta.textContent = "Codex";
     const body = document.createElement("div");
     body.className = "message-body";
-    body.textContent = codexItemText(item);
+    renderAgentMessageBody(body, codexItemText(item));
     article.append(meta, body);
     el["message-list"].append(article);
     view = { article, meta, body, type: "agentMessage" };
+    }
   } else {
-    const presentation = codexItemPresentation(item);
-    const article = document.createElement("article");
-    article.className = "codex-item";
-    article.dataset.itemId = itemId;
-    const details = document.createElement("details");
-    details.className = "codex-step";
-    const summary = document.createElement("summary");
-    const title = document.createElement("span");
-    title.className = "codex-step-title";
-    title.textContent = presentation.title;
-    const status = document.createElement("span");
-    status.className = "codex-step-status";
-    status.textContent = statusLabel(presentation.status);
-    summary.append(title, status);
-    const detail = document.createElement("pre");
-    detail.className = "codex-step-detail";
-    detail.textContent = presentation.detail || "暂无更多细节";
-    details.append(summary, detail);
-    article.append(details);
-    el["message-list"].append(article);
-    view = { article, details, title, status, detail, type: "step" };
+    const process = ensureTurnProcess(item.__turnId);
+    view = processEventView(process, itemId, presentation);
+    view.detail.textContent = presentation.detail || "";
   }
   state.itemViews.set(itemId, view);
   if (scroll) scrollTimeline();
@@ -1039,7 +1166,7 @@ function formatTaskElapsed(seconds) {
 function currentConversationTask() {
   return state.tasks.find((task) => task.deck_id === state.deckId
     && task.conversation_id === state.activeConversationId
-    && ["preparing", "queued", "generating", "reviewing"].includes(task.status)) || null;
+    && ["preparing", "queued", "generating", "reviewing", "waiting_permission"].includes(task.status)) || null;
 }
 
 function updateTurnStatus() {
@@ -1051,15 +1178,25 @@ function updateTurnStatus() {
 }
 
 function taskGroupLabel(status) {
-  if (["preparing", "queued", "generating", "reviewing"].includes(status)) return "进行中";
-  if (["attention", "failed"].includes(status)) return "需要查看";
+  if (["preparing", "queued", "generating", "reviewing", "waiting_permission"].includes(status)) return "进行中";
+  if (["attention", "stalled", "failed"].includes(status)) return "需要查看";
   return "最近完成";
 }
 
+function taskStatusCopy(task) {
+  if (task.status === "waiting_permission" && Number(task.pending_approval_count) > 0) {
+    return `等待允许操作 · ${Number(task.pending_approval_count)}项`;
+  }
+  return `${task.status_label} · ${formatTaskElapsed(task.elapsed_seconds)}`;
+}
+
 function renderTaskCenter() {
-  const count = state.taskCounts.active + state.taskCounts.attention;
-  el["task-count"].hidden = count === 0;
-  el["task-count"].textContent = String(count);
+  const activeCount = state.taskCounts.active;
+  el["task-count"].hidden = activeCount === 0;
+  el["task-count"].textContent = String(activeCount);
+  el["task-center-button"].title = state.taskCounts.attention > 0
+    ? `${state.taskCounts.attention} 个历史任务需要查看`
+    : "查看作图任务";
   el["task-center-button"].classList.toggle("has-active", state.taskCounts.active > 0);
   el["task-center-button"].classList.toggle("has-attention", state.taskCounts.active === 0 && state.taskCounts.attention > 0);
   el["task-center-summary"].textContent = state.taskCounts.active
@@ -1104,7 +1241,7 @@ function renderTaskCenter() {
     title.textContent = task.title;
     const status = document.createElement("span");
     status.className = "task-card-status";
-    status.textContent = `${task.status_label} · ${formatTaskElapsed(task.elapsed_seconds)}`;
+    status.textContent = taskStatusCopy(task);
     main.append(eyebrow, title, status);
     if (Number.isFinite(task.progress_percent)) {
       const progress = document.createElement("div");
@@ -1298,72 +1435,214 @@ function updateSendState() {
   el["send-button"].textContent = "发送";
 }
 
-function appendPermissionRequest(request) {
-  if (!request?.request_id || el["message-list"].querySelector(`[data-request-id="${CSS.escape(request.request_id)}"]`)) return null;
-  const params = request.params || request;
-  const card = document.createElement("article");
-  card.className = "action-confirmation";
-  card.dataset.testid = "codex-permission-request";
-  card.dataset.requestId = request.request_id;
-  const header = document.createElement("div");
-  header.className = "action-confirmation-header";
+function stableApprovalValue(value) {
+  if (Array.isArray(value)) return value.map(stableApprovalValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableApprovalValue(value[key])]));
+}
+
+function approvalValueKey(value) {
+  return JSON.stringify(stableApprovalValue(value));
+}
+
+function firstApprovalValue(source, names) {
+  for (const name of names) {
+    if (source?.[name] !== undefined && source[name] !== null && source[name] !== "") return source[name];
+  }
+  return null;
+}
+
+function canonicalFast8Claim(request) {
+  const params = request?.params || request || {};
+  const actionCommands = Array.isArray(params.commandActions)
+    ? params.commandActions.map((action) => typeof action?.command === "string" ? action.command : null).filter(Boolean)
+    : [];
+  if (actionCommands.length > 1 || (!actionCommands.length && typeof params.command !== "string")) return null;
+  const command = (actionCommands[0] || params.command).trim();
+  const invocation = command.match(/(?:^|\s)(?:python3?|\/[^\s"']*\/python3?)(?:\s+)(["']?)(\/[^\s"']*\/fast8_control_plane_v1\.py)\1\s+(\S+)/);
+  if (!invocation || invocation[3] !== "claim") return null;
+  const state = command.match(/--state(?:=|\s+)(["']?)(\/[^\s"']+\/state\/style_run_state\.json)\1/);
+  const ticket = command.match(/--ticket(?:=|\s+)(["']?)(\/[^\s"']+\/style_jobs\/dispatch_tickets\/ticket_[^/\s"']+\.json)\1/);
+  if (!state?.[2] || !ticket?.[2]) return null;
+  const runRoot = state[2].replace(/\/state\/style_run_state\.json$/, "");
+  if (!ticket[2].startsWith(`${runRoot}/style_jobs/dispatch_tickets/ticket_`)) return null;
+  return { script: invocation[2], operation: "claim", state_path: state[2], run_root: runRoot };
+}
+
+function approvalBatchKey(request) {
+  const params = request?.params || request || {};
+  const threadId = request?.["thread" + "_id"] || params.threadId || "";
+  const turnId = request?.turn_id || params.turnId || "";
+  const amendment = firstApprovalValue(params, [
+    "proposedExecpolicyAmendment", "proposed_execpolicy_amendment", "execpolicyAmendment", "execpolicy_amendment",
+  ]);
+  const claim = canonicalFast8Claim(request);
+  if (!threadId || !turnId || amendment === null || !claim) return null;
+  return approvalValueKey([
+    threadId,
+    turnId,
+    request.method || "",
+    amendment,
+    claim,
+    request.choices || [],
+  ]);
+}
+
+function approvalLocation(request) {
+  const params = request?.params || request || {};
+  return firstApprovalValue(params, ["grantRoot", "grant_root", "cwd", "runRoot", "run_root"]);
+}
+
+function approvalKind(request) {
+  if (request?.method === "item/fileChange/requestApproval") return "修改项目文件";
+  if (request?.method === "item/permissions/requestApproval") return "使用指定权限";
+  return "运行任务步骤";
+}
+
+function approvalIdentity(request) {
+  const params = request?.params || request || {};
+  const requestId = String(request?.request_id || "");
+  if (!requestId) return "";
+  return approvalValueKey([
+    requestId,
+    request?.item_id || params.itemId || "",
+    request?.method || "",
+    request?.["thread" + "_id"] || params.threadId || "",
+    request?.turn_id || params.turnId || "",
+  ]);
+}
+
+function markApprovalResolved(request) {
+  const identity = approvalIdentity(request);
+  if (!identity) return;
+  state.resolvedApprovalIds.add(identity);
+  state.pendingApprovals.delete(identity);
+  state.resolvingApprovalIds.delete(identity);
+}
+
+function appendApprovalResolutionNote(request, decision) {
+  const selected = (request.choices || []).find((choice) => approvalValueKey(choice.decision) === approvalValueKey(decision));
+  const note = document.createElement("article");
+  note.className = "action-confirmation completed";
+  note.dataset.testid = "codex-permission-request";
   const copy = document.createElement("div");
   copy.className = "action-confirmation-copy";
-  const strong = document.createElement("strong");
-  strong.textContent = "Codex 需要你的允许";
-  const summaryText = document.createElement("span");
-  summaryText.textContent = params.reason || "Codex 正在请求额外权限。";
-  copy.append(strong, summaryText);
-  header.append(copy);
-  const detail = document.createElement("details");
-  const detailSummary = document.createElement("summary");
-  detailSummary.textContent = "查看访问范围";
-  const list = document.createElement("ul");
-  list.className = "action-details";
-  const details = [
-    params.command ? `命令：${params.command}` : null,
-    params.grantRoot ? `位置：${params.grantRoot}` : params.grant_root ? `位置：${params.grant_root}` : params.cwd ? `位置：${params.cwd}` : null,
-  ].filter(Boolean);
-  for (const item of details) {
-    const row = document.createElement("li");
-    row.textContent = item;
-    list.append(row);
+  const title = document.createElement("strong");
+  title.textContent = "权限请求已处理";
+  const status = document.createElement("span");
+  status.textContent = `已选择：${selected?.label || "已回复"}`;
+  copy.append(title, status);
+  note.append(copy);
+  el["message-list"].append(note);
+}
+
+function renderApprovalCards() {
+  const timeline = el["message-list"];
+  const keepAtBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 48;
+  for (const card of el["message-list"].querySelectorAll("[data-approval-card]")) card.remove();
+  const groups = new Map();
+  for (const request of state.pendingApprovals.values()) {
+    const batchKey = approvalBatchKey(request);
+    const key = batchKey ? `batch:${batchKey}` : `single:${request.request_id}`;
+    const group = groups.get(key) || [];
+    group.push(request);
+    groups.set(key, group);
   }
-  detail.append(detailSummary, list);
-  const status = document.createElement("p");
-  status.className = "action-status";
-  status.textContent = "请选择 Codex 提供的一个选项。";
-  const actions = document.createElement("div");
-  actions.className = "permission-actions";
-  const resolve = async (decision) => {
-    for (const button of actions.querySelectorAll("button")) button.disabled = true;
-    try {
-      await api.resolveCodexApproval(request.request_id, decision);
-      const selected = (request.choices || []).find((choice) => JSON.stringify(choice.decision) === JSON.stringify(decision));
-      summaryText.textContent = `已选择：${selected?.label || "已回复"}`;
-      actions.hidden = true;
-      detail.open = false;
-      detail.hidden = true;
-      status.hidden = true;
-      card.classList.add("completed");
-    } catch (error) {
-      status.textContent = `没有提交成功：${error.message}`;
-      for (const button of actions.querySelectorAll("button")) button.disabled = false;
+
+  for (const requests of groups.values()) {
+    const batch = requests.length > 1;
+    const card = document.createElement("article");
+    card.className = "action-confirmation";
+    card.dataset.approvalCard = batch ? "batch" : "single";
+    card.dataset.testid = batch ? "codex-permission-batch" : "codex-permission-request";
+    card.dataset.requestIds = requests.map((request) => request.request_id).join(" ");
+
+    const header = document.createElement("div");
+    header.className = "action-confirmation-header";
+    const copy = document.createElement("div");
+    copy.className = "action-confirmation-copy";
+    const strong = document.createElement("strong");
+    strong.textContent = batch ? `Codex 需要允许 ${requests.length} 个连续步骤` : "Codex 需要你的允许";
+    const summaryText = document.createElement("span");
+    const reasons = [...new Set(requests.map((request) => request.params?.reason).filter(Boolean))];
+    summaryText.textContent = batch
+      ? (reasons.length === 1 ? reasons[0] : "这些步骤属于当前同一项任务，可以一次决定。")
+      : (reasons[0] || `${approvalKind(requests[0])}需要你的允许。`);
+    copy.append(strong, summaryText);
+    header.append(copy);
+
+    const detail = document.createElement("details");
+    const detailSummary = document.createElement("summary");
+    detailSummary.textContent = batch ? `查看本批次范围（${requests.length}）` : "查看访问范围";
+    const list = document.createElement("ul");
+    list.className = "action-details";
+    const detailRows = batch ? [`范围：当前任务中的 ${requests.length} 个步骤`] : [`类型：${approvalKind(requests[0])}`];
+    const locations = [...new Set(requests.map(approvalLocation).filter(Boolean))];
+    if (locations.length === 1) detailRows.push(`位置：${locations[0]}`);
+    else if (locations.length > 1) detailRows.push(`位置：${locations.length} 个任务目录`);
+    for (const item of detailRows) {
+      const row = document.createElement("li");
+      row.textContent = item;
+      list.append(row);
     }
-  };
-  for (const [index, choice] of (request.choices || []).entries()) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = index === 0 ? "action-confirm-button" : "secondary-button";
-    button.textContent = choice.label;
-    button.addEventListener("click", () => resolve(choice.decision));
-    actions.append(button);
+    detail.append(detailSummary, list);
+
+    const status = document.createElement("p");
+    status.className = "action-status";
+    status.textContent = batch ? "选择会逐个回复本批次中的请求。" : "请选择 Codex 提供的一个选项。";
+    const actions = document.createElement("div");
+    actions.className = "permission-actions";
+    const request = requests[0];
+    const resolving = requests.some((request) => state.resolvingApprovalIds.has(approvalIdentity(request)));
+    const resolve = async (decision) => {
+      const active = requests.filter((request) => state.pendingApprovals.has(approvalIdentity(request)));
+      for (const request of active) state.resolvingApprovalIds.add(approvalIdentity(request));
+      renderApprovalCards();
+      const failures = [];
+      for (const request of active) {
+        try {
+          await api.resolveCodexApproval(request.request_id, decision);
+          markApprovalResolved(request);
+          renderApprovalCards();
+          if (active.length === 1) appendApprovalResolutionNote(request, decision);
+        } catch (error) {
+          if (error.status === 404 && error.code === "approval_request_not_found") {
+            markApprovalResolved(request);
+            renderApprovalCards();
+            continue;
+          }
+          state.resolvingApprovalIds.delete(approvalIdentity(request));
+          failures.push(error);
+        }
+      }
+      renderApprovalCards();
+      if (failures.length) toast(`有 ${failures.length} 个请求没有提交成功：${failures[0].message}`);
+    };
+    for (const [index, choice] of (request.choices || []).entries()) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = index === 0 ? "action-confirm-button" : "secondary-button";
+      button.textContent = batch && index === 0 ? `允许本批次（${requests.length}）` : choice.label;
+      button.disabled = resolving;
+      button.addEventListener("click", () => resolve(choice.decision));
+      actions.append(button);
+    }
+    if (!actions.childElementCount) status.textContent = "Codex 没有返回可用的选项。";
+    if (resolving) status.textContent = "正在逐个提交…";
+    card.append(header, detail, status, actions);
+    el["message-list"].append(card);
   }
-  if (!actions.childElementCount) status.textContent = "Codex 没有返回可用的选项。";
-  card.append(header, detail, status, actions);
-  el["message-list"].append(card);
-  el["message-list"].scrollTop = el["message-list"].scrollHeight;
-  return card;
+  if (keepAtBottom) timeline.scrollTop = timeline.scrollHeight;
+}
+
+function appendPermissionRequest(request) {
+  const requestId = String(request?.request_id || "");
+  const normalized = { ...request, request_id: requestId };
+  const identity = approvalIdentity(normalized);
+  if (!identity || state.resolvedApprovalIds.has(identity) || request.resolved === true || request.status === "resolved") return null;
+  state.pendingApprovals.set(identity, normalized);
+  renderApprovalCards();
+  return el["message-list"].querySelector(`[data-request-ids~="${CSS.escape(requestId)}"]`);
 }
 
 function appendTurnOutcome(status) {
@@ -1377,6 +1656,12 @@ function appendTurnOutcome(status) {
 
 function onConversationEvent(event) {
   const data = event.data;
+  if (Number.isFinite(data?.sequence)) state.eventSequence = Math.max(state.eventSequence, data.sequence);
+  if (event.event === "approval_resolution") {
+    if (data?.resolved !== false) markApprovalResolved(data);
+    renderApprovalCards();
+    return;
+  }
   if (event.event === "approval") {
     appendPermissionRequest(data);
     return;
@@ -1386,7 +1671,6 @@ function onConversationEvent(event) {
     return;
   }
   if (event.event !== "codex" || !data?.method) return;
-  if (Number.isFinite(data.sequence)) state.eventSequence = Math.max(state.eventSequence, data.sequence);
   const params = data.params || {};
   const method = data.method;
   const turnId = String(data.turn_id || params.turnId || params.turn?.id || state.activeTurnId || "");
@@ -1408,7 +1692,7 @@ function onConversationEvent(event) {
   if (method === "item/agentMessage/delta") {
     const itemId = String(params.itemId || "");
     if (!itemId || typeof params.delta !== "string") return;
-    const view = renderCodexItem({ id: itemId, type: "agentMessage", phase: params.phase || "commentary" }, { streaming: true });
+    const view = renderCodexItem({ id: itemId, type: "agentMessage", phase: params.phase || "commentary", __turnId: turnId }, { streaming: true });
     view.body.textContent += params.delta;
     scrollTimeline();
     return;
@@ -1416,13 +1700,13 @@ function onConversationEvent(event) {
   if (method === "item/commandExecution/outputDelta") {
     const itemId = String(params.itemId || "");
     if (!itemId || typeof params.delta !== "string") return;
-    const view = renderCodexItem({ id: itemId, type: "commandExecution", status: "inProgress" }, { streaming: true });
+    const view = renderCodexItem({ id: itemId, type: "commandExecution", status: "inProgress", __turnId: turnId }, { streaming: true });
     view.detail.textContent = view.detail.textContent === "暂无更多细节" ? params.delta : view.detail.textContent + params.delta;
     return;
   }
   if (method.includes("reasoning") && method.endsWith("Delta") && typeof params.delta === "string") {
     const itemId = String(params.itemId || `reasoning-${turnId}`);
-    const view = renderCodexItem({ id: itemId, type: "reasoning", status: "inProgress" }, { streaming: true });
+    const view = renderCodexItem({ id: itemId, type: "reasoning", status: "inProgress", __turnId: turnId }, { streaming: true });
     view.detail.textContent = view.detail.textContent === "暂无更多细节" ? params.delta : view.detail.textContent + params.delta;
     return;
   }
@@ -1436,17 +1720,23 @@ function onConversationEvent(event) {
     return;
   }
   if (method === "turn/plan/updated") {
-    renderPlan({ ...params, itemId: `plan-${turnId}` });
+    renderPlan({ ...params, itemId: `plan-${turnId}`, __turnId: turnId });
     return;
   }
   if (method === "turn/completed") {
     const status = String(params.turn?.status || params.status || "completed");
+    finishTurnProcess(turnId, status);
     appendTurnOutcome(status);
     if (!state.activeTurnId || state.activeTurnId === turnId) {
       state.interrupting = false;
       setActiveTurn(null);
     }
     for (const view of state.itemViews.values()) view.article?.classList.remove("streaming");
+    for (const [requestId, request] of state.pendingApprovals) {
+      const requestTurnId = String(request.turn_id || request.params?.turnId || "");
+      if (requestTurnId === turnId) state.pendingApprovals.delete(requestId);
+    }
+    renderApprovalCards();
     void refreshAll();
     void loadTasks({ force: true });
   }

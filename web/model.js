@@ -49,6 +49,30 @@ export function chooseScope(decks, preferred = {}, defaultDeckId = "") {
   return { deckId: deck.deck_id, slideUid: slide?.slide_uid || "" };
 }
 
+const AGENT_LINK_RE = /!?\[([^\]\r\n]{1,120})\]\((<[^>\r\n]+>|[^)\r\n]+)\)/g;
+const LOCAL_IMAGE_RE = /\.(?:png|jpe?g|webp)$/i;
+
+export function agentMessageSegments(value) {
+  const source = String(value || "");
+  const segments = [];
+  let cursor = 0;
+  for (const match of source.matchAll(AGENT_LINK_RE)) {
+    const rawTarget = match[2].trim();
+    const target = rawTarget.startsWith("<") && rawTarget.endsWith(">")
+      ? rawTarget.slice(1, -1)
+      : rawTarget;
+    const kind = target.startsWith("/") && LOCAL_IMAGE_RE.test(target)
+      ? "local_image"
+      : /^https?:\/\//i.test(target) ? "web_link" : null;
+    if (!kind) continue;
+    if (match.index > cursor) segments.push({ type: "text", text: source.slice(cursor, match.index) });
+    segments.push({ type: kind, label: match[1].trim() || "查看图片", target });
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < source.length) segments.push({ type: "text", text: source.slice(cursor) });
+  return segments.length ? segments : [{ type: "text", text: source }];
+}
+
 export function scopeFromSlide(detail) {
   if (!detail?.slide) return null;
   return {

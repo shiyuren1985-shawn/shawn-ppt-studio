@@ -48,6 +48,7 @@ impl LoopbackEndpoint {
 struct DesktopConfig {
     studio_root: PathBuf,
     data_root: PathBuf,
+    monitoring_root: PathBuf,
     selector_root: PathBuf,
     node: PathBuf,
     python: PathBuf,
@@ -454,6 +455,93 @@ fn default_data_root(home: Option<OsString>) -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join("Library/Application Support/Shawn PPT Studio"))
 }
 
+fn normalize_absolute_path(path: PathBuf, base: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn monitoring_root_from_sources(
+    explicit: Option<PathBuf>,
+    config_path: Option<&Path>,
+    data_root: &Path,
+) -> Result<PathBuf, String> {
+    if let Some(explicit) = explicit {
+        let cwd = env::current_dir()
+            .map_err(|error| format!("cannot resolve monitoring root: {error}"))?;
+        return Ok(normalize_absolute_path(explicit, &cwd));
+    }
+
+    if let Some(config_path) = config_path.filter(|path| path.is_file()) {
+        let bytes = std::fs::read(config_path).map_err(|error| {
+            format!(
+                "cannot read Shawn PPT image monitoring config {}: {error}",
+                config_path.display()
+            )
+        })?;
+        let config: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "invalid Shawn PPT image monitoring config {}: {error}",
+                config_path.display()
+            )
+        })?;
+        let version = config
+            .get("monitoring_config_version")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(1);
+        if version != 1 {
+            return Err(format!(
+                "unsupported Shawn PPT image monitoring config version in {}",
+                config_path.display()
+            ));
+        }
+        let configured = config
+            .get("monitoring_root")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "Shawn PPT image monitoring config is missing monitoring_root: {}",
+                    config_path.display()
+                )
+            })?;
+        let base = config_path.parent().unwrap_or(data_root);
+        return Ok(normalize_absolute_path(PathBuf::from(configured), base));
+    }
+
+    Ok(normalize_absolute_path(
+        data_root.join("monitoring/shawn-ppt-image"),
+        data_root,
+    ))
+}
+
+fn default_monitoring_root(home: Option<OsString>, data_root: &Path) -> Result<PathBuf, String> {
+    let explicit = configured_path(
+        "SHAWN_PPT_IMAGE_MONITORING_ROOT",
+        Some("SHAWN_PPT_MONITORING_ROOT"),
+    )
+    .or_else(|| configured_path("PPT_AI_LAB_MONITORING_ROOT", None));
+    let codex_home = configured_path("CODEX_HOME", None)
+        .or_else(|| home.map(PathBuf::from).map(|home| home.join(".codex")));
+    let config_path = codex_home
+        .as_deref()
+        .map(|root| root.join("shawn-ppt-image-monitoring.json"));
+    monitoring_root_from_sources(explicit, config_path.as_deref(), data_root)
+}
+
 fn resolve_selector_root(studio_root: &Path) -> PathBuf {
     if let Some(configured) = configured_path("SHAWN_PPT_STUDIO_SELECTOR_ROOT", None) {
         return configured;
@@ -486,6 +574,8 @@ fn desktop_config() -> Result<DesktopConfig, String> {
     });
     let studio_root = studio_root(configured_root, &executable)?;
     let home = env::var_os("HOME");
+    let data_root = default_data_root(home.clone())?;
+    let monitoring_root = default_monitoring_root(home.clone(), &data_root)?;
     let (requested_studio_port, explicit_studio_port) = configured_port_with_source(
         "SHAWN_PPT_STUDIO_PORT",
         Some("PPT_AI_LAB_DESKTOP_PORT"),
@@ -495,7 +585,8 @@ fn desktop_config() -> Result<DesktopConfig, String> {
         is_ready(&LoopbackEndpoint::new(port))
     })?;
     Ok(DesktopConfig {
-        data_root: default_data_root(home.clone())?,
+        data_root,
+        monitoring_root,
         selector_root: resolve_selector_root(&studio_root),
         node: node_command(home.clone()),
         python: python_command(home),
@@ -523,6 +614,8 @@ fn studio_command(config: &DesktopConfig) -> Result<Command, String> {
     let mut command = supervised_command(&config.node, &args, &config.studio_root)?;
     command
         .env("SHAWN_PPT_STUDIO_DATA_ROOT", &config.data_root)
+        .env("SHAWN_PPT_IMAGE_MONITORING_ROOT", &config.monitoring_root)
+        .env("SHAWN_PPT_MONITORING_ROOT", &config.monitoring_root)
         .env("SHAWN_PPT_STUDIO_DESKTOP", "1")
         .env(
             "SHAWN_PPT_STUDIO_PARENT_PID",
@@ -737,11 +830,13 @@ pub fn run() {
 mod tests {
     use super::{
         bundled_studio_root, configured_port, default_data_root, is_studio_root,
-        select_studio_port, selector_decks_file, selector_health_response, smoke_exit_delay,
-        source_studio_root, studio_health_response, studio_root, LoopbackEndpoint,
+        monitoring_root_from_sources, select_studio_port, selector_decks_file,
+        selector_health_response, smoke_exit_delay, source_studio_root, studio_command,
+        studio_health_response, studio_root, DesktopConfig, LoopbackEndpoint,
         DEFAULT_SELECTOR_PORT, DEFAULT_STUDIO_PORT, LOOPBACK_HOST,
     };
     use std::{
+        collections::HashMap,
         ffi::OsString,
         fs,
         path::Path,
@@ -787,6 +882,94 @@ mod tests {
         assert_eq!(
             default_data_root(Some(OsString::from("/Users/example"))).expect("data root"),
             PathBuf::from("/Users/example/Library/Application Support/Shawn PPT Studio")
+        );
+    }
+
+    #[test]
+    fn monitoring_root_prefers_explicit_path_over_user_config() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("shawn-ppt-monitoring-explicit-{unique}"));
+        fs::create_dir_all(&root).expect("test root");
+        let config_path = root.join("shawn-ppt-image-monitoring.json");
+        fs::write(
+            &config_path,
+            format!(
+                "{{\"monitoring_config_version\":1,\"monitoring_root\":{:?}}}",
+                root.join("configured").to_string_lossy()
+            ),
+        )
+        .expect("monitoring config");
+        let explicit = root.join("explicit");
+        let resolved = monitoring_root_from_sources(
+            Some(explicit.clone()),
+            Some(&config_path),
+            &root.join("Application Support/Shawn PPT Studio"),
+        )
+        .expect("explicit monitoring root");
+        assert_eq!(resolved, explicit);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn monitoring_root_uses_user_config_then_application_support_fallback() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("shawn-ppt-monitoring-config-{unique}"));
+        let codex_home = root.join(".codex");
+        let data_root = root.join("Library/Application Support/Shawn PPT Studio");
+        fs::create_dir_all(&codex_home).expect("codex home");
+        let config_path = codex_home.join("shawn-ppt-image-monitoring.json");
+        fs::write(
+            &config_path,
+            "{\"monitoring_config_version\":1,\"monitoring_root\":\"../central-monitoring\"}\n",
+        )
+        .expect("monitoring config");
+
+        assert_eq!(
+            monitoring_root_from_sources(None, Some(&config_path), &data_root)
+                .expect("configured monitoring root"),
+            root.join("central-monitoring")
+        );
+        assert_eq!(
+            monitoring_root_from_sources(None, None, &data_root).expect("fallback monitoring root"),
+            data_root.join("monitoring/shawn-ppt-image")
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn studio_process_receives_one_canonical_monitoring_root() {
+        let root = PathBuf::from("/tmp/shawn-ppt-studio-monitoring-command");
+        let monitoring_root =
+            root.join("Library/Application Support/Shawn PPT Studio/monitoring/shawn-ppt-image");
+        let config = DesktopConfig {
+            studio_root: root.join("resources/studio"),
+            data_root: root.join("Library/Application Support/Shawn PPT Studio"),
+            monitoring_root: monitoring_root.clone(),
+            selector_root: root.join("selector"),
+            node: PathBuf::from("node"),
+            python: PathBuf::from("python3"),
+            selector_override: None,
+            studio: LoopbackEndpoint::new(DEFAULT_STUDIO_PORT),
+            selector: LoopbackEndpoint::new(DEFAULT_SELECTOR_PORT),
+        };
+        let command = studio_command(&config).expect("studio command");
+        let environment = command
+            .get_envs()
+            .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value.to_owned())))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            environment.get(OsString::from("SHAWN_PPT_IMAGE_MONITORING_ROOT").as_os_str()),
+            Some(&monitoring_root.clone().into_os_string())
+        );
+        assert_eq!(
+            environment.get(OsString::from("SHAWN_PPT_MONITORING_ROOT").as_os_str()),
+            Some(&monitoring_root.into_os_string())
         );
     }
 

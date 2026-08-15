@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
+import { execFile } from "node:child_process";
 import path from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { AppServerClient, resolveCodexExecutable } from "./app-server-client.mjs";
@@ -24,6 +26,8 @@ import {
   DEFAULT_MONITORING_ROOT,
   DEFAULT_OVERVIEW_PYTHON,
 } from "../integrations/shawn-single-page.mjs";
+
+const execFileAsync = promisify(execFile);
 
 function parsePort(argv, env) {
   const index = argv.indexOf("--port");
@@ -118,17 +122,27 @@ const monitoringRoot =
         process.env.PPT_AI_LAB_MONITORING_ROOT || path.join(labRoot, "fixtures", "monitoring"),
       )
     : DEFAULT_MONITORING_ROOT;
-const overviewPython =
+const configuredOverviewPython =
   process.env.PPT_AI_LAB_TEST_MODE === "1" && process.env.PPT_AI_LAB_OVERVIEW_PYTHON
     ? path.resolve(process.env.PPT_AI_LAB_OVERVIEW_PYTHON)
     : DEFAULT_OVERVIEW_PYTHON;
+let overviewPython = null;
+try {
+  await execFileAsync(configuredOverviewPython, ["-c", "from PIL import Image"], {
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  overviewPython = configuredOverviewPython;
+} catch (error) {
+  process.stderr.write(`Shawn PPT Studio: overview runtime unavailable: ${error.message}\n`);
+}
 const production = new ProductionIntentService({
   labRoot,
   discovery,
   client,
   runRoot: productionRunRoot,
   monitoringRoot,
-  overviewPython,
+  overviewPython: configuredOverviewPython,
 });
 try {
   await production.initialize();
@@ -168,6 +182,7 @@ const server = createLabHttpServer({
   selectionProjection,
   selectorWorkspace,
   monitoringRoot,
+  overviewPython,
   projects,
   projectPicker,
   exports,

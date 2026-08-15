@@ -202,7 +202,24 @@ h3 { margin: 0; font-size: 16px; }
 .codex-item.agent-message .message-body { border-color: transparent; background: transparent; padding: 3px 2px; font-size: 13px; line-height: 1.52; }
 .codex-item.agent-message.commentary .message-body { color: #53665f; font-size: 12.5px; }
 .codex-item.agent-message.final-answer .message-body { color: var(--ink); }
+.conversation-file-link { display: inline; color: var(--forest-2); font-weight: 750; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; white-space: nowrap; }
+.conversation-file-link:hover { color: var(--forest); text-decoration-thickness: 2px; }
+.conversation-file-link:focus-visible { border-radius: 3px; outline: 2px solid var(--lime); outline-offset: 2px; }
 .codex-item.streaming .message-body::after { content: ""; display: inline-block; width: 6px; height: 14px; margin-left: 4px; vertical-align: -2px; border-radius: 2px; background: var(--forest-2); animation: blink 1s steps(2) infinite; }
+.codex-process { max-width: 96%; margin: 2px 0 10px; }
+.codex-process > details { overflow: hidden; border: 1px solid #e1e7e3; border-radius: 10px; background: #fafbfa; }
+.codex-process > details > summary { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; color: #40564e; font-size: 12px; font-weight: 750; list-style: none; }
+.codex-process > details > summary::-webkit-details-marker { display: none; }
+.codex-process > details > summary::before { content: "›"; color: #7b8b85; font-size: 17px; line-height: 1; transition: transform .12s ease; }
+.codex-process > details[open] > summary::before { transform: rotate(90deg); }
+.codex-process-status { margin-left: auto; color: var(--muted); font-size: 11px; font-weight: 650; }
+.codex-process-body { display: grid; gap: 6px; padding: 2px 10px 10px 28px; border-top: 1px solid #edf0ee; }
+.codex-process-commentary { margin: 6px 0 0; color: #53665f; font-size: 12.5px; line-height: 1.5; }
+.codex-process-commentary .message-body { padding: 0; border: 0; background: transparent; }
+.codex-process-commentary.streaming .message-body::after { content: ""; display: inline-block; width: 6px; height: 13px; margin-left: 4px; vertical-align: -2px; border-radius: 2px; background: var(--forest-2); animation: blink 1s steps(2) infinite; }
+.codex-process-event { min-height: 26px; display: flex; align-items: center; gap: 8px; color: #52645d; font-size: 11.5px; }
+.codex-process-event-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.codex-process-event-status { margin-left: auto; color: var(--muted); font-size: 11px; }
 .codex-step { border: 1px solid #e3e8e5; border-radius: 9px; background: #fafbfa; }
 .codex-step > summary { min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 7px 9px; cursor: pointer; color: #40564e; font-size: 12px; font-weight: 750; list-style: none; }
 .codex-step > summary::-webkit-details-marker { display: none; }
@@ -226,19 +243,21 @@ h3 { margin: 0; font-size: 16px; }
 .stop-button span { width: 11px; height: 11px; border-radius: 2px; background: currentColor; }
 .stop-button:hover { background: var(--mint); }
 .stop-button:disabled { opacity: .55; cursor: wait; }
-.action-confirmation { max-width: 96%; margin: 7px 0 11px; padding: 8px 9px; border: 1px solid #c7d8cf; border-radius: 9px; background: #fbfdfb; }
+.action-confirmation { max-width: 96%; margin: 6px 0 9px; padding: 8px 9px; border: 1px solid #c7d8cf; border-radius: 9px; background: #fbfdfb; }
 .action-confirmation-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .action-confirmation-copy { min-width: 0; display: grid; gap: 2px; }
 .action-confirmation-copy strong { font-size: 13px; }
 .action-confirmation-copy span, .action-status { color: var(--muted); font-size: 11px; line-height: 1.4; }
-.action-confirmation details { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.action-confirmation details { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--line); }
 .action-confirmation summary { width: fit-content; cursor: pointer; color: var(--forest-2); font-size: 11px; font-weight: 750; }
-.permission-actions { display: flex; gap: 8px; margin-top: 8px; }
+.permission-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
 
 .action-details { display: grid; gap: 4px; margin: 6px 0 0; padding: 0; color: var(--muted); font-size: 11px; line-height: 1.45; list-style: none; }
 .action-details strong { color: var(--ink); }
-.action-status { margin: 6px 0 0; }
-.action-confirm-button { min-height: 38px; flex: 0 0 auto; padding: 6px 10px; border: 1px solid var(--forest); border-radius: 8px; color: white; background: var(--forest); font-size: 12px; font-weight: 800; }
+.action-status { margin: 5px 0 0; }
+.action-confirmation .secondary-button,
+.action-confirm-button { min-height: 32px; flex: 0 0 auto; padding: 5px 9px; border-radius: 8px; font-size: 12px; }
+.action-confirm-button { border: 1px solid var(--forest); color: white; background: var(--forest); font-weight: 800; }
 .action-confirm-button:hover { background: var(--forest-2); }
 .composer { padding: 7px 11px 8px; border-top: 1px solid var(--line); }
 .composer textarea { width: 100%; min-height: 52px; max-height: min(240px, 32vh); resize: none; overflow-y: hidden; padding: 8px 10px; border: 1px solid #bfcac4; border-radius: 10px; outline: none; color: var(--ink); background: var(--paper); font-size: 13px; line-height: 1.42; }

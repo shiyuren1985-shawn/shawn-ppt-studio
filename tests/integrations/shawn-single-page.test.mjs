@@ -99,12 +99,15 @@ test("compiles authoritative UID and revision into a bounded Fast8 request", () 
   assert.equal(turn.input[1].type, "skill");
   assert.equal(turn.input[1].name, "shawn-ppt-image");
   assert.match(turn.input[0].text, /fast8_control_plane_v1\.py/);
-  assert.match(turn.input[0].text, /outline_path as required-file, page-source, and slide-identity-file/);
+  assert.match(turn.input[0].text, /same outline as slide-identity-file only to build_fast8_preflight_manifest\.py/);
+  assert.match(turn.input[0].text, /Never pass --slide-identity-file to init_task_dir\.py for Fast8/);
   assert.match(turn.input[0].text, /Do not create a second UID file, monitor, semaphore, Judge/);
   assert.doesNotMatch(turn.input[0].text, /outputSchema/);
   assert.match(turn.input[0].text, /final JSON contract/);
   assert.match(turn.input[0].text, /transport=studio_app_server_v1/);
   assert.match(turn.input[0].text, /Subagent creation is not dispatch/);
+  assert.match(turn.input[0].text, /canonical file evidence is authoritative/);
+  assert.match(turn.input[0].text, /prepare-directors immediately in this same turn without asking for a user steer/);
   assert.match(turn.input[0].text, /do not spawn an image-execution subagent/);
   assert.match(turn.input[0].text, /root turn is the one and only mechanical executor/);
   assert.match(turn.input[0].text, /prepare --state <state_path> --render-action/);

@@ -62,9 +62,20 @@ def source_path(source: str) -> Path:
     return (CONFIG_PATH.parent / source).resolve()
 
 
-def check_source_manifest() -> dict[str, str]:
+def mapped_bundle_files(source: Path, destination: str) -> set[str]:
+    if source.is_file():
+        return {destination.removeprefix("studio/")}
+    return {
+        (Path(destination.removeprefix("studio/")) / path.relative_to(source)).as_posix()
+        for path in source.rglob("*")
+        if path.is_file()
+    }
+
+
+def check_source_manifest() -> set[str]:
     resources, _ = load_resource_manifest()
     mapped_runtime: dict[str, str] = {}
+    expected_bundle_files: set[str] = set()
     destinations: set[str] = set()
 
     for source, destination in resources.items():
@@ -74,6 +85,7 @@ def check_source_manifest() -> dict[str, str]:
         if destination in destinations:
             fail(f"duplicate resource destination: {destination}")
         destinations.add(destination)
+        expected_bundle_files.update(mapped_bundle_files(resolved, destination))
 
         try:
             relative = resolved.relative_to(STUDIO_ROOT).as_posix()
@@ -104,29 +116,24 @@ def check_source_manifest() -> dict[str, str]:
             if PERSONAL_PATH.search(path.read_bytes()):
                 fail(f"resource contains a personal absolute path: {path.relative_to(STUDIO_ROOT)}")
 
-    return mapped_runtime
+    return expected_bundle_files
 
 
-def check_built_app(app: Path, mapped_runtime: dict[str, str]) -> None:
+def check_built_app(app: Path, expected: set[str]) -> None:
     studio = app / "Contents" / "Resources" / "studio"
     if not studio.is_dir():
         fail(f"desktop resources are missing: {studio}")
 
-    expected = {destination.removeprefix("studio/") for destination in mapped_runtime.values()}
     actual: set[str] = set()
-    for prefix in RUNTIME_PREFIXES:
-        root = studio / prefix.rstrip("/")
-        if not root.is_dir():
-            fail(f"required bundle directory is missing: {root}")
-        for path in root.rglob("*"):
-            if not path.is_file():
-                continue
-            relative = path.relative_to(studio).as_posix()
-            actual.add(relative)
-            if is_forbidden_name(path):
-                fail(f"forbidden file was bundled: {relative}")
-            if PERSONAL_PATH.search(path.read_bytes()):
-                fail(f"bundled file contains a personal absolute path: {relative}")
+    for path in studio.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(studio).as_posix()
+        actual.add(relative)
+        if is_forbidden_name(path):
+            fail(f"forbidden file was bundled: {relative}")
+        if PERSONAL_PATH.search(path.read_bytes()):
+            fail(f"bundled file contains a personal absolute path: {relative}")
 
     if actual != expected:
         missing = sorted(expected - actual)
@@ -140,9 +147,9 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        mapped_runtime = check_source_manifest()
+        expected_bundle_files = check_source_manifest()
         if args.app:
-            check_built_app(args.app.resolve(), mapped_runtime)
+            check_built_app(args.app.resolve(), expected_bundle_files)
     except (AssertionError, KeyError, json.JSONDecodeError, OSError, subprocess.CalledProcessError) as error:
         print(f"bundle resource hygiene FAIL: {error}", file=sys.stderr)
         return 1

@@ -11,6 +11,7 @@ import {
   CodexInteractionRelay,
 } from "./codex-interaction.mjs";
 import { sanitizeForBrowser } from "./path-policy.mjs";
+import { resolveConversationImage } from "./conversation-image.mjs";
 import { handleSelectorProjectionRequest } from "./selector-http.mjs";
 import { handleSelectorWorkspaceRequest } from "./selector-workspace-http.mjs";
 import {
@@ -401,6 +402,7 @@ async function confirmedSelectionRefs(deck, selectionProjection) {
 }
 
 async function streamWorkspaceTurn(req, res, context, route) {
+  const requestStartedAt = new Date().toISOString();
   const body = await readJson(req);
   if (!context.client.ready) {
     throw new HttpError(503, "Codex App Server is not ready", "app_server_unavailable");
@@ -432,6 +434,8 @@ async function streamWorkspaceTurn(req, res, context, route) {
       pathPolicy: context.pathPolicy,
       confirmedSelections: await confirmedSelectionRefs(deck, context.selectionProjection),
       monitoringRoot: context.monitoringRoot,
+      overviewPython: context.overviewPython,
+      requestStartedAt,
     }));
     context.singleEditTurnFinalizer?.registerStarting?.(threadId, {
       transport: "studio_app_server_v1",
@@ -496,6 +500,19 @@ async function serveRuntimeFile(res, requestUrl, context) {
     "x-content-type-options": "nosniff",
   });
   createReadStream(filePath).pipe(res);
+}
+
+async function serveConversationImage(res, requestUrl, context, deckId) {
+  const deck = await context.discovery.readDeck(deckId);
+  const resolved = await resolveConversationImage(deck, requestUrl.searchParams.get("path"));
+  res.writeHead(200, {
+    "content-type": resolved.contentType,
+    "content-length": resolved.size,
+    "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(resolved.filename).replaceAll("'", "%27")}`,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
+  createReadStream(resolved.path).pipe(res);
 }
 
 async function serveStatic(res, pathname, context) {
@@ -648,6 +665,7 @@ export function createLabHttpServer(context) {
           throw new HttpError(400, error.message, error.code || "invalid_approval_decision");
         }
         context.client.respondToServerRequest(requestId, result);
+        context.codexInteraction.resolveApproval(request, body.decision);
         json(res, 200, { resolved: true, decision: body.decision });
         return;
       }
@@ -837,6 +855,7 @@ export function createLabHttpServer(context) {
           threadId,
           includeTurns: true,
         });
+        context.codexInteraction.observeThreadSnapshot?.(result?.thread);
         const storedActiveTurn = [...(result?.thread?.turns || [])]
           .reverse()
           .find((turn) => turn?.status === "inProgress")?.id || null;
@@ -1316,6 +1335,19 @@ export function createLabHttpServer(context) {
 
       if (req.method === "GET" && requestUrl.pathname === "/api/runtime-file") {
         await serveRuntimeFile(res, requestUrl, context);
+        return;
+      }
+
+      const conversationImageMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/conversation-image$/,
+      );
+      if (req.method === "GET" && conversationImageMatch) {
+        await serveConversationImage(
+          res,
+          requestUrl,
+          context,
+          decodeURIComponent(conversationImageMatch[1]),
+        );
         return;
       }
 

@@ -6,6 +6,12 @@ function turnIdOf(params) {
   return params?.turnId || params?.turn?.id || null;
 }
 
+function epochMilliseconds(value, fallback = null) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+  return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+}
+
 function browserSafeParams(method, params) {
   if (!["item/started", "item/completed"].includes(method)) return params;
   if (params?.item?.type !== "imageGeneration") return params;
@@ -70,6 +76,16 @@ function sameDecision(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function approvalIdentity(record) {
+  return JSON.stringify([
+    record?.thread_id || null,
+    record?.turn_id || null,
+    record?.request_id || null,
+    record?.item_id || null,
+    record?.method || null,
+  ]);
+}
+
 export function approvalResult(request, decision) {
   const method = request?.method || "";
   if (method === "item/permissions/requestApproval") {
@@ -106,6 +122,7 @@ export class CodexInteractionRelay {
     this.maxEventsPerTurn = maxEventsPerTurn;
     this.nextSequence = 1;
     this.activeByThread = new Map();
+    this.latestByThread = new Map();
     this.startingThreads = new Set();
     this.eventsByTurn = new Map();
     this.listeners = new Set();
@@ -128,6 +145,29 @@ export class CodexInteractionRelay {
     return [...this.activeByThread.entries()].map(([threadId, turnId]) => ({ threadId, turnId }));
   }
 
+  latestTurn(threadId) {
+    return this.latestByThread.get(threadId) || null;
+  }
+
+  observeThreadSnapshot(thread) {
+    const threadId = thread?.id || thread?.threadId || null;
+    const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+    const latest = turns.at(-1);
+    const turnId = latest?.id || latest?.turnId || null;
+    if (!threadId || !turnId) return null;
+    const status = latest.status || "completed";
+    const snapshot = {
+      turnId,
+      status,
+      startedAtMs: epochMilliseconds(latest.startedAt || latest.startedAtMs),
+      completedAtMs: epochMilliseconds(latest.completedAt || latest.completedAtMs),
+    };
+    this.latestByThread.set(threadId, snapshot);
+    if (status === "inProgress") this.activeByThread.set(threadId, turnId);
+    else if (this.activeByThread.get(threadId) === turnId) this.activeByThread.delete(threadId);
+    return snapshot;
+  }
+
   markStarting(threadId) {
     if (this.startingThreads.has(threadId) || this.activeByThread.has(threadId)) return false;
     this.startingThreads.add(threadId);
@@ -146,7 +186,34 @@ export class CodexInteractionRelay {
     const key = `${threadId}\u0000${turnId}`;
     const records = this.eventsByTurn.get(key);
     if (!records) return null;
-    return records.filter((record) => record.sequence > after);
+    const resolvedApprovalIdentities = new Set(
+      records
+        .filter((record) => record.event === "approval_resolution" && record.resolved === true)
+        .map(approvalIdentity),
+    );
+    return records.filter((record) => (
+      record.sequence > after &&
+      !(record.event === "approval" && resolvedApprovalIdentities.has(approvalIdentity(record)))
+    ));
+  }
+
+  resolveApproval(request, decision) {
+    const approval = publicApprovalRequest(request);
+    if (!approval?.thread_id || !approval.turn_id) return null;
+    const record = {
+      event: "approval_resolution",
+      contract_version: 1,
+      sequence: this.nextSequence++,
+      thread_id: approval.thread_id,
+      turn_id: approval.turn_id,
+      item_id: approval.item_id,
+      request_id: approval.request_id,
+      method: approval.method,
+      resolved: true,
+      decision,
+    };
+    this.#publish(record);
+    return record;
   }
 
   subscribe({ threadId, turnId = null, listener }) {
@@ -178,6 +245,12 @@ export class CodexInteractionRelay {
     if (notification.method === "turn/started") {
       this.startingThreads.delete(threadId);
       this.activeByThread.set(threadId, turnId);
+      this.latestByThread.set(threadId, {
+        turnId,
+        status: params?.turn?.status || "inProgress",
+        startedAtMs: epochMilliseconds(params?.turn?.startedAt || params?.startedAtMs, Date.now()),
+        completedAtMs: null,
+      });
     }
     const record = {
       event: "codex",
@@ -192,6 +265,13 @@ export class CodexInteractionRelay {
     if (notification.method === "turn/completed") {
       this.startingThreads.delete(threadId);
       if (this.activeByThread.get(threadId) === turnId) this.activeByThread.delete(threadId);
+      const prior = this.latestByThread.get(threadId);
+      this.latestByThread.set(threadId, {
+        turnId,
+        status: params?.turn?.status || params?.status || "completed",
+        startedAtMs: prior?.turnId === turnId ? prior.startedAtMs : null,
+        completedAtMs: epochMilliseconds(params?.turn?.completedAt || params?.completedAtMs, Date.now()),
+      });
     }
   }
 

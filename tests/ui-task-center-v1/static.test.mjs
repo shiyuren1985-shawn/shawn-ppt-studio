@@ -23,3 +23,10 @@ test("task center shows canonical progress and does not expose internal task ide
   assert.doesNotMatch(html, /run_id|thread_id|state_path|sha256/);
   assert.match(css, /\.task-progress\.indeterminate/);
 });
+
+test("top task badge counts only active work while attention stays inside the panel", () => {
+  assert.match(app, /const activeCount = state\.taskCounts\.active/);
+  assert.match(app, /task-count"\]\.textContent = String\(activeCount\)/);
+  assert.doesNotMatch(app, /const count = state\.taskCounts\.active \+ state\.taskCounts\.attention/);
+  assert.match(app, /历史任务需要查看/);
+});

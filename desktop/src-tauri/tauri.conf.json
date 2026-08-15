@@ -31,6 +31,7 @@
       "../../server/app-server-client.mjs": "studio/server/app-server-client.mjs",
       "../../server/candidate-edits.mjs": "studio/server/candidate-edits.mjs",
       "../../server/codex-interaction.mjs": "studio/server/codex-interaction.mjs",
+      "../../server/conversation-image.mjs": "studio/server/conversation-image.mjs",
       "../../server/conversations.mjs": "studio/server/conversations.mjs",
       "../../server/discovery.mjs": "studio/server/discovery.mjs",
       "../../server/errors.mjs": "studio/server/errors.mjs",
@@ -73,7 +74,11 @@
       "../../web/selector/model.js": "studio/web/selector/model.js",
       "../../web/selector/styles.css": "studio/web/selector/styles.css",
       "../../web/selector/workspace.js": "studio/web/selector/workspace.js",
-      "../../.agents/skills/shawn-ppt-image/": "studio/.agents/skills/shawn-ppt-image"
+      "../../.agents/skills/shawn-ppt-image/SKILL.md": "studio/.agents/skills/shawn-ppt-image/SKILL.md",
+      "../../.agents/skills/shawn-ppt-image/agents/": "studio/.agents/skills/shawn-ppt-image/agents",
+      "../../.agents/skills/shawn-ppt-image/prompts/": "studio/.agents/skills/shawn-ppt-image/prompts",
+      "../../.agents/skills/shawn-ppt-image/references/": "studio/.agents/skills/shawn-ppt-image/references",
+      "../../.agents/skills/shawn-ppt-image/scripts/": "studio/.agents/skills/shawn-ppt-image/scripts"
     }
   }
 }

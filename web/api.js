@@ -332,3 +332,9 @@ export function runtimeFileUrl(path) {
   if (!path.trim().startsWith("/") || /^(data|blob):/i.test(path.trim())) return null;
   return `/api/runtime-file?path=${encodeURIComponent(path.trim())}`;
 }
+
+export function conversationImageUrl(deckId, path) {
+  if (typeof deckId !== "string" || !deckId.trim()) return null;
+  if (typeof path !== "string" || !path.startsWith("/") || /^(data|blob):/i.test(path)) return null;
+  return `/api/decks/${encodeURIComponent(deckId)}/conversation-image?path=${encodeURIComponent(path)}`;
+}
