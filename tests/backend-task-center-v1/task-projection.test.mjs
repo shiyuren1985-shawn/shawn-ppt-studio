@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { TaskProjection } from "../../server/task-projection.mjs";
+import { TaskAssociationIndex } from "../../server/task-associations.mjs";
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "studio-task-center-"));
@@ -752,4 +753,100 @@ test("an interrupted latest turn immediately marks its associated run stopped", 
   assert.equal(result.tasks[0].status, "attention");
   assert.equal(result.tasks[0].status_label, "任务已停止");
   assert.equal(result.tasks[0].conversation_id, "conversation-stopped");
+});
+
+test("a task keeps its source conversation across concurrent turns, completion, and restart", async (t) => {
+  const { root, output } = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const stateDir = path.join(output, "fast-run", "state");
+  const statePath = path.join(stateDir, "style_run_state.json");
+  const requestMs = Date.parse("2026-08-15T15:15:20.000Z");
+  await writeFile(path.join(stateDir, "preflight_manifest.json"), JSON.stringify({
+    request_started_at: new Date(requestMs).toISOString(),
+    page_ids: ["P06"],
+  }));
+  await writeFile(statePath, JSON.stringify({
+    run_id: "persistent-conversation-task",
+    run_mode: "fast_8x1_diverse",
+    status: "running",
+    scheduler: { active_actions: [{ page_id: "P06" }], ready_queue: [] },
+    styles: Object.fromEntries("ABCDEFGH".split("").map((slot) => [slot, {
+      pages: { P06: { status: "running" } },
+    }])),
+  }));
+  const stateTime = new Date(requestMs + 60_000);
+  await utimes(statePath, stateTime, stateTime);
+
+  const discovery = { async listDecks() { return { decks: [{
+    deck_id: "deck-tasks", deck_uid: "DECK_TASKS", label: "客户提案",
+    output_root: output,
+    slides: [{ page_id: "P06", slide_uid: "SLIDE_06", page_label: "P06" }],
+  }] }; } };
+  const records = [
+    { conversation_id: "conversation-source", thread_id: "thread-source", last_used_at: new Date(requestMs).toISOString() },
+    { conversation_id: "conversation-new", thread_id: "thread-new", last_used_at: new Date(requestMs + 120_000).toISOString() },
+  ];
+  const conversations = { ready: true, records() { return records; } };
+  const relay = {
+    activeTurn(threadId) { return threadId === "thread-source" ? "turn-source" : "turn-new"; },
+    latestTurn(threadId) {
+      return threadId === "thread-source"
+        ? { turnId: "turn-source", status: "inProgress", startedAtMs: requestMs }
+        : { turnId: "turn-new", status: "inProgress", startedAtMs: requestMs + 120_000 };
+    },
+  };
+  const dataRoot = path.join(root, "studio-data");
+  const firstIndex = new TaskAssociationIndex({ dataRoot, clock: () => "2026-08-15T15:16:30.000Z" });
+  await firstIndex.initialize();
+  await firstIndex.rememberRequest(
+    "DECK_TASKS",
+    new Date(requestMs).toISOString(),
+    "conversation-source",
+  );
+  const firstProjection = new TaskProjection({
+    discovery, conversations, associations: firstIndex,
+    clock: () => requestMs + 180_000, cacheMs: 0,
+  });
+  const running = (await firstProjection.list({ codexInteraction: relay })).tasks[0];
+  assert.equal(running.conversation_id, "conversation-source");
+  assert.equal(running.can_open_conversation, true);
+  assert.equal(running.can_stop, true);
+  assert.equal(running.status, "generating");
+  assert.match(await readFile(firstIndex.path, "utf8"), /conversation-source/);
+
+  await writeFile(statePath, JSON.stringify({
+    run_id: "persistent-conversation-task",
+    run_mode: "fast_8x1_diverse",
+    status: "completed",
+    scheduler: { active_actions: [], ready_queue: [] },
+    styles: Object.fromEntries("ABCDEFGH".split("").map((slot) => [slot, {
+      pages: { P06: { status: "candidate_ready", final_path: `${slot}.png` } },
+    }])),
+  }));
+  const completedTime = new Date(requestMs + 240_000);
+  await utimes(statePath, completedTime, completedTime);
+
+  const restartedIndex = new TaskAssociationIndex({ dataRoot });
+  await restartedIndex.initialize();
+  const restartedProjection = new TaskProjection({
+    discovery, conversations, associations: restartedIndex,
+    clock: () => requestMs + 300_000, cacheMs: 0,
+  });
+  const completed = (await restartedProjection.list({
+    codexInteraction: { activeTurn() { return null; }, latestTurn() { return null; } },
+  })).tasks[0];
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.conversation_id, "conversation-source");
+  assert.equal(completed.can_open_conversation, true);
+});
+
+test("the Studio host records a request binding before starting its turn", async () => {
+  const httpSource = await readFile(new URL("../../server/http-server.mjs", import.meta.url), "utf8");
+  const serverSource = await readFile(new URL("../../server/server.mjs", import.meta.url), "utf8");
+  const start = httpSource.indexOf("async function streamWorkspaceTurn");
+  const end = httpSource.indexOf("async function serveRuntimeFile", start);
+  const workspaceTurn = httpSource.slice(start, end);
+  assert.match(workspaceTurn, /associations\?\.rememberRequest/);
+  assert.ok(workspaceTurn.indexOf("rememberRequest") < workspaceTurn.lastIndexOf('client.request("turn/start"'));
+  assert.match(serverSource, /new TaskAssociationIndex\(\{ dataRoot \}\)/);
 });

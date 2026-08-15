@@ -22,6 +22,7 @@ test("task center shows canonical progress and does not expose internal task ide
   assert.match(app, /查看最近完成（\$\{completedTasks\.length\}）/);
   assert.doesNotMatch(html, /run_id|thread_id|state_path|sha256/);
   assert.match(css, /\.task-progress\.indeterminate/);
+  assert.match(app, /这个任务没有可恢复的来源对话，已打开对应页面/);
 });
 
 test("top task badge counts only active work while attention stays inside the panel", () => {

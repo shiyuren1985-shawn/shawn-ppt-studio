@@ -273,9 +273,10 @@ async function readJson(filePath) {
 }
 
 export class TaskProjection {
-  constructor({ discovery, conversations, clock = () => Date.now(), cacheMs = 1500, recentMs = 36 * 60 * 60 * 1000, staleMs = 30 * 60 * 1000, associationGraceMs = 15 * 60 * 1000 }) {
+  constructor({ discovery, conversations, associations = null, clock = () => Date.now(), cacheMs = 1500, recentMs = 36 * 60 * 60 * 1000, staleMs = 30 * 60 * 1000, associationGraceMs = 15 * 60 * 1000 }) {
     this.discovery = discovery;
     this.conversations = conversations;
+    this.associations = associations;
     this.clock = clock;
     this.cacheMs = cacheMs;
     this.recentMs = recentMs;
@@ -416,8 +417,17 @@ export class TaskProjection {
         return related ? { conversation: candidate, turnId } : null;
       }).filter(Boolean);
       const activeMatch = activeMatches.length === 1 ? activeMatches[0] : null;
-      let conversation = activeMatch?.conversation || null;
-      let turnId = activeMatch?.turnId || null;
+      const taskId = idFor(deck.deck_id, manifestPath, "preflight");
+      let conversation = this.associations?.resolveRequest(
+        deck.deck_uid,
+        preflight.request_started_at,
+        conversations,
+      )
+        || activeMatch?.conversation
+        || this.associations?.resolve(taskId, deck.deck_uid, conversations)
+        || null;
+      let turnId = activeMatch?.turnId
+        || (conversation ? codexInteraction?.activeTurn?.(conversation.thread_id) : null);
       let terminalTurnStatus = null;
       if (!conversation) {
         const terminalMatches = conversations.map((candidate) => {
@@ -430,6 +440,9 @@ export class TaskProjection {
           conversation = terminalMatches[0].conversation;
           terminalTurnStatus = terminalMatches[0].latest.status;
         }
+      }
+      if (conversation) {
+        await this.associations?.remember(taskId, deck.deck_uid, conversation.conversation_id);
       }
       const pendingApprovals = pendingPreflightApprovalCount(
         codexInteraction,
@@ -450,7 +463,7 @@ export class TaskProjection {
         statusLabel = "初始化未完成";
       }
       tasks.push({
-        task_id: idFor(deck.deck_id, manifestPath, "preflight"),
+        task_id: taskId,
         deck_id: deck.deck_id,
         deck_label: deck.label,
         conversation_id: conversation?.conversation_id || null,
@@ -528,7 +541,15 @@ export class TaskProjection {
         ));
         const updatedMs = Math.max(info.mtimeMs, receiptProgress.updatedMs);
         const threadIds = [...collectThreadIds(state)];
-        let conversation = threadIds.map((threadId) => byThread.get(threadId)).find(Boolean) || null;
+        const taskId = idFor(deck.deck_id, state.run_id, filename);
+        let conversation = threadIds.map((threadId) => byThread.get(threadId)).find(Boolean)
+          || this.associations?.resolve(taskId, deck.deck_uid, conversations)
+          || this.associations?.resolveRequest(
+            deck.deck_uid,
+            preflight?.request_started_at,
+            conversations,
+          )
+          || null;
         const exactApprovalMatches = active.map((candidate) => {
           const activeTurnId = codexInteraction?.activeTurn(candidate.thread_id);
           return approvalReferencesState(codexInteraction, candidate.thread_id, activeTurnId, statePath, path.dirname(stateDir))
@@ -537,6 +558,20 @@ export class TaskProjection {
         }).filter(Boolean);
         const exactApproval = exactApprovalMatches.length === 1 ? exactApprovalMatches[0] : null;
         if (exactApproval) conversation = exactApproval.conversation;
+        const requestMs = asTime(preflight?.request_started_at);
+        if (!conversation && requestMs) {
+          const requestMatches = active.map((candidate) => {
+            const activeTurnId = codexInteraction?.activeTurn(candidate.thread_id);
+            const latest = codexInteraction?.latestTurn?.(candidate.thread_id);
+            if (!activeTurnId || latest?.turnId !== activeTurnId || !latest.startedAtMs) return null;
+            const distance = Math.abs(requestMs - latest.startedAtMs);
+            return distance <= this.associationGraceMs ? { candidate, distance } : null;
+          }).filter(Boolean).sort((left, right) => left.distance - right.distance);
+          if (
+            requestMatches.length === 1
+            || (requestMatches[0] && requestMatches[0].distance < requestMatches[1].distance)
+          ) conversation = requestMatches[0].candidate;
+        }
         if (!conversation && active.length === 1 && !FINISHED.has(String(state.status || "").toLowerCase())) {
           const candidate = active[0];
           const activityMs = asTime(candidate.last_used_at);
@@ -554,6 +589,9 @@ export class TaskProjection {
             conversation = terminalMatches[0].conversation;
             terminalTurnStatus = terminalMatches[0].latest.status;
           }
+        }
+        if (conversation) {
+          await this.associations?.remember(taskId, deck.deck_uid, conversation.conversation_id);
         }
         const activeTurnId = conversation ? codexInteraction?.activeTurn(conversation.thread_id) : null;
         if (conversation && !activeTurnId && !FINISHED.has(String(state.status || "").toLowerCase())) {
@@ -599,7 +637,7 @@ export class TaskProjection {
         const startMs = startedTime(state, kind, updatedMs);
         const endMs = completedTime(state, kind) || (stage.status === "completed" ? updatedMs : now);
         tasks.push({
-          task_id: idFor(deck.deck_id, state.run_id, filename),
+          task_id: taskId,
           deck_id: deck.deck_id,
           deck_label: deck.label,
           conversation_id: conversation?.conversation_id || null,

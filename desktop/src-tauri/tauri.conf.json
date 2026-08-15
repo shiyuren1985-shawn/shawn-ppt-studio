@@ -57,6 +57,7 @@
       "../../server/single-edit-turn-finalizer.mjs": "studio/server/single-edit-turn-finalizer.mjs",
       "../../server/studio-selection-catalog.mjs": "studio/server/studio-selection-catalog.mjs",
       "../../server/studio-selection-store.mjs": "studio/server/studio-selection-store.mjs",
+      "../../server/task-associations.mjs": "studio/server/task-associations.mjs",
       "../../server/task-projection.mjs": "studio/server/task-projection.mjs",
       "../../server/turns.mjs": "studio/server/turns.mjs",
       "../../integrations/export-image-deck.mjs": "studio/integrations/export-image-deck.mjs",

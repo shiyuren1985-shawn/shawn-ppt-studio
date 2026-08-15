@@ -1314,6 +1314,8 @@ async function openTask(task) {
   setWorkspace("outline");
   if (task.conversation_id && task.conversation_id !== state.activeConversationId) {
     await activateConversation(task.conversation_id);
+  } else if (!task.conversation_id) {
+    toast("这个任务没有可恢复的来源对话，已打开对应页面");
   }
 }
 

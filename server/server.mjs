@@ -22,6 +22,7 @@ import { SelectorWorkspace } from "./selector-workspace.mjs";
 import { ExportService } from "./export-service.mjs";
 import { SingleEditTurnFinalizer } from "./single-edit-turn-finalizer.mjs";
 import { TaskProjection } from "./task-projection.mjs";
+import { TaskAssociationIndex } from "./task-associations.mjs";
 import {
   DEFAULT_MONITORING_ROOT,
   DEFAULT_OVERVIEW_PYTHON,
@@ -98,7 +99,14 @@ try {
   conversations.lastError = error;
   process.stderr.write(`Shawn PPT Studio: conversation history unavailable: ${error.message}\n`);
 }
-const taskProjection = new TaskProjection({ discovery, conversations });
+const taskAssociations = new TaskAssociationIndex({ dataRoot });
+try {
+  await taskAssociations.initialize();
+} catch (error) {
+  taskAssociations.lastError = error;
+  process.stderr.write(`Shawn PPT Studio: task conversation bindings unavailable: ${error.message}\n`);
+}
+const taskProjection = new TaskProjection({ discovery, conversations, associations: taskAssociations });
 
 const client = new AppServerClient({
   executable: resolveCodexExecutable(),

@@ -442,6 +442,11 @@ async function streamWorkspaceTurn(req, res, context, route) {
       deckUid: deck.outline.deck_uid,
       candidateRoots: (deck.candidate_roots || []).map((root) => root.path),
     });
+    await context.taskProjection?.associations?.rememberRequest?.(
+      deck.outline.deck_uid,
+      requestStartedAt,
+      route.conversationId,
+    )?.catch(() => {});
   } catch (error) {
     relay.clearStarting(threadId);
     context.singleEditTurnFinalizer?.clearStarting?.(threadId);
