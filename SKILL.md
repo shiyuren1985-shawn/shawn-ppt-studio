@@ -67,7 +67,7 @@ description: Shawn 的个人 PPT 图片策划、4×3/8×1 风格定位、并发�
 
 正式原图平铺在 `origin_image/`，命名 `style_<席位>_page_<页码>.<扩展名>`。状态、来源快照、handoff、健康报告和交付文本放在 `state/`；任务和最小回执放在 `style_jobs/` 与 `style_jobs/results/`；隔离审图任务和报告放在 `visual_qa_jobs/`。
 
-如权威大纲在 YAML front matter 中显式声明 `slide_identity_required: true`、`deck_uid` 与逐页 `slide_uids`，这些字段是永久内容身份，不由页码、主标题、副标题或文件名推导。UID 必须直接维护在这一份权威原大纲中；新运行不得创建或自动发现 `_饱和式UID版`、`_slide_identity` 等第二份大纲，也不得要求用户同步维护独立 UID 文件。只有已经落盘并明确记录独立身份文件的旧运行，才按原合同兼容恢复，不迁移、不反写。页面只是改顺序时，同一个 `slide_uid` 必须随内容移动；核心命题或证据义务发生大改时，必须创建新的 `slide_uid`，旧 UID 与旧候选继续保留。正式 source snapshot 在生成前必须完整投影目标页 UID，handoff 的每个候选必须写入 `deck_uid` 与 `slide_uid`；原大纲缺少 opt-in、UID 为空、重复或目标页映射不完整时，在图片派发前停止。UID 含数字只记录命名建议，不阻断。UID 只参与 snapshot/handoff 元数据，不进入提示词、Director、Judge 或重试。没有显式启用该声明的其他项目继续兼容原流程。
+如权威大纲在 YAML front matter 中显式声明 `slide_identity_required: true`、`deck_uid` 与逐页 `slide_uids`，这些字段是永久内容身份，不由页码、主标题、副标题或文件名推导。UID 必须直接维护在这一份权威原大纲中；新运行不得创建或自动发现 `_饱和式UID版`、`_slide_identity` 等第二份大纲，也不得要求用户同步维护独立 UID 文件。只有已经落盘并明确记录独立身份文件的旧运行，才按原合同兼容恢复，不迁移、不反写。页面只是改顺序时，同一个 `slide_uid` 必须随内容移动；核心命题或证据义务发生大改时，必须创建新的 `slide_uid`，旧 UID 与旧候选继续保留。预检构建器必须自动识别唯一必需来源中的身份声明，绑定同一权威原大纲并验证目标页；初始化器必须独立复核并自动补齐这一绑定，不得把关键身份传递留给模型判断或可选命令参数。正式 source snapshot 在生成前必须完整投影目标页 UID，handoff 的每个候选必须写入 `deck_uid` 与 `slide_uid`；原大纲缺少 opt-in、UID 为空、重复或目标页映射不完整时，在图片派发前停止。UID 含数字只记录命名建议，不阻断。UID 只参与 snapshot/handoff 元数据，不进入提示词、Director、Judge 或重试。没有显式启用该声明的其他项目继续兼容原流程。
 
 首次派发前必须封存 `state/source_snapshot.json`。新 Fast8 冻结当前页 packet；新 Fast/Strict 4×3 冻结恰好三页 packet。Markdown 表格和稳定页标题使用同一共享提取器：目标页只保留自己的页段，页外受众、全稿目标、统一边界和资料索引只作为一次性的 deck context；末页不得吞入后置同级章节。正式快照直接把 packet 作为权威源；后续恢复、修复、Judge 与交接只检查冻结 packet、内容合同和实际输入资产，不再读取、哈希或比较原大纲，也不因原大纲变化返工。其他旧模式仍按其来源合同执行漂移检查。不要覆盖原始大纲或用户源文件。
 

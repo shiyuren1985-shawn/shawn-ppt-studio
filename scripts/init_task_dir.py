@@ -15,6 +15,8 @@ import unicodedata
 import hashlib
 from pathlib import Path
 
+import pipeline_control as pipeline
+
 
 STANDARD_DIRS = (
     "overview",
@@ -595,6 +597,7 @@ def write_fast8_initial_state(
     request_started_at = str(
         preflight_manifest.get("request_started_at") or process_started_at
     )
+    tone_overrides = preflight_manifest.get("tone_overrides")
 
     def event(sequence: int, name: str, occurred_at: str) -> dict[str, object]:
         return {
@@ -617,6 +620,11 @@ def write_fast8_initial_state(
         "fast8_startup_contract_version": FAST8_STARTUP_CONTRACT_VERSION,
         "fast8_imagegen_slot_policy": FAST8_IMAGEGEN_SLOT_POLICY,
         "status": "running",
+        **(
+            {"tone_overrides": tone_overrides}
+            if tone_overrides is not None
+            else {}
+        ),
         "anchor_page_id": page_id,
         "follower_page_ids": [],
         "deferred_pages": [],
@@ -705,6 +713,15 @@ def validate_fast8_preflight_manifest(
         or len(set(page_ids)) != len(page_ids)
     ):
         raise SystemExit("Fast8 预备清单 page_ids 必须是不重复的非空字符串数组")
+    tone_overrides = value.get("tone_overrides")
+    if tone_overrides is not None:
+        if not isinstance(tone_overrides, dict):
+            raise SystemExit("Fast8 预备清单 tone_overrides 必须是对象")
+        expected_styles = set("ABCDEFGH")
+        if set(tone_overrides) != expected_styles:
+            raise SystemExit("Fast8 预备清单 tone_overrides 必须完整包含 A-H")
+        if any(tone not in {"light", "dark"} for tone in tone_overrides.values()):
+            raise SystemExit("Fast8 预备清单 tone_overrides 只允许 light|dark")
 
     def normalized_files(field: str, required: bool) -> list[dict[str, object]]:
         raw = value.get(field, [])
@@ -732,6 +749,16 @@ def validate_fast8_preflight_manifest(
 
     required_files = normalized_files("required_files", True)
     optional_files = normalized_files("optional_files", False)
+    identity_required_files: list[Path] = []
+    for record in required_files:
+        required_path = Path(str(record["path"]))
+        if pipeline.slide_identity_from_file(required_path, list(page_ids)) is not None:
+            identity_required_files.append(required_path)
+    if len(identity_required_files) > 1:
+        raise SystemExit(
+            "Fast8 必需来源中存在多个启用的 slide identity 权威文件；"
+            "每次新运行只能有一份权威原大纲"
+        )
     raw_assets = value.get("asset_items", [])
     if not isinstance(raw_assets, list):
         raise SystemExit("Fast8 预备清单 asset_items 必须是数组")
@@ -776,6 +803,19 @@ def validate_fast8_preflight_manifest(
             "path": str(identity_path),
             "sha256": file_sha256(identity_path),
         }
+    if identity_required_files:
+        authoritative_identity_path = identity_required_files[0]
+        if (
+            slide_identity_record is not None
+            and slide_identity_record["path"] != str(authoritative_identity_path)
+        ):
+            raise SystemExit(
+                "Fast8 预备清单 slide_identity_file 必须与启用身份的权威原大纲一致"
+            )
+        slide_identity_record = {
+            "path": str(authoritative_identity_path),
+            "sha256": file_sha256(authoritative_identity_path),
+        }
     return {
         "fast8_preflight_manifest_version": FAST8_PREFLIGHT_MANIFEST_VERSION,
         "run_mode": "fast_8x1_diverse",
@@ -786,6 +826,11 @@ def validate_fast8_preflight_manifest(
         "required_files": required_files,
         "optional_files": optional_files,
         "asset_items": assets,
+        **(
+            {"tone_overrides": dict(tone_overrides)}
+            if tone_overrides is not None
+            else {}
+        ),
         **(
             {"slide_identity_file": slide_identity_record}
             if slide_identity_record is not None
