@@ -15,6 +15,8 @@ import unicodedata
 import hashlib
 from pathlib import Path
 
+import pipeline_control as pipeline
+
 
 STANDARD_DIRS = (
     "overview",
@@ -747,6 +749,16 @@ def validate_fast8_preflight_manifest(
 
     required_files = normalized_files("required_files", True)
     optional_files = normalized_files("optional_files", False)
+    identity_required_files: list[Path] = []
+    for record in required_files:
+        required_path = Path(str(record["path"]))
+        if pipeline.slide_identity_from_file(required_path, list(page_ids)) is not None:
+            identity_required_files.append(required_path)
+    if len(identity_required_files) > 1:
+        raise SystemExit(
+            "Fast8 必需来源中存在多个启用的 slide identity 权威文件；"
+            "每次新运行只能有一份权威原大纲"
+        )
     raw_assets = value.get("asset_items", [])
     if not isinstance(raw_assets, list):
         raise SystemExit("Fast8 预备清单 asset_items 必须是数组")
@@ -790,6 +802,19 @@ def validate_fast8_preflight_manifest(
         slide_identity_record = {
             "path": str(identity_path),
             "sha256": file_sha256(identity_path),
+        }
+    if identity_required_files:
+        authoritative_identity_path = identity_required_files[0]
+        if (
+            slide_identity_record is not None
+            and slide_identity_record["path"] != str(authoritative_identity_path)
+        ):
+            raise SystemExit(
+                "Fast8 预备清单 slide_identity_file 必须与启用身份的权威原大纲一致"
+            )
+        slide_identity_record = {
+            "path": str(authoritative_identity_path),
+            "sha256": file_sha256(authoritative_identity_path),
         }
     return {
         "fast8_preflight_manifest_version": FAST8_PREFLIGHT_MANIFEST_VERSION,

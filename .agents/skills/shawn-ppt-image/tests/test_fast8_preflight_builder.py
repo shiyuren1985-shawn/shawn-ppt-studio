@@ -202,6 +202,28 @@ class Fast8PreflightBuilderTests(unittest.TestCase):
             manifest = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(manifest["slide_identity_file"], str(source))
 
+    def test_auto_binds_identity_from_the_only_authoritative_required_source(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fast8_preflight_identity_auto_bind_") as temp:
+            root = Path(temp).resolve()
+            source = root / "outline.md"
+            output = root / "preflight.json"
+            source.write_text(
+                "---\nslide_identity_required: true\ndeck_uid: EPC_测试\n"
+                "slide_uids:\n  P7: EPC_测试页面\n---\n"
+                "| 页码 | 标题 |\n|---|---|\n| P7 | Test |\n",
+                encoding="utf-8",
+            )
+            result = self.run_builder(
+                "--output", str(output),
+                "--task-name", "P7_identity_auto_bind_test",
+                "--page-id", "P7",
+                "--required-file", str(source),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["slide_identity_file"], str(source))
+            self.assertTrue(json.loads(result.stdout)["page_source_validated"])
+
     def test_does_not_auto_discover_identity_sidecar_for_page_source(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fast8_preflight_identity_auto_") as temp:
             root = Path(temp).resolve()

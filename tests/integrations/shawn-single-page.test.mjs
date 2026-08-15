@@ -99,8 +99,10 @@ test("compiles authoritative UID and revision into a bounded Fast8 request", () 
   assert.equal(turn.input[1].type, "skill");
   assert.equal(turn.input[1].name, "shawn-ppt-image");
   assert.match(turn.input[0].text, /fast8_control_plane_v1\.py/);
-  assert.match(turn.input[0].text, /same outline as slide-identity-file only to build_fast8_preflight_manifest\.py/);
-  assert.match(turn.input[0].text, /Never pass --slide-identity-file to init_task_dir\.py for Fast8/);
+  assert.match(turn.input[0].text, /MUST pass outline_path as both required-file and page-source/);
+  assert.match(turn.input[0].text, /identity binding is not an optional model decision/);
+  assert.match(turn.input[0].text, /never pass --slide-identity-file to init_task_dir\.py for Fast8/i);
+  assert.match(turn.input[0].text, /fail before ImageGen if identity\.page_id cannot be projected/);
   assert.match(turn.input[0].text, /Do not create a second UID file, monitor, semaphore, Judge/);
   assert.doesNotMatch(turn.input[0].text, /outputSchema/);
   assert.match(turn.input[0].text, /final JSON contract/);
