@@ -28,9 +28,12 @@ node_bin="${SHAWN_PPT_TEST_NODE:-$default_node}"
 [[ -x "$python_bin" ]] || python_bin="$(command -v python3)"
 [[ -x "$node_bin" ]] || node_bin="$(command -v node)"
 
-SHAWN_PPT_TEST_NODE="$node_bin" \
-SHAWN_PPT_TEST_PYTHON="$python_bin" \
-  "$python_bin" -m unittest discover -s "$skill_root/tests" -q
+(
+  cd "$skill_root"
+  SHAWN_PPT_TEST_NODE="$node_bin" \
+  SHAWN_PPT_TEST_PYTHON="$python_bin" \
+    "$python_bin" -m unittest discover -s tests -q
+)
 
 git -C "$skill_root" push origin main
 git -C "$studio_root" subtree pull \
