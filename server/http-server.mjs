@@ -795,6 +795,7 @@ export function createLabHttpServer(context) {
           record = await context.projects.openExisting({
             outlinePath: body.outline_path,
             label: body.label,
+            outputRoot: body.output_root,
           });
         } else {
           throw new HttpError(400, "mode must be blank or existing", "invalid_project_mode");

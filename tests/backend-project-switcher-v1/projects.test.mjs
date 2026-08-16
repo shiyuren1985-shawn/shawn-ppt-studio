@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -40,6 +40,45 @@ test("hiding a Studio project preserves files and reopening restores the same ta
   await restarted.initialize();
   assert.equal(restarted.list().projects[0].deck_id, created.deck_id);
   assert.equal(restarted.state.hidden_decks.length, 0);
+});
+
+test("migrating a legacy project preserves its canonical UID and explicit output root", async () => {
+  const { root, registry } = await fixture();
+  const projectRoot = path.join(root, "legacy-project");
+  const outputRoot = path.join(root, "legacy-output");
+  const outlinePath = path.join(projectRoot, "outline.md");
+  await mkdir(projectRoot, { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(outlinePath, "---\ndeck_uid: SI_EXISTING\nslide_uids:\n---\n# SI\n");
+
+  const migrated = await registry.openExisting({
+    outlinePath,
+    outputRoot,
+    label: "SI Playbook",
+  });
+
+  assert.equal(migrated.deck_uid, "SI_EXISTING");
+  assert.equal(migrated.output_root, await realpath(outputRoot));
+  assert.equal(migrated.label, "SI Playbook");
+});
+
+test("migrating another outline with an existing canonical UID fails closed", async () => {
+  const { root, registry } = await fixture();
+  const firstRoot = path.join(root, "first");
+  const secondRoot = path.join(root, "second");
+  await mkdir(firstRoot, { recursive: true });
+  await mkdir(secondRoot, { recursive: true });
+  const first = path.join(firstRoot, "outline.md");
+  const second = path.join(secondRoot, "outline.md");
+  const content = "---\ndeck_uid: SHARED_UID\nslide_uids:\n---\n# Existing\n";
+  await writeFile(first, content);
+  await writeFile(second, content);
+  await registry.openExisting({ outlinePath: first });
+
+  await assert.rejects(
+    () => registry.openExisting({ outlinePath: second }),
+    (error) => error?.code === "project_identity_conflict",
+  );
 });
 
 test("a v1 registry without hidden_decks migrates without losing projects", async () => {

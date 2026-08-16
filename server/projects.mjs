@@ -189,7 +189,7 @@ export class StudioProjectRegistry {
     }
   }
 
-  async openExisting({ outlinePath, label = null }) {
+  async openExisting({ outlinePath, label = null, outputRoot = null }) {
     if (typeof outlinePath !== "string" || !path.isAbsolute(outlinePath)) {
       throw new HttpError(400, "outline_path must be absolute", "invalid_outline_path");
     }
@@ -212,12 +212,14 @@ export class StudioProjectRegistry {
     const text = await readFile(outlineReal, "utf8");
     const canonicalUid = text.match(/^deck_uid:\s*(.+?)\s*$/m)?.[1]?.trim() || null;
     const deckUid = canonicalUid || `STUDIO_${randomUUID()}`;
-    const outputRoot = path.join(path.dirname(outlineReal), "output");
+    const resolvedOutputRoot = outputRoot === null || outputRoot === undefined
+      ? path.join(path.dirname(outlineReal), "output")
+      : await this.#directory(outputRoot);
     const registered = await this.#register({
       label: safeLabel(label, path.basename(outlineReal, path.extname(outlineReal))),
       projectRoot: path.dirname(outlineReal),
       outlinePath: outlineReal,
-      outputRoot,
+      outputRoot: resolvedOutputRoot,
       deckUid,
     });
     return { ...registered, already_registered: false };
@@ -239,6 +241,9 @@ export class StudioProjectRegistry {
   async #register({ label, projectRoot, outlinePath, outputRoot, deckUid }) {
     if (this.state.projects.some((item) => item.outline_path === outlinePath)) {
       throw new HttpError(409, "outline is already registered", "project_already_registered");
+    }
+    if (this.state.projects.some((item) => item.deck_uid === deckUid)) {
+      throw new HttpError(409, "deck_uid is already registered", "project_identity_conflict");
     }
     const timestamp = this.clock();
     const id = randomUUID();
@@ -287,6 +292,7 @@ export class StudioProjectRegistry {
     }
     const ids = new Set();
     const outlines = new Set();
+    const deckUids = new Set();
     for (const record of state.projects) {
       if (
         !record ||
@@ -298,10 +304,12 @@ export class StudioProjectRegistry {
         !path.isAbsolute(record.outline_path) ||
         !path.isAbsolute(record.output_root) ||
         ids.has(record.project_id) ||
-        outlines.has(record.outline_path)
+        outlines.has(record.outline_path) ||
+        deckUids.has(record.deck_uid)
       ) throw Object.assign(new Error("project registry has an invalid project"), { code: "project_registry_corrupt" });
       ids.add(record.project_id);
       outlines.add(record.outline_path);
+      deckUids.add(record.deck_uid);
     }
     if (state.default_project_id && !ids.has(state.default_project_id)) {
       throw Object.assign(new Error("project registry has an invalid default"), { code: "project_registry_corrupt" });
