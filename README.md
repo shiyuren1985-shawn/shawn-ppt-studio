@@ -11,7 +11,7 @@ Shawn PPT Studio is a local, conversation-first workspace for building visual Po
 - Editable long-term Studio rules that persist locally across every project and conversation; explicit `记住，…` and `…。记住这个要求` messages can add a rule directly.
 - A native candidate-selection workspace with three images per row, immediate selection, zoom, and Trash support.
 - New-project flows for an empty folder or an existing Markdown outline.
-- Canonical Fast8 and single-image-edit adapters with the project Skill bundled at `.agents/skills/shawn-ppt-image`.
+- Canonical Fast8 and single-image-edit adapters. A bundled Skill at `.agents/skills/shawn-ppt-image` remains available as a distribution fallback.
 - PDF and ordered page-image ZIP export. PPTX export remains unavailable until a real Microsoft Office sensitivity label can be verified.
 - A Tauri desktop shell for macOS.
 
@@ -27,11 +27,11 @@ Company decks, private assets, production selection state, generated images, run
 
 ### Required for image generation and retouching
 
-- The bundled `shawn-ppt-image` project Skill. Its standalone public repository is [shawn-ppt-image-skill](https://github.com/shiyuren1985-shawn/shawn-ppt-image-skill).
+- The installed `Shawn-PPT-image` Skill under the standard Codex Skill directory. The app bundle also carries a fallback copy for machines where the Skill is not installed. Its standalone public repository is [shawn-ppt-image-skill](https://github.com/shiyuren1985-shawn/shawn-ppt-image-skill).
 - The Codex system `imagegen` Skill.
 - The local Python/runtime dependencies used by those skills.
 
-The Studio prefers its bundled project Skill. Set `SHAWN_PPT_IMAGE_SKILL_ROOT` only when developing against a separate local checkout.
+The Studio prefers the installed `~/.codex/skills/Shawn-PPT-image` copy so Studio and direct Codex use one live source. It falls back to the bundled project copy only when the installed Skill is unavailable. Set `SHAWN_PPT_IMAGE_SKILL_ROOT` only when developing against a separate local checkout.
 
 ### Optional legacy integration
 
@@ -71,12 +71,12 @@ The defaults work with a standard Codex home directory. These environment variab
 | `SHAWN_PPT_STUDIO_RUNTIME_ROOT` | Runtime containing export tools |
 | `SHAWN_PPT_STUDIO_SELECTOR_ROOT` | Optional legacy selector checkout |
 | `SHAWN_PPT_STUDIO_DECKS_FILE` | Optional legacy deck registry |
-| `SHAWN_PPT_IMAGE_SKILL_ROOT` | Optional standalone `shawn-ppt-image` checkout used instead of the bundled copy |
+| `SHAWN_PPT_IMAGE_SKILL_ROOT` | Optional standalone `shawn-ppt-image` checkout; overrides both the installed and bundled copies |
 | `SHAWN_PPT_IMAGE_MONITORING_ROOT` | Shared image-generation slot registry |
 
-## Updating the bundled Skill
+## Updating the distribution fallback
 
-The Skill remains independently testable in its own repository. After committing changes there, run this from Studio:
+The installed Skill is the local live source. The bundled copy is retained only for distributing Studio to machines without that Skill. Before publishing a new Studio build, update that fallback from the standalone repository:
 
 ```bash
 ./bin/sync-shawn-ppt-image

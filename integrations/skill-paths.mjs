@@ -21,16 +21,19 @@ function hasSkill(root) {
   return existsSync(path.join(root, "SKILL.md"));
 }
 
-export function resolveShawnSkillRoot() {
-  const override = process.env.SHAWN_PPT_IMAGE_SKILL_ROOT;
+export function resolveShawnSkillRoot({
+  override = process.env.SHAWN_PPT_IMAGE_SKILL_ROOT,
+  codexHome = CODEX_HOME,
+  bundledRoot = BUNDLED_SHAWN_SKILL_ROOT,
+} = {}) {
   if (override) return path.resolve(override);
 
   const candidates = [
-    BUNDLED_SHAWN_SKILL_ROOT,
-    path.join(CODEX_HOME, "skills", "Shawn-PPT-image"),
-    path.join(CODEX_HOME, "skills", "shawn-ppt-image"),
+    path.join(codexHome, "skills", "Shawn-PPT-image"),
+    path.join(codexHome, "skills", "shawn-ppt-image"),
+    bundledRoot,
   ];
-  return candidates.find(hasSkill) || BUNDLED_SHAWN_SKILL_ROOT;
+  return candidates.find(hasSkill) || bundledRoot;
 }
 
 export const SHAWN_SKILL_ROOT = resolveShawnSkillRoot();
