@@ -23,6 +23,7 @@ import { ExportService } from "./export-service.mjs";
 import { SingleEditTurnFinalizer } from "./single-edit-turn-finalizer.mjs";
 import { TaskProjection } from "./task-projection.mjs";
 import { TaskAssociationIndex } from "./task-associations.mjs";
+import { StudioRulesStore } from "./studio-rules.mjs";
 import {
   DEFAULT_MONITORING_ROOT,
   DEFAULT_OVERVIEW_PYTHON,
@@ -107,6 +108,13 @@ try {
   process.stderr.write(`Shawn PPT Studio: task conversation bindings unavailable: ${error.message}\n`);
 }
 const taskProjection = new TaskProjection({ discovery, conversations, associations: taskAssociations });
+const studioRules = new StudioRulesStore({ dataRoot });
+try {
+  await studioRules.initialize();
+} catch (error) {
+  studioRules.lastError = error;
+  process.stderr.write(`Shawn PPT Studio: long-term rules unavailable: ${error.message}\n`);
+}
 
 const client = new AppServerClient({
   executable: resolveCodexExecutable(),
@@ -196,6 +204,7 @@ const server = createLabHttpServer({
   exports,
   singleEditTurnFinalizer,
   taskProjection,
+  studioRules,
 });
 const port = parsePort(process.argv.slice(2), process.env);
 

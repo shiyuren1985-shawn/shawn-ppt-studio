@@ -53,6 +53,7 @@ const state = {
   taskPollTimer: null,
   taskLoading: false,
   showCompletedTasks: false,
+  studioRulesLoading: false,
 };
 
 const ids = [
@@ -72,6 +73,8 @@ const ids = [
   "project-picker-button", "project-picker-label", "project-picker-meta", "project-popover", "project-search", "project-popover-new",
   "remove-project-dialog", "remove-project-name", "remove-project-cancel", "remove-project-confirm", "remove-project-status",
   "task-center-button", "task-count", "task-center-popover", "task-center-close", "task-center-summary", "task-center-tip", "task-list",
+  "studio-rules-button", "studio-rules-dialog", "studio-rules-close", "studio-rules-input", "studio-rules-hint",
+  "studio-rules-cancel", "studio-rules-save", "studio-rules-status",
 ];
 const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
@@ -318,6 +321,60 @@ function setProjectDialogBusy(busy, message = "") {
   el["existing-outline-button"].disabled = busy;
   el["project-dialog-status"].hidden = !message;
   el["project-dialog-status"].textContent = message;
+}
+
+function setStudioRulesStatus(message = "") {
+  el["studio-rules-status"].hidden = !message;
+  el["studio-rules-status"].textContent = message;
+}
+
+function closeStudioRulesDialog() {
+  if (el["studio-rules-dialog"].open) el["studio-rules-dialog"].close();
+  setStudioRulesStatus();
+  el["studio-rules-button"].disabled = false;
+}
+
+async function openStudioRulesDialog() {
+  if (state.studioRulesLoading) return;
+  state.studioRulesLoading = true;
+  el["studio-rules-button"].disabled = true;
+  try {
+    const payload = await api.getStudioRules();
+    el["studio-rules-input"].value = (payload?.rules || []).join("\n");
+    setStudioRulesStatus(`${payload?.rules?.length || 0} 条规则`);
+    el["studio-rules-dialog"].showModal();
+    requestAnimationFrame(() => el["studio-rules-input"].focus());
+  } catch (error) {
+    el["studio-rules-button"].disabled = false;
+    toast(`无法读取长期规则：${error.message}`);
+  } finally {
+    state.studioRulesLoading = false;
+  }
+}
+
+async function saveStudioRules() {
+  if (state.studioRulesLoading) return;
+  const rules = [...new Set(
+    el["studio-rules-input"].value
+      .split(/\r?\n/)
+      .map((rule) => rule.replace(/\s+/g, " ").trim())
+      .filter(Boolean),
+  )];
+  state.studioRulesLoading = true;
+  el["studio-rules-save"].disabled = true;
+  el["studio-rules-cancel"].disabled = true;
+  setStudioRulesStatus("正在保存…");
+  try {
+    const payload = await api.saveStudioRules(rules);
+    closeStudioRulesDialog();
+    toast(`长期规则已保存，共 ${payload?.rules?.length || 0} 条`);
+  } catch (error) {
+    setStudioRulesStatus(`保存失败：${error.message}`);
+  } finally {
+    state.studioRulesLoading = false;
+    el["studio-rules-save"].disabled = false;
+    el["studio-rules-cancel"].disabled = false;
+  }
 }
 
 async function startProject(mode) {
@@ -1676,6 +1733,10 @@ function onConversationEvent(event) {
     appendPermissionRequest(data);
     return;
   }
+  if (event.event === "studio_rule_saved") {
+    toast(data?.added ? "已加入 Studio 长期规则" : "这条内容已经在长期规则里");
+    return;
+  }
   if (event.event === "error") {
     toast(data?.message || "Codex 返回了一个错误");
     return;
@@ -1775,11 +1836,14 @@ async function submitConversation(event) {
   try {
     if (expectedTurnId) {
       try {
-        await api.steerConversationTurn(state.deckId, state.activeConversationId, {
+        const result = await api.steerConversationTurn(state.deckId, state.activeConversationId, {
           message,
           expected_turn_id: expectedTurnId,
           reference_images: requestBody.reference_images,
         });
+        if (result?.studio_rule) {
+          toast(result.studio_rule.added ? "已加入 Studio 长期规则" : "这条内容已经在长期规则里");
+        }
       } catch (error) {
         if (error.status !== 409 || error.code !== "turn_not_active") throw error;
         setActiveTurn(null);
@@ -1997,6 +2061,17 @@ function bindEvents() {
   el["conversation-menu-button"].addEventListener("click", openConversationDrawer);
   el["task-center-button"].addEventListener("click", toggleTaskCenter);
   el["task-center-close"].addEventListener("click", () => closeTaskCenter({ focusButton: true }));
+  el["studio-rules-button"].addEventListener("click", openStudioRulesDialog);
+  el["studio-rules-close"].addEventListener("click", closeStudioRulesDialog);
+  el["studio-rules-cancel"].addEventListener("click", closeStudioRulesDialog);
+  el["studio-rules-save"].addEventListener("click", saveStudioRules);
+  el["studio-rules-dialog"].addEventListener("click", (event) => {
+    if (event.target === el["studio-rules-dialog"]) closeStudioRulesDialog();
+  });
+  el["studio-rules-dialog"].addEventListener("close", () => {
+    setStudioRulesStatus();
+    el["studio-rules-button"].disabled = false;
+  });
   el["project-picker-button"].addEventListener("click", toggleProjectPicker);
   el["project-picker-button"].addEventListener("keydown", (event) => {
     if (!new Set(["ArrowDown", "Enter", " "]).has(event.key)) return;

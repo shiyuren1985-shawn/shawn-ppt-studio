@@ -55,3 +55,20 @@ test("the selector keeps the requested page visible and the composer grows to a 
   assert.match(selectorModel, /export function exportFormatsCopy\(formats\)/);
   assert.doesNotMatch(selector, /PPTX、PDF 和页面图片正在生成/);
 });
+
+test("long-term Studio rules are visible, editable, and can also be saved from remember messages", async () => {
+  const server = await readFile(new URL("../../server/http-server.mjs", import.meta.url), "utf8");
+  assert.match(html, /id="studio-rules-button"[^>]*>长期规则</);
+  assert.match(html, /id="studio-rules-dialog"/);
+  assert.match(html, /id="studio-rules-input"/);
+  assert.match(html, /以“记住，……”开头/);
+  assert.match(html, /“记住这个要求”/);
+  assert.match(css, /\.studio-rules-dialog textarea/);
+  assert.match(api, /fetch\("\/api\/studio-rules"/);
+  assert.match(api, /method: "PUT"/);
+  assert.match(app, /async function openStudioRulesDialog\(\)/);
+  assert.match(app, /async function saveStudioRules\(\)/);
+  assert.match(app, /event\.event === "studio_rule_saved"/);
+  assert.match(server, /rememberFromMessage\(body\?\.message\)/);
+  assert.match(server, /requestUrl\.pathname === "\/api\/studio-rules"/);
+});

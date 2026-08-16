@@ -104,6 +104,7 @@ async function waitForText(reader, pattern) {
 
 function fixtureContext() {
   const client = new FakeAppServer();
+  const studioRuleState = { rules: ["测试中的全局长期规则"] };
   const deck = {
     deck_id: "fixture",
     label: "Fixture",
@@ -160,6 +161,23 @@ function fixtureContext() {
       health: () => ({ ready: true }),
       create: () => { throw new Error("hidden edit worker must not be called"); },
       execute: () => { throw new Error("hidden edit worker must not be called"); },
+    },
+    studioRules: {
+      ready: true,
+      list: () => ({ contract_version: 1, rules: [...studioRuleState.rules], updated_at: null }),
+      replace: async (rules) => {
+        studioRuleState.rules = [...rules];
+        return { contract_version: 1, rules: [...studioRuleState.rules], updated_at: null };
+      },
+      rememberFromMessage: async (message) => {
+        const match = String(message || "").match(/^\s*记住[，,:：]\s*(.+)$/s);
+        if (!match) return { remembered: false, added: false, rule: null, rules: [...studioRuleState.rules] };
+        const rule = match[1].trim();
+        const added = !studioRuleState.rules.includes(rule);
+        if (added) studioRuleState.rules.push(rule);
+        return { remembered: true, added, rule, rules: [...studioRuleState.rules] };
+      },
+      health: () => ({ ready: true, rule_count: studioRuleState.rules.length, error: null }),
     },
   };
   return { client, context };
@@ -218,6 +236,48 @@ test("HTTP uses start, steer and interrupt on one official turn", async () => {
       "shawn-ppt-image",
       "imagegen",
     ]);
+    assert.match(started.input.find((item) => item.type === "text").text, /测试中的全局长期规则/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("HTTP exposes editable rules and remember messages persist before dispatch", async () => {
+  const { client, context } = fixtureContext();
+  const server = createLabHttpServer(context);
+  const baseUrl = await listen(server);
+  try {
+    const initialResponse = await fetch(`${baseUrl}/api/studio-rules`);
+    assert.equal(initialResponse.status, 200);
+    assert.deepEqual((await initialResponse.json()).rules, ["测试中的全局长期规则"]);
+
+    const saveResponse = await fetch(`${baseUrl}/api/studio-rules`, {
+      method: "PUT",
+      headers: writeHeaders(),
+      body: JSON.stringify({ rules: ["保存后的长期规则"] }),
+    });
+    assert.equal(saveResponse.status, 200);
+    assert.deepEqual((await saveResponse.json()).rules, ["保存后的长期规则"]);
+
+    const rememberResponse = await fetch(
+      `${baseUrl}/api/decks/fixture/conversations/conversation-1/messages`,
+      {
+        method: "POST",
+        headers: { ...writeHeaders(), accept: "text/event-stream" },
+        body: JSON.stringify({ message: "记住，新加入的长期规则", current_slide_uid: "SLIDE_1" }),
+      },
+    );
+    assert.equal(rememberResponse.status, 200);
+    const reader = rememberResponse.body.getReader();
+    const events = await waitForText(reader, /studio_rule_saved/);
+    assert.match(events, /"added":true/);
+    assert.match(events, /新加入的长期规则/);
+    await reader.cancel();
+
+    const started = client.calls.find((call) => call.method === "turn/start").params;
+    const prompt = started.input.find((item) => item.type === "text").text;
+    assert.match(prompt, /保存后的长期规则/);
+    assert.match(prompt, /新加入的长期规则/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

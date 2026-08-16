@@ -8,6 +8,7 @@ Shawn PPT Studio is a local, conversation-first workspace for building visual Po
 
 - A three-column outline workspace with resizable and collapsible panels.
 - A project-level Codex conversation with streamed items, steering, interrupt, history, and official approval prompts.
+- Editable long-term Studio rules that persist locally across every project and conversation; explicit `记住，…` and `…。记住这个要求` messages can add a rule directly.
 - A native candidate-selection workspace with three images per row, immediate selection, zoom, and Trash support.
 - New-project flows for an empty folder or an existing Markdown outline.
 - Canonical Fast8 and single-image-edit adapters with the project Skill bundled at `.agents/skills/shawn-ppt-image`.

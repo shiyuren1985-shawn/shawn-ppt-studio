@@ -21,13 +21,18 @@ test "$(shasum -a 256 "$STUDIO_ROOT/server/project-discovery.mjs" | cut -d ' ' -
   "$(shasum -a 256 "$RESOURCES/server/project-discovery.mjs" | cut -d ' ' -f 1)"
 test "$(shasum -a 256 "$STUDIO_ROOT/server/project-picker.mjs" | cut -d ' ' -f 1)" = \
   "$(shasum -a 256 "$RESOURCES/server/project-picker.mjs" | cut -d ' ' -f 1)"
+test "$(shasum -a 256 "$STUDIO_ROOT/server/studio-rules.mjs" | cut -d ' ' -f 1)" = \
+  "$(shasum -a 256 "$RESOURCES/server/studio-rules.mjs" | cut -d ' ' -f 1)"
 
 grep -q 'id="project-popover-new"' "$RESOURCES/web/index.html"
 grep -q 'id="task-center-button"' "$RESOURCES/web/index.html"
 grep -q 'id="task-center-popover"' "$RESOURCES/web/index.html"
 test -f "$RESOURCES/server/task-projection.mjs"
 test -f "$RESOURCES/server/task-associations.mjs"
+test -f "$RESOURCES/server/studio-rules.mjs"
 grep -q 'requestUrl.pathname === "/api/tasks"' "$RESOURCES/server/http-server.mjs"
+grep -q 'requestUrl.pathname === "/api/studio-rules"' "$RESOURCES/server/http-server.mjs"
+grep -q 'id="studio-rules-button"' "$RESOURCES/web/index.html"
 grep -q 'progress_percent' "$RESOURCES/web/app.js"
 grep -q 'conversation-file-link' "$RESOURCES/web/app.js"
 grep -q 'codex-process' "$RESOURCES/web/app.js"

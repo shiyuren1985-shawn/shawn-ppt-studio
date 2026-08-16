@@ -28,6 +28,18 @@ export async function getTasks() {
   return readJson(await fetch("/api/tasks", { cache: "no-store" }));
 }
 
+export async function getStudioRules() {
+  return readJson(await fetch("/api/studio-rules", { cache: "no-store" }));
+}
+
+export async function saveStudioRules(rules) {
+  return readJson(await fetch("/api/studio-rules", {
+    method: "PUT",
+    headers: MUTATION_HEADERS,
+    body: JSON.stringify({ rules }),
+  }));
+}
+
 export async function interruptTask(taskId) {
   return readJson(await fetch(`/api/tasks/${encodeURIComponent(taskId)}/interrupt`, {
     method: "POST", headers: MUTATION_HEADERS, body: JSON.stringify({}),

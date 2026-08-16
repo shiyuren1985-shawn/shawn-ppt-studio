@@ -60,6 +60,7 @@ test("workspace turn is one natural Codex turn with official skills and no propo
         width: 1672,
         height: 941,
       }],
+      studioRules: ["正常回复不显示哈希", "客户大纲不要出现内部审核语言"],
     },
   );
 
@@ -74,8 +75,9 @@ test("workspace turn is one natural Codex turn with official skills and no propo
   const text = built.params.input.find((item) => item.type === "text").text;
   assert.match(text, /Respond naturally\. Do not emit JSON/);
   assert.match(text, /global Shawn PPT Studio requirements for every project and every conversation/);
-  assert.match(text, /never print SHA or hash values, absolute file paths/);
-  assert.match(text, /only when the user explicitly asks.*failure cannot be made actionable/s);
+  assert.match(text, /editable Studio long-term rules apply to every project and every conversation/);
+  assert.match(text, /正常回复不显示哈希/);
+  assert.match(text, /客户大纲不要出现内部审核语言/);
   assert.match(text, /concise final answer led by the actual outcome/);
   assert.match(text, /confirmed_selected_image_refs:.*file_sha256/s);
   assert.match(text, /authoritative_outline_path:/);
@@ -113,20 +115,33 @@ test("workspace turn fails before dispatch when the host runtime is not bound", 
 });
 
 test("global Studio communication rules also apply when a new Codex thread is created", () => {
-  const params = threadStartParams(root);
+  const params = threadStartParams(root, ["所有项目都要遵守的用户规则"]);
   for (const rule of STUDIO_COMMUNICATION_RULES) {
     assert.match(params.developerInstructions, new RegExp(rule.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+  assert.match(params.developerInstructions, /所有项目都要遵守的用户规则/);
   assert.doesNotMatch(params.developerInstructions, /settings panel|toggle/i);
 });
 
 test("steer input accepts text and local images without turn-level overrides", async () => {
   const built = await buildWorkspaceSteerInput(
     { message: "方向调整：只改 P01", reference_images: [`${root}/ref.png`] },
-    { pathPolicy: { requireReferenceImage: async (value) => value } },
+    {
+      pathPolicy: { requireReferenceImage: async (value) => value },
+      studioRules: ["回复保持简洁"],
+    },
   );
   assert.deepEqual(built.input, [
-    { type: "text", text: "方向调整：只改 P01" },
+    {
+      type: "text",
+      text: [
+        "[SHAWN_PPT_STUDIO_USER_MESSAGE]",
+        "方向调整：只改 P01",
+        "[/SHAWN_PPT_STUDIO_USER_MESSAGE]",
+        "The following editable Studio long-term rules apply to every project and every conversation. Treat them as persistent user requirements:",
+        "1. 回复保持简洁",
+      ].join("\n"),
+    },
     { type: "localImage", path: `${root}/ref.png` },
   ]);
 });

@@ -6,6 +6,7 @@ import {
   SHAWN_SKILL_PATH,
 } from "../integrations/skill-paths.mjs";
 import { HttpError } from "./errors.mjs";
+import { DEFAULT_STUDIO_RULES } from "./studio-rules.mjs";
 
 export const MODES = new Set([
   "chat",
@@ -23,10 +24,22 @@ const USER_MESSAGE_END = "[/SHAWN_PPT_STUDIO_USER_MESSAGE]";
 export const STUDIO_COMMUNICATION_RULES = [
   "Treat these user-facing communication rules as global Shawn PPT Studio requirements for every project and every conversation; they are not optional preferences.",
   "Keep progress commentary to a few plain-language milestones. Do not narrate hidden reasoning, every command, routine file inspection, hash check, or other mechanical detail.",
-  "In a normal successful user-facing reply, never print SHA or hash values, absolute file paths, internal deck/slide/thread/turn/run/candidate identifiers, status enums, ledger details, control-plane details, or QA bookkeeping. Use human page labels and compact clickable artifact links instead.",
-  "Show technical identifiers or diagnostic details only when the user explicitly asks for them or when a failure cannot be made actionable without them; even then, provide only the minimum necessary detail.",
   "Do not repeat progress or task-state information already visible in the Studio interface. After substantial work, give a concise final answer led by the actual outcome and the next useful action, if any.",
 ];
+
+export function studioUserRuleLines(rules = []) {
+  const normalized = Array.isArray(rules)
+    ? rules
+        .filter((rule) => typeof rule === "string")
+        .map((rule) => rule.replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+    : [];
+  if (!normalized.length) return [];
+  return [
+    "The following editable Studio long-term rules apply to every project and every conversation. Treat them as persistent user requirements:",
+    ...normalized.map((rule, index) => `${index + 1}. ${rule}`),
+  ];
+}
 
 function outlineSchema(deckUid, slideUid) {
   return {
@@ -142,6 +155,7 @@ export async function buildWorkspaceTurn(
     monitoringRoot = null,
     overviewPython = null,
     requestStartedAt = new Date().toISOString(),
+    studioRules = DEFAULT_STUDIO_RULES,
   },
 ) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
@@ -195,6 +209,7 @@ export async function buildWorkspaceTurn(
     "For a question, brainstorming request, or ambiguous request, discuss it naturally and do not make changes that were not requested.",
     "For a clear instruction to change the outline, generate images, or edit formal selected images, carry out the work inside this same turn. Do not end the turn after merely announcing that a hidden job has started.",
     ...STUDIO_COMMUNICATION_RULES,
+    ...studioUserRuleLines(studioRules),
     "For outline edits, modify the authoritative outline in place, preserve deck_uid and slide_uid identities, and do not create a second authoritative outline.",
     "If the outline is a zero-page draft, use the exact deck_uid supplied below when converting it to canonical front matter and create stable slide_uids for real pages; never replace the project deck_uid with a new one.",
     "For PPT image generation or image editing, use the supplied shawn-ppt-image skill and its canonical control planes, run state, source snapshot, ImageGen path, and existing sole Judge. Do not create another reviewer, state machine, or image concurrency layer.",
@@ -256,7 +271,7 @@ export async function buildWorkspaceTurn(
   };
 }
 
-export async function buildWorkspaceSteerInput(body, { pathPolicy }) {
+export async function buildWorkspaceSteerInput(body, { pathPolicy, studioRules = DEFAULT_STUDIO_RULES }) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new HttpError(400, "JSON body must be an object", "invalid_turn_request");
   }
@@ -269,7 +284,15 @@ export async function buildWorkspaceSteerInput(body, { pathPolicy }) {
   return {
     message,
     input: [
-      { type: "text", text: message },
+      {
+        type: "text",
+        text: [
+          USER_MESSAGE_START,
+          message,
+          USER_MESSAGE_END,
+          ...studioUserRuleLines(studioRules),
+        ].join("\n"),
+      },
       ...validatedReferences.map((referencePath) => ({ type: "localImage", path: referencePath })),
     ],
   };
@@ -400,7 +423,7 @@ export async function buildTurn(body, { labRoot, imageRoot, pathPolicy }) {
   };
 }
 
-export function threadStartParams(labRoot) {
+export function threadStartParams(labRoot, studioRules = DEFAULT_STUDIO_RULES) {
   return {
     cwd: path.resolve(labRoot),
     approvalPolicy: "on-request",
@@ -412,20 +435,21 @@ export function threadStartParams(labRoot) {
       "Each conversation belongs to an entire PPT deck; a currently viewed slide is context only and never an authority boundary.",
       "Follow normal Codex interaction: natural messages, real streamed work items, commentary while working, and a final answer after the requested work actually finishes.",
       ...STUDIO_COMMUNICATION_RULES,
+      ...studioUserRuleLines(studioRules),
       "Do not return a structured proposal or hand work off to an invisible secondary conversation.",
       "Questions, hypotheticals, and brainstorming remain conversation only. Clear instructions are carried out directly in the active turn with no extra Studio confirmation.",
       "For formal PPT image work, use the supplied shawn-ppt-image and imagegen skills and preserve their canonical state, source snapshot, sole Judge, and selection boundaries.",
       "Use official Codex permission requests when access outside the configured workspace is genuinely needed.",
-    ].join(" "),
+    ].join("\n"),
   };
 }
 
-export function threadResumeParams(labRoot, threadId) {
+export function threadResumeParams(labRoot, threadId, studioRules = DEFAULT_STUDIO_RULES) {
   return {
     threadId,
     cwd: path.resolve(labRoot),
     approvalPolicy: "on-request",
     sandbox: "workspace-write",
-    developerInstructions: threadStartParams(labRoot).developerInstructions,
+    developerInstructions: threadStartParams(labRoot, studioRules).developerInstructions,
   };
 }

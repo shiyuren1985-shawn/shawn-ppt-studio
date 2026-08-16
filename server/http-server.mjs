@@ -12,6 +12,7 @@ import {
 } from "./codex-interaction.mjs";
 import { sanitizeForBrowser } from "./path-policy.mjs";
 import { resolveConversationImage } from "./conversation-image.mjs";
+import { rememberedStudioRule } from "./studio-rules.mjs";
 import { handleSelectorProjectionRequest } from "./selector-http.mjs";
 import { handleSelectorWorkspaceRequest } from "./selector-workspace-http.mjs";
 import {
@@ -410,6 +411,14 @@ async function streamWorkspaceTurn(req, res, context, route) {
   if (!context.conversations?.ready) {
     throw new HttpError(503, "conversation history is unavailable", "conversation_index_unavailable");
   }
+  const rememberIntent = rememberedStudioRule(body?.message);
+  if (rememberIntent && !context.studioRules?.ready) {
+    throw new HttpError(503, "Studio long-term rules are unavailable", "studio_rules_unavailable");
+  }
+  const rememberedRule = context.studioRules?.ready
+    ? await context.studioRules.rememberFromMessage(body?.message)
+    : null;
+  const studioRules = context.studioRules?.ready ? context.studioRules.list().rules : undefined;
   const deck = await context.discovery.readDeck(route.deckId);
   const threadId = context.conversations.threadIdFor(
     deck.outline.deck_uid,
@@ -417,7 +426,7 @@ async function streamWorkspaceTurn(req, res, context, route) {
   );
   await context.client.request(
     "thread/resume",
-    threadResumeParams(context.dataRoot || context.labRoot, threadId),
+    threadResumeParams(context.dataRoot || context.labRoot, threadId, studioRules),
   );
   const relay = context.codexInteraction;
   if (!relay.markStarting(threadId)) {
@@ -436,6 +445,7 @@ async function streamWorkspaceTurn(req, res, context, route) {
       monitoringRoot: context.monitoringRoot,
       overviewPython: context.overviewPython,
       requestStartedAt,
+      studioRules,
     }));
     context.singleEditTurnFinalizer?.registerStarting?.(threadId, {
       transport: "studio_app_server_v1",
@@ -462,6 +472,14 @@ async function streamWorkspaceTurn(req, res, context, route) {
     "x-content-type-options": "nosniff",
   });
   res.flushHeaders?.();
+  if (rememberedRule?.remembered) {
+    sse(res, "studio_rule_saved", {
+      contract_version: 1,
+      added: rememberedRule.added,
+      rule: rememberedRule.rule,
+      rule_count: rememberedRule.rules.length,
+    });
+  }
   const unsubscribe = relay.subscribe({
     threadId,
     listener(record) {
@@ -622,8 +640,30 @@ export function createLabHttpServer(context) {
               task_count: 0,
               error: "task projection is not configured",
             },
+            studio_rules: context.studioRules?.health?.() || {
+              ready: false,
+              rule_count: 0,
+              error: "Studio rules are not configured",
+            },
           },
         });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/studio-rules") {
+        if (!context.studioRules?.ready) {
+          throw new HttpError(503, "Studio long-term rules are unavailable", "studio_rules_unavailable");
+        }
+        json(res, 200, context.studioRules.list());
+        return;
+      }
+
+      if (req.method === "PUT" && requestUrl.pathname === "/api/studio-rules") {
+        if (!context.studioRules?.ready) {
+          throw new HttpError(503, "Studio long-term rules are unavailable", "studio_rules_unavailable");
+        }
+        const body = await readJson(req);
+        json(res, 200, await context.studioRules.replace(body?.rules));
         return;
       }
 
@@ -681,9 +721,10 @@ export function createLabHttpServer(context) {
         }
         const body = await readJson(req);
         const existing = typeof body.thread_id === "string" && body.thread_id.trim() !== "";
+        const studioRules = context.studioRules?.ready ? context.studioRules.list().rules : undefined;
         const result = existing
-          ? await context.client.request("thread/resume", threadResumeParams(context.labRoot, body.thread_id))
-          : await context.client.request("thread/start", threadStartParams(context.labRoot));
+          ? await context.client.request("thread/resume", threadResumeParams(context.labRoot, body.thread_id, studioRules))
+          : await context.client.request("thread/start", threadStartParams(context.labRoot, studioRules));
         const thread = result?.thread;
         if (!thread?.id) throw new Error("Codex App Server did not return a thread id");
         await context.ledger?.recordThread?.({
@@ -828,7 +869,10 @@ export function createLabHttpServer(context) {
         );
         const result = await context.client.request(
           "thread/start",
-          threadStartParams(context.dataRoot || context.labRoot),
+          threadStartParams(
+            context.dataRoot || context.labRoot,
+            context.studioRules?.ready ? context.studioRules.list().rules : undefined,
+          ),
         );
         if (!result?.thread?.id) throw new Error("Codex App Server did not return a thread id");
         const conversation = await context.conversations.create({
@@ -890,7 +934,11 @@ export function createLabHttpServer(context) {
         const threadId = context.conversations.threadIdFor(deck.outline.deck_uid, conversationId);
         await context.client.request(
           "thread/resume",
-          threadResumeParams(context.dataRoot || context.labRoot, threadId),
+          threadResumeParams(
+            context.dataRoot || context.labRoot,
+            threadId,
+            context.studioRules?.ready ? context.studioRules.list().rules : undefined,
+          ),
         );
         const conversation = await context.conversations.activate(
           deck.outline.deck_uid,
@@ -923,7 +971,17 @@ export function createLabHttpServer(context) {
         if (!expectedTurnId || context.codexInteraction.activeTurn(threadId) !== expectedTurnId) {
           throw new HttpError(409, "the expected turn is no longer active", "turn_not_active");
         }
-        const { input } = await buildWorkspaceSteerInput(body, { pathPolicy: context.pathPolicy });
+        const rememberIntent = rememberedStudioRule(body?.message);
+        if (rememberIntent && !context.studioRules?.ready) {
+          throw new HttpError(503, "Studio long-term rules are unavailable", "studio_rules_unavailable");
+        }
+        const rememberedRule = context.studioRules?.ready
+          ? await context.studioRules.rememberFromMessage(body?.message)
+          : null;
+        const { input } = await buildWorkspaceSteerInput(body, {
+          pathPolicy: context.pathPolicy,
+          studioRules: context.studioRules?.ready ? context.studioRules.list().rules : undefined,
+        });
         let result;
         try {
           result = await context.client.request("turn/steer", {
@@ -939,6 +997,9 @@ export function createLabHttpServer(context) {
           thread_id: threadId,
           turn_id: result?.turnId || expectedTurnId,
           accepted: true,
+          studio_rule: rememberedRule?.remembered
+            ? { added: rememberedRule.added, rule: rememberedRule.rule }
+            : null,
         });
         return;
       }
