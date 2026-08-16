@@ -590,12 +590,19 @@ export class SelectorWorkspace {
           originRoot ? realpath(originRoot).catch(() => null) : null,
         ]);
         const catalogPath = item.catalog_path || handoffPath;
+        const catalogPathIsManifest = Boolean(
+          catalogPath &&
+          outputReal &&
+          path.basename(catalogPath) === "final_selection_manifest.json" &&
+          within(catalogPath, outputReal)
+        );
         const catalogPathAllowed = Boolean(
           catalogPath && projectReal && (
             catalogPath === path.join(projectReal, "state", "handoff.json") ||
             catalogPath === path.join(projectReal, "state", "style_run_state.json") ||
             catalogPath === path.join(projectReal, "state", "selected_style_run_state.json") ||
             catalogPath === path.join(projectReal, "state", "final_selection_manifest.json") ||
+            catalogPathIsManifest ||
             catalogPath === sourceReal && /(?:^|[_-])final(?:[_-]|$)/i.test(path.basename(projectReal))
           )
         );

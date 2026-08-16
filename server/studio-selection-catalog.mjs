@@ -447,6 +447,67 @@ async function verifyDeliveryImages(deck, runRoot, outputReal, pageOverrides = n
   return candidates;
 }
 
+async function verifyManifestSources(deck, runRoot, outputReal, pageOverrides = new Map()) {
+  const runReal = await realpath(runRoot);
+  if (
+    !inside(outputReal, runReal) ||
+    !/(?:^|[_-])final(?:[_-]|$)/i.test(path.basename(runReal))
+  ) throw new Error("final selection manifest is outside an aggregation run");
+  const manifestPath = path.join(runReal, "state", "final_selection_manifest.json");
+  const manifestFile = await jsonFile(manifestPath);
+  if (manifestFile.path !== manifestPath) throw new Error("final selection manifest is not canonical");
+  const manifest = manifestFile.document;
+  if (
+    manifest.status !== "complete" ||
+    manifest.record_kind !== "accepted_latest_page_aggregation" ||
+    !Array.isArray(manifest.page_order) ||
+    !path.isAbsolute(manifest.base_project || "")
+  ) throw new Error("final selection manifest is not complete");
+  const candidates = [];
+  for (const rawPageId of manifest.page_order) {
+    try {
+      const sourcePageId = pageId(rawPageId);
+      const sourcePageKey = sourcePageId?.slice(1).padStart(2, "0");
+      const sourceProject =
+        manifest.explicit_resets?.[sourcePageKey]?.project ||
+        manifest.overrides?.[sourcePageKey]?.project ||
+        manifest.base_project;
+      if (!sourcePageId || !path.isAbsolute(sourceProject || "")) continue;
+      const projectReal = await realpath(sourceProject);
+      if (!inside(outputReal, projectReal)) continue;
+      const originRoot = path.join(projectReal, "origin_image");
+      const matches = (await readdir(originRoot, { withFileTypes: true })).filter((entry) => (
+        entry.isFile() &&
+        !entry.isSymbolicLink() &&
+        IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase()) &&
+        pageIdFromFilename(entry.name) === sourcePageId
+      ));
+      if (matches.length !== 1) continue;
+      const slide = pageOverrides.get(sourcePageId) || slideForPage(deck, sourcePageId);
+      if (!slide) continue;
+      const file = await verifiedCandidateFile({
+        candidatePath: path.join(originRoot, matches[0].name),
+        originRoot,
+      });
+      candidates.push(candidateRecord({
+        runId: `manifest:${path.basename(runRoot)}:${sourcePageId}`,
+        runMode: "final_selection_manifest",
+        catalogPath: manifestFile.path,
+        catalogKind: "manifest",
+        projectRoot: projectReal,
+        nativeId: `manifest:${sourcePageId}:${matches[0].name}`,
+        file,
+        slide,
+        sourcePageId,
+        lineage: { derivation_kind: "accepted_latest_manifest" },
+      }));
+    } catch {
+      // A missing historical source invalidates only that manifest page.
+    }
+  }
+  return candidates;
+}
+
 function refKey(ref) {
   return JSON.stringify([ref.run_id, path.resolve(ref.handoff_path), ref.native_candidate_id]);
 }
@@ -461,7 +522,7 @@ function deduplicateCandidates(deck, candidates) {
   }
   const result = [];
   for (const sources of groups.values()) {
-    const priority = { handoff: 3, state: 2, delivery: 1 };
+    const priority = { handoff: 4, state: 3, manifest: 2, delivery: 1 };
     sources.sort((left, right) => (
       (priority[right.catalog_kind] || 0) - (priority[left.catalog_kind] || 0) ||
       right.generated_at.localeCompare(left.generated_at)
@@ -494,6 +555,7 @@ export async function scanStudioCandidates(deck, { diagnostics = null } = {}) {
     runs_seen: 0,
     handoff_runs: 0,
     historical_runs: 0,
+    manifest_runs: 0,
     delivery_runs: 0,
     rejected_runs: 0,
   };
@@ -544,6 +606,21 @@ export async function scanStudioCandidates(deck, { diagnostics = null } = {}) {
   ]));
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    try {
+      const found = await verifyManifestSources(
+        deck,
+        path.join(outputReal, entry.name),
+        outputReal,
+        deliveryPageOverrides,
+      );
+      if (found.length) {
+        candidates.push(...found);
+        counts.manifest_runs += 1;
+        if (!acceptedRoots.has(entry.name) && counts.rejected_runs > 0) counts.rejected_runs -= 1;
+      }
+    } catch {
+      // Most run directories are not final selection manifests.
+    }
     try {
       const found = await verifyDeliveryImages(
         deck,

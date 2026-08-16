@@ -251,21 +251,50 @@ test("historical candidates follow stable slides, deduplicate, and trash every c
   await mkdir(deliveryOrigin, { recursive: true });
   const deliveryPath = path.join(deliveryOrigin, "style_A_page_02.png");
   await writeFile(deliveryPath, imageBytes);
+  const manifestSourceRoot = path.join(outputRoot, "opening-one-off-edit");
+  const manifestSourceOrigin = path.join(manifestSourceRoot, "origin_image");
+  await mkdir(manifestSourceOrigin, { recursive: true });
+  const openingBytes = png(1600, 900, "manifest-opening");
+  const manifestSourcePath = path.join(manifestSourceOrigin, "style_C_page_01.png");
+  const manifestDeliveryPath = path.join(deliveryOrigin, "style_C_page_01.png");
+  await mkdir(path.join(outputRoot, "old_deck_final_20260801", "state"), { recursive: true });
+  await Promise.all([
+    writeFile(manifestSourcePath, openingBytes),
+    writeFile(manifestDeliveryPath, openingBytes),
+  ]);
+  await jsonFile(path.join(outputRoot, "old_deck_final_20260801", "state", "final_selection_manifest.json"), {
+    manifest_version: 1,
+    record_kind: "accepted_latest_page_aggregation",
+    status: "complete",
+    page_order: ["01"],
+    base_project: manifestSourceRoot,
+    overrides: {},
+    explicit_resets: {},
+  });
   const untrustedOrigin = path.join(outputRoot, "random-copy", "origin_image");
   await mkdir(untrustedOrigin, { recursive: true });
   await writeFile(path.join(untrustedOrigin, "style_A_page_02.png"), imageBytes);
 
   const diagnostics = {};
   const candidates = await scanStudioCandidates(deck, { diagnostics });
-  assert.equal(candidates.length, 1);
-  assert.equal(candidates[0].slide_uid, "SLIDE_CLOSING");
-  assert.equal(candidates[0].page_id, "P3");
-  assert.equal(candidates[0].duplicate_source_count, 2);
+  assert.equal(candidates.length, 2);
+  const opening = candidates.find((candidate) => candidate.slide_uid === "SLIDE_1");
+  assert.equal(opening.catalog_kind, "manifest");
+  assert.equal(opening.path, manifestSourcePath);
+  assert.equal(opening.duplicate_source_count, 2);
   assert.deepEqual(
-    candidates[0].duplicate_sources.map((item) => item.path).sort(),
+    opening.duplicate_sources.map((item) => item.path).sort(),
+    [manifestSourcePath, manifestDeliveryPath].sort(),
+  );
+  const closing = candidates.find((candidate) => candidate.slide_uid === "SLIDE_CLOSING");
+  assert.equal(closing.page_id, "P3");
+  assert.equal(closing.duplicate_source_count, 2);
+  assert.deepEqual(
+    closing.duplicate_sources.map((item) => item.path).sort(),
     [sourcePath, deliveryPath].sort(),
   );
-  assert.equal(diagnostics.duplicate_source_count, 1);
+  assert.equal(diagnostics.duplicate_source_count, 2);
+  assert.equal(diagnostics.manifest_runs, 1);
 
   const discovery = { async readDeck() { return deck; } };
   const workspace = new SelectorWorkspace({ discovery, trashRoot: path.join(root, "Trash") });
