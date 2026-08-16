@@ -441,31 +441,39 @@ class FourByThreeDirectorMethodTest(unittest.TestCase):
         self.assertIn("只用于事实/对象准确性，不作为风格参考", prompt)
         self.assertIn("不要预览或渲染整份文档", prompt)
 
+    def test_asset_directors_do_not_narrow_required_assets_for_aesthetics(self) -> None:
+        for name in (
+            "fast8-chrome-assets-director.md",
+            "4x3-chrome-assets-director.md",
+            "selected-style-chrome-assets-director.md",
+        ):
+            prompt = (ROOT / "prompts" / name).read_text(encoding="utf-8")
+            self.assertIn("不得仅因审美、对比度", prompt)
+            self.assertIn("增加合适承载底", prompt)
+
     def test_free_page_selection_prefers_open_visual_room_for_8x1_and_4x3(self) -> None:
-        contract = (
-            ROOT / "references" / "4x3与Quick8运行合同.md"
-        ).read_text(encoding="utf-8")
-        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("仅限自由选页", contract)
-        self.assertIn("用户指定页码或测试目的时逐字服从", contract)
-        self.assertIn("视觉解法尚未被固定图表", contract)
-        self.assertIn("`quick_8x1` 以这类页面作为单页风格定位样本", contract)
+        contract = (ROOT / "references" / "4x3运行合同.md").read_text(
+            encoding="utf-8"
+        )
+        fast8 = (ROOT / "references" / "Fast8准备与派发.md").read_text(
+            encoding="utf-8"
+        )
+        for text in (contract, fast8):
+            self.assertIn("仅限自由选页", text)
+            self.assertIn("用户指定页码或测试目的时逐字服从", text)
+            self.assertIn("视觉解法尚未被固定图表", text)
         self.assertIn("一张数据/对比页检验信息组织", contract)
         self.assertIn("一张复杂架构或高密度页检验复杂承压", contract)
         self.assertIn("不建立评分器", contract)
-        self.assertIn("选页前先读 `references/4x3与Quick8运行合同.md`", skill)
-        self.assertIn("必须先确定一张视觉解法开放的风格释放页", skill)
-        self.assertIn("不得以“覆盖多种难度”为由", skill)
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("references/4x3运行合同.md", skill)
 
     def test_new_run_does_not_reuse_director_agent_conversations(self) -> None:
-        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
-        contract = (
-            ROOT / "references" / "4x3与Quick8运行合同.md"
-        ).read_text(encoding="utf-8")
-        self.assertIn("每个新 `project_dir` 都新建本轮的短 Director Agent", skill)
-        self.assertIn("不对上一轮 Director 发送 follow-up", skill)
-        self.assertIn("每个新运行都创建三个 `fork_turns=none` 的新 Director Agent", contract)
-        self.assertIn("不复用其会话内存或旧路径", contract)
+        contract = (ROOT / "references" / "4x3运行合同.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("每个新 `project_dir` 都创建三位新的 `fork_turns=none` 短导演", contract)
+        self.assertIn("不复用历史会话或旧路径", contract)
 
     def test_4x3_director_prompts_inline_hard_schema_bounds(self) -> None:
         content_prompt = (

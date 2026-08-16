@@ -145,8 +145,10 @@ def atomic_write_json(path: Path, value: dict[str, object]) -> None:
         raise
 
 
-def normalize_selected_style(value: str | None) -> str:
+def normalize_selected_style(value: str | None, *, allow_anchorless_default: bool = False) -> str:
     style = str(value or "").strip().upper()
+    if not style and allow_anchorless_default:
+        return "A"
     if style not in tuple("ABCDEFGH"):
         raise SystemExit("--selected-style 必须是 A-H")
     return style
@@ -346,8 +348,10 @@ def validate_expansion_supporting_sources(
 
 def validate_expansion_anchors(values: list[str] | None) -> list[dict[str, object]]:
     raw = values or []
-    if not 1 <= len(raw) <= 2:
-        raise SystemExit("selected_style_expansion 必须传入 1-2 个 --anchor")
+    if len(raw) > 2:
+        raise SystemExit("selected_style_expansion 最多传入 2 个 --anchor")
+    if not raw:
+        return []
     anchors: list[dict[str, object]] = []
     seen: set[str] = set()
     for index, item in enumerate(raw):
@@ -453,6 +457,9 @@ def write_selected_style_initial_artifacts(
         "project_dir": str(project_dir.resolve()),
         "page_order": page_ids,
         "selected_style": selected_style,
+        "visual_family_source": (
+            "raster_anchor" if anchors else "director_defined_text_family"
+        ),
         "anchor_approval_scope": anchor_approval_scope,
         "authoritative_source": source_record,
         "page_extractor": {
@@ -521,6 +528,9 @@ def write_selected_style_initial_artifacts(
         "status": "running",
         "project_dir": str(project_dir.resolve()),
         "selected_style": selected_style,
+        "visual_family_source": (
+            "raster_anchor" if anchors else "director_defined_text_family"
+        ),
         "anchor_approval_scope": anchor_approval_scope,
         "page_order": page_ids,
         "pages": page_records,
@@ -961,7 +971,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--selected-style",
-        help="扩页选中的规范席位 A-H；仅用于 selected_style_expansion",
+        help=(
+            "有锚点扩页时选中的规范席位 A-H；无锚点逐页制作时可省略，"
+            "控制面使用内部机械席位 A"
+        ),
     )
     parser.add_argument(
         "--page-ids",
@@ -984,7 +997,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help=(
             "扩页风格锚点，格式为绝对路径::primary|supporting；"
-            "传 1-2 次且必须恰有一个 primary"
+            "可不传；传 1-2 次时必须恰有一个 primary"
         ),
     )
     parser.add_argument(
@@ -1052,14 +1065,18 @@ def main() -> int:
             raise SystemExit(
                 "selected_style_expansion 不接受 Fast8 --preflight-manifest/--preflight-only"
             )
-        selected_style = normalize_selected_style(args.selected_style)
         page_ids = normalize_expansion_page_ids(args.page_ids)
         source_file = validate_expansion_source(args.source_file)
         supporting_sources = validate_expansion_supporting_sources(
             args.supporting_source, source_file, page_ids
         )
         anchors = validate_expansion_anchors(args.anchor)
+        selected_style = normalize_selected_style(
+            args.selected_style, allow_anchorless_default=not anchors
+        )
         anchor_approval_scope = args.anchor_approval_scope or "style_anchor_only"
+        if not anchors and anchor_approval_scope == "final_page_and_anchor":
+            raise SystemExit("无锚点逐页制作不能使用 final_page_and_anchor")
         overview_python = resolve_expansion_overview_python(args.overview_python)
         extracted_pages = extract_expansion_pages(source_file, page_ids)
         preflight_resolved_at = now_iso()

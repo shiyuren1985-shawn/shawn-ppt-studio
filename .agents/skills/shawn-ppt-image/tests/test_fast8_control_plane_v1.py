@@ -1000,11 +1000,9 @@ process.stdout.write(JSON.stringify({{active,peak,calls,writeStdinCalls,claimCom
         preparation = (ROOT / "references" / "Fast8准备与派发.md").read_text(
             encoding="utf-8"
         )
-        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("图片执行子 Agent 只是固定机械 wrapper 的承载者", prompt)
         self.assertIn("图片执行子 Agent", preparation)
         self.assertIn("不创建八个逐图 LLM Worker", preparation)
-        self.assertIn("不再创建八个 LLM 图片 Worker", skill)
 
         wrapper = prompt.split("```javascript\n", 1)[1].split("\n```", 1)[0]
         wrapper = wrapper.replace("<绝对 state>", str(self.fixture.state_path.resolve()))

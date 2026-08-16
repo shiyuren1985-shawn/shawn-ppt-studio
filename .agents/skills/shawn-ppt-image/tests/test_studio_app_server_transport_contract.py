@@ -3,19 +3,23 @@ import unittest
 from pathlib import Path
 
 
-SKILL_PATH = Path(__file__).resolve().parents[1] / "SKILL.md"
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+SKILL_PATH = SKILL_ROOT / "SKILL.md"
+REFERENCE_PATH = SKILL_ROOT / "references" / "Studio运行例外.md"
 
 
 class StudioAppServerTransportContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.skill = SKILL_PATH.read_text(encoding="utf-8")
+        cls.reference = REFERENCE_PATH.read_text(encoding="utf-8")
 
     def test_exception_is_exactly_transport_scoped(self):
         self.assertIn("transport=studio_app_server_v1", self.skill)
-        self.assertIn("application/developer context", self.skill)
-        self.assertIn("没有该精确 transport 标记", self.skill)
-        self.assertRegex(self.skill, r"普通 Codex 主对话、CLI 或其他 App Server 调用仍必须使用图片执行子 Agent")
+        self.assertIn("references/Studio运行例外.md", self.skill)
+        self.assertIn("application/developer context", self.reference)
+        self.assertIn("没有该精确 transport 标记", self.reference)
+        self.assertRegex(self.reference, r"普通 Codex 主对话、CLI 或其他 App Server 调用继续使用图片执行子 Agent")
 
     def test_root_wrapper_keeps_canonical_fast8_boundaries(self):
         required = [
@@ -32,12 +36,12 @@ class StudioAppServerTransportContractTests(unittest.TestCase):
         ]
         for phrase in required:
             with self.subTest(phrase=phrase):
-                self.assertIn(phrase, self.skill)
+                self.assertIn(phrase, self.reference)
 
     def test_fallback_requires_idle_executor_or_explicit_dispatch_failure(self):
         exception = re.search(
-            r"严格限域的 Studio App Server 兼容例外.*?不得援引本例外。",
-            self.skill,
+            r"## Fast8.*?## 正式 `single_image_edit`",
+            self.reference,
             flags=re.DOTALL,
         )
         self.assertIsNotNone(exception)
@@ -62,7 +66,7 @@ class StudioAppServerTransportContractTests(unittest.TestCase):
         ]
         for phrase in required:
             with self.subTest(phrase=phrase):
-                self.assertIn(phrase, self.skill)
+                self.assertIn(phrase, self.reference)
 
 
 if __name__ == "__main__":

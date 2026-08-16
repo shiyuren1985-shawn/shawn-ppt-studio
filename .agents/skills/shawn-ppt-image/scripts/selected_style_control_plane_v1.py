@@ -182,8 +182,10 @@ def normalize_representation_disclosure(plan: dict[str, Any], page_id: str) -> d
 
 def style_anchor_items(state: dict[str, Any]) -> list[dict[str, Any]]:
     raw = state.get("style_anchors") or []
-    if not isinstance(raw, list) or not (1 <= len(raw) <= 2):
-        raise SystemExit("扩页必须绑定 1–2 张 style_anchors")
+    if not isinstance(raw, list) or len(raw) > 2:
+        raise SystemExit("扩页 style_anchors 必须是零至两个对象")
+    if not raw:
+        return []
     normalized: list[dict[str, Any]] = []
     primary = 0
     for item in raw:
@@ -344,6 +346,8 @@ def compile_selected_bundle(
     anchor_mode = plan.get("anchor_input_mode")
     if anchor_mode not in {"raster", "text_family"}:
         raise SystemExit(f"页 {page.get('page_id')} anchor_input_mode 无效")
+    if not (state.get("style_anchors") or []):
+        anchor_mode = "text_family"
     style = pc.normalize_style(state.get("selected_style"))
     tone = str(style_contract.get("tone") or "")
     if tone not in pc.TONE_PROMPT_LABELS:
@@ -538,14 +542,18 @@ def prepare_directors(state_path: Path) -> dict[str, Any]:
         "style_contract_version": STYLE_CONTRACT_VERSION,
         "run_id": state["run_id"],
         "selected_style": f"style_{pc.normalize_style(state['selected_style'])}",
+        "visual_family_source": state.get("visual_family_source") or (
+            "raster_anchor" if state.get("style_anchors") else "director_defined_text_family"
+        ),
         "language": content_raw.get("language") or "source",
         "anchor_approval_scope": state.get("anchor_approval_scope"),
         "anchors": state.get("style_anchors"),
         "anchor_policy": {
-            "default_primary_count": 1,
+            "default_primary_count": 1 if state.get("style_anchors") else 0,
             "supporting_optional": True,
             "style_only_unless_final_page_and_anchor": True,
             "no_cumulative_learning": True,
+            "anchorless_forces_text_family": not bool(state.get("style_anchors")),
         },
         **{key: family[key] for key in required_family},
         "required_assets": shared_render_assets,

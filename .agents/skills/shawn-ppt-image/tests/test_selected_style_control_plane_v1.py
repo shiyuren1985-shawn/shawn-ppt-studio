@@ -46,6 +46,7 @@ class SelectedStyleControlPlaneV1Test(unittest.TestCase):
         expansion_reference = (ROOT / "references" / "选定风格扩页.md").read_text(
             encoding="utf-8"
         )
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("prompt_briefs.zh", chrome_prompt)
         self.assertIn("prompt_briefs.en", chrome_prompt)
         self.assertIn("各自非空", chrome_prompt)
@@ -56,6 +57,9 @@ class SelectedStyleControlPlaneV1Test(unittest.TestCase):
         self.assertIn("正式附件占满 5 个时由控制面机械降级", visual_prompt)
         self.assertIn("旧主标题或正文并不单独构成降级理由", visual_prompt)
         self.assertIn("不要为了想象中的污染风险逐页过度审查", visual_prompt)
+        self.assertIn("没有锚点时", visual_prompt)
+        self.assertIn("所有页写为 `text_family`", visual_prompt)
+        self.assertIn("不得先生成一页作为隐式锚点", visual_prompt)
         self.assertIn('"subtitle"', content_prompt)
         self.assertIn("控制面只补机械默认值", content_prompt)
         self.assertIn("无语义影响的末尾", judge_prompt)
@@ -65,6 +69,9 @@ class SelectedStyleControlPlaneV1Test(unittest.TestCase):
         self.assertIn("禁止落盘 preliminary、pending", judge_prompt)
         self.assertIn("只中断并以同一冻结 packet", expansion_reference)
         self.assertIn("不重启三席或整轮", expansion_reference)
+        self.assertIn("visual_family_source=director_defined_text_family", expansion_reference)
+        self.assertIn("输入恰好一页默认使用 `fast_8x1_diverse`", skill)
+        self.assertIn("输入多页默认使用 `selected_style_expansion`", skill)
         for prompt_name in (
             "fast8-content-contract-director.md",
             "4x3-content-contract-director.md",
@@ -475,6 +482,25 @@ class SelectedStyleControlPlaneV1Test(unittest.TestCase):
             self.project / "state" / "source_snapshot.json"
         )
         self.assertEqual(snapshot["page_content"]["authority_mode"], "authoritative_page_fragment")
+
+    def test_anchorless_run_forces_all_pages_to_text_family_without_image_anchor(self) -> None:
+        state = pipeline.read_json(self.state_path)
+        state["style_anchors"] = []
+        state["visual_family_source"] = "director_defined_text_family"
+        pipeline.atomic_write_json(self.state_path, state)
+        self.write_director_inputs(page_02_mode="raster", page_10_mode="raster")
+        control.prepare_directors(self.state_path)
+
+        for page_id in ("02", "10"):
+            job = pipeline.read_json(self.project / "page_jobs" / f"page_{page_id}.json")
+            self.assertEqual(job["anchor_input_mode"], "text_family")
+            self.assertEqual(job["reference_images"], [])
+            self.assertNotIn(str(self.primary.resolve()), job["imagegen_referenced_paths"])
+
+        contract = pipeline.read_json(self.project / "selected_style_contract.json")
+        self.assertEqual(contract["visual_family_source"], "director_defined_text_family")
+        self.assertEqual(contract["anchor_policy"]["default_primary_count"], 0)
+        self.assertTrue(contract["anchor_policy"]["anchorless_forces_text_family"])
 
     def test_required_assets_win_over_supporting_anchor_under_cap_five(self) -> None:
         assets = []

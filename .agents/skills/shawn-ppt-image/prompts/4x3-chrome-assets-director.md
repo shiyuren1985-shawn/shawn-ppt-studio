@@ -21,7 +21,7 @@
   "pages": {"<page_id>": []}
 }
 
-每项至少包含现存绝对 `path`、机器 `role`、授权与简短 `use`；按需只写 `tones|style_slots`，不得同时输出 `styles` 或 `used_by` 路由别名。这里的清单只能放会真实传给 ImageGen 的 PNG/JPG/JPEG/WebP 位图。PDF、PPTX、DOCX、Markdown 等文件本身不得写入 `required_assets_by_page.json`。但当冻结包明确要求保留某个指定 PDF/PPTX 页中的图表、架构、Logo、产品节点或其他视觉证据时，必须在本席一次完成：只把那一个指定页渲染为 `<project_dir>/references/` 下的新 PNG，并按当前页绑定为 `source_page`（或更准确的证据角色）；`use` 明确它只用于事实/对象准确性，不作为风格参考。不要因为文档是 supporting source 就漏掉这种明确的页级视觉出现义务，也不要预览或渲染整份文档。未明确要求视觉保留的普通引用仍只作 supporting source，不转成附件。项目证据图片、现场照片、产品图、Logo 与源页图片不得伪装成风格参考。当前 v5 跟随页不附带整张锚点成图；若该页还必须投影 global chrome Logo，则逐页资产最多四张，否则最多五张。锚点页按最多四张收敛。不要计算 SHA；最终五附件门由确定性准备入口统一计算。
+每项至少包含现存绝对 `path`、机器 `role`、授权与简短 `use`；按需只写 `tones|style_slots`，不得同时输出 `styles` 或 `used_by` 路由别名。用户或冻结来源要求资产用于该页全部风格、又未明确限定风格或明暗时，省略 `tones/style_slots`；不得仅因审美、对比度或背景明暗自行缩小范围，必要时让候选为资产增加合适承载底。这里的清单只能放会真实传给 ImageGen 的 PNG/JPG/JPEG/WebP 位图。PDF、PPTX、DOCX、Markdown 等文件本身不得写入 `required_assets_by_page.json`。但当冻结包明确要求保留某个指定 PDF/PPTX 页中的图表、架构、Logo、产品节点或其他视觉证据时，必须在本席一次完成：只把那一个指定页渲染为 `<project_dir>/references/` 下的新 PNG，并按当前页绑定为 `source_page`（或更准确的证据角色）；`use` 明确它只用于事实/对象准确性，不作为风格参考。不要因为文档是 supporting source 就漏掉这种明确的页级视觉出现义务，也不要预览或渲染整份文档。未明确要求视觉保留的普通引用仍只作 supporting source，不转成附件。项目证据图片、现场照片、产品图、Logo 与源页图片不得伪装成风格参考。当前 v5 跟随页不附带整张锚点成图；若该页还必须投影 global chrome Logo，则逐页资产最多四张，否则最多五张。锚点页按最多四张收敛。不要计算 SHA；最终五附件门由确定性准备入口统一计算。
 
 2. 只有用户、冻结来源或已确认全稿系统明确授权标题区时，才写 `global_chrome_contract.raw.json`；否则不要创建。raw 合同的 schema 与 `prompts/fast8-chrome-assets-director.md` 完全共用，不得为 4×3 自创字段或直接手写 formal v1。必须包含显式 authorization、scope、logo/main_title required、`prompt_briefs.zh|en`、qa_required 与 qa_checks。
 

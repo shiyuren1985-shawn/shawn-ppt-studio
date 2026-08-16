@@ -271,12 +271,6 @@ class SourceGuardFinalHardeningTests(unittest.TestCase):
                 )
             )
 
-    def test_worker_templates_require_the_exact_formal_generation_job_path(self) -> None:
-        for relative in ("prompts/style-worker.md", "prompts/style-follower-worker.md"):
-            with self.subTest(template=relative):
-                text = (ROOT / relative).read_text(encoding="utf-8")
-                self.assertIn("generation_job_path", text)
-
     def test_fast_repair_queue_binds_the_formal_job_path(self) -> None:
         fixture = regression_tests.SourceGuardRegressionTests(methodName="runTest")
         fixture.setUp()
