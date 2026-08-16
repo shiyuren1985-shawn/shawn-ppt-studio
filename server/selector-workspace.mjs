@@ -42,23 +42,11 @@ function within(candidate, root) {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`));
 }
 
-function selectorRootFromDeck(deck) {
-  let current = path.dirname(deck.config_path || "");
-  while (current && current !== path.dirname(current)) {
-    if (path.basename(current) === "saturated-ppt") return current;
-    current = path.dirname(current);
-  }
-  return null;
-}
-
 function allowedCandidateRoots(deck) {
-  const roots = (deck.candidate_roots || [])
+  return (deck.candidate_roots || [])
     .map((root) => root?.path)
     .filter((value) => typeof value === "string" && path.isAbsolute(value))
     .map((value) => path.resolve(value));
-  const selectorRoot = selectorRootFromDeck(deck);
-  if (selectorRoot) roots.push(path.join(selectorRoot, "data", "baseline_extracted"));
-  return roots;
 }
 
 function privateCandidateFiles(rawCatalog) {

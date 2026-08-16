@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+studio_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+skill_root="${SHAWN_PPT_IMAGE_PUBLIC_ROOT:-$(cd "$studio_root/.." && pwd)/shawn-ppt-image-skill}"
+skill_prefix=".agents/skills/shawn-ppt-image"
+require_installed_link=false
+
+if [[ "${1:-}" == "--require-installed-link" ]]; then
+  require_installed_link=true
+elif [[ -n "${1:-}" ]]; then
+  echo "Usage: $0 [--require-installed-link]" >&2
+  exit 2
+fi
+
+if [[ ! -d "$skill_root/.git" || ! -f "$skill_root/SKILL.md" ]]; then
+  echo "Standalone Skill checkout not found: $skill_root" >&2
+  exit 1
+fi
+if [[ ! -f "$studio_root/$skill_prefix/SKILL.md" ]]; then
+  echo "Bundled Skill fallback not found: $studio_root/$skill_prefix" >&2
+  exit 1
+fi
+
+skill_root="$(cd "$skill_root" && pwd -P)"
+
+if ! diff -u \
+  <(git -C "$skill_root" ls-files | LC_ALL=C sort) \
+  <(git -C "$studio_root" ls-files "$skill_prefix" | sed "s#^$skill_prefix/##" | LC_ALL=C sort); then
+  echo "Bundled Skill file list differs from the standalone repository." >&2
+  exit 1
+fi
+
+while IFS= read -r relative_path; do
+  if ! cmp -s \
+    "$skill_root/$relative_path" \
+    "$studio_root/$skill_prefix/$relative_path"; then
+    echo "Bundled Skill file differs: $relative_path" >&2
+    exit 1
+  fi
+done < <(git -C "$skill_root" ls-files)
+
+if [[ "$require_installed_link" == true ]]; then
+  codex_home="${CODEX_HOME:-$HOME/.codex}"
+  installed_root="$codex_home/skills/Shawn-PPT-image"
+  if [[ ! -L "$installed_root" || ! -e "$installed_root" ]]; then
+    echo "Installed Skill is not a working link: $installed_root" >&2
+    exit 1
+  fi
+  installed_target="$(cd "$installed_root" && pwd -P)"
+  if [[ "$installed_target" != "$skill_root" ]]; then
+    echo "Installed Skill does not use the standalone checkout." >&2
+    exit 1
+  fi
+fi
+
+echo "Standalone Skill, installed Skill, and Studio fallback are consistent."

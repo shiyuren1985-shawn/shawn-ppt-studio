@@ -40,4 +40,7 @@ git -C "$studio_root" subtree pull \
   --prefix="$skill_prefix" \
   "$skill_root" main --squash
 
+SHAWN_PPT_IMAGE_PUBLIC_ROOT="$skill_root" \
+  "$studio_root/bin/check-shawn-ppt-image-sync"
+
 echo "Updated $skill_prefix from $(git -C "$skill_root" rev-parse --short HEAD)."

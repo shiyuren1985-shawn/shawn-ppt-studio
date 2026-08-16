@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import {
   BUNDLED_SHAWN_SKILL_ROOT,
@@ -11,6 +13,8 @@ import {
   SHAWN_SKILL_ROOT,
   STUDIO_ROOT,
 } from "../../integrations/skill-paths.mjs";
+
+const execFileAsync = promisify(execFile);
 
 test("Studio uses the installed Shawn PPT Skill before its bundled fallback", async () => {
   assert.equal(
@@ -61,4 +65,27 @@ test("an explicit Skill override remains authoritative", () => {
     resolveShawnSkillRoot({ override: "/tmp/custom-shawn-skill" }),
     "/tmp/custom-shawn-skill",
   );
+});
+
+test("the local setup helper links the installed Skill to the standalone checkout", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "studio-skill-link-"));
+  const codexHome = path.join(root, "codex");
+  const skillRoot = path.join(root, "shawn-ppt-image-skill");
+  const installedRoot = path.join(codexHome, "skills", "Shawn-PPT-image");
+  const helper = path.join(STUDIO_ROOT, "bin", "link-shawn-ppt-image");
+  try {
+    await mkdir(path.join(skillRoot, ".git"), { recursive: true });
+    await writeFile(path.join(skillRoot, "SKILL.md"), "standalone\n");
+    const env = {
+      ...process.env,
+      CODEX_HOME: codexHome,
+      SHAWN_PPT_IMAGE_PUBLIC_ROOT: skillRoot,
+    };
+    await execFileAsync(helper, [], { env });
+    assert.equal(await realpath(installedRoot), await realpath(skillRoot));
+    const second = await execFileAsync(helper, [], { env });
+    assert.match(second.stdout, /already uses the standalone checkout/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

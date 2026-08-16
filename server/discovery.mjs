@@ -15,8 +15,7 @@ const STATUS_RE = /^>\s*状态[：:]\s*([^\n]+)/m;
 
 const STUDIO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_DECKS_FILE = path.resolve(
-  process.env.SHAWN_PPT_STUDIO_DECKS_FILE ||
-    path.join(path.dirname(STUDIO_ROOT), "saturated-ppt", "decks.json"),
+  path.join(STUDIO_ROOT, ".studio-projects-only.json"),
 );
 
 function revisionOf(bytes) {

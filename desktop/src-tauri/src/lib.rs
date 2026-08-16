@@ -21,7 +21,6 @@ use tauri::{
 const LOOPBACK_HOST: &str = "127.0.0.1";
 const DEFAULT_STUDIO_PORT: u16 = 8772;
 const MAX_FALLBACK_STUDIO_PORT: u16 = 8782;
-const DEFAULT_SELECTOR_PORT: u16 = 8765;
 const SUPERVISOR_FLAG: &str = "--shawn-supervise-child";
 const PRODUCT_NAME: &str = "Shawn PPT Studio";
 
@@ -49,24 +48,18 @@ struct DesktopConfig {
     studio_root: PathBuf,
     data_root: PathBuf,
     monitoring_root: PathBuf,
-    selector_root: PathBuf,
     node: PathBuf,
-    python: PathBuf,
-    selector_override: Option<PathBuf>,
     studio: LoopbackEndpoint,
-    selector: LoopbackEndpoint,
 }
 
 #[derive(Default)]
 struct ManagedServices {
     studio: Option<Child>,
-    selector: Option<Child>,
 }
 
 impl ManagedServices {
     fn stop(&mut self) {
         stop_child(&mut self.studio);
-        stop_child(&mut self.selector);
     }
 }
 
@@ -248,34 +241,6 @@ fn json_health_body(response: &[u8]) -> Option<serde_json::Value> {
     status_ok.then(|| serde_json::from_str(body).ok()).flatten()
 }
 
-fn selector_health_response(response: &[u8]) -> bool {
-    json_health_body(response)
-        .and_then(|value| {
-            value
-                .get("status")
-                .and_then(|status| status.as_str())
-                .map(str::to_owned)
-        })
-        .as_deref()
-        == Some("ok")
-}
-
-fn selector_is_healthy(endpoint: &LoopbackEndpoint) -> bool {
-    http_response(endpoint, "/api/health")
-        .is_some_and(|response| selector_health_response(&response))
-}
-
-fn wait_selector_healthy(endpoint: &LoopbackEndpoint, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if selector_is_healthy(endpoint) {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    false
-}
-
 fn studio_is_healthy(endpoint: &LoopbackEndpoint) -> bool {
     http_response(endpoint, "/api/health").is_some_and(|response| studio_health_response(&response))
 }
@@ -302,19 +267,6 @@ fn smoke_exit_delay(raw: Option<&str>) -> Option<Duration> {
     raw.and_then(|value| value.parse::<u64>().ok())
         .filter(|milliseconds| (100..=60_000).contains(milliseconds))
         .map(Duration::from_millis)
-}
-
-fn configured_port(primary: &str, legacy: Option<&str>, default: u16) -> Result<u16, String> {
-    let raw = env::var(primary)
-        .ok()
-        .or_else(|| legacy.and_then(|name| env::var(name).ok()));
-    let Some(raw) = raw else {
-        return Ok(default);
-    };
-    raw.parse::<u16>()
-        .ok()
-        .filter(|port| *port > 0)
-        .ok_or_else(|| format!("{primary} must be a port from 1 to 65535"))
 }
 
 fn configured_port_with_source(
@@ -431,21 +383,6 @@ fn node_command(home: Option<OsString>) -> PathBuf {
     first_executable(executable_candidates(configured, defaults))
 }
 
-fn python_command(home: Option<OsString>) -> PathBuf {
-    let configured = env::var_os("SHAWN_PPT_STUDIO_SELECTOR_PYTHON")
-        .or_else(|| env::var_os("PPT_AI_LAB_SELECTOR_PYTHON"));
-    let mut defaults = Vec::new();
-    if let Some(home) = home {
-        defaults.push(
-            PathBuf::from(home).join(
-                ".cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
-            ),
-        );
-    }
-    defaults.push(PathBuf::from("python3"));
-    first_executable(executable_candidates(configured, defaults))
-}
-
 fn default_data_root(home: Option<OsString>) -> Result<PathBuf, String> {
     if let Some(configured) = configured_path("SHAWN_PPT_STUDIO_DATA_ROOT", None) {
         return Ok(configured);
@@ -542,27 +479,6 @@ fn default_monitoring_root(home: Option<OsString>, data_root: &Path) -> Result<P
     monitoring_root_from_sources(explicit, config_path.as_deref(), data_root)
 }
 
-fn resolve_selector_root(studio_root: &Path) -> PathBuf {
-    if let Some(configured) = configured_path("SHAWN_PPT_STUDIO_SELECTOR_ROOT", None) {
-        return configured;
-    }
-    if let Some(workspace) = studio_root.parent() {
-        let candidate = workspace.join("saturated-ppt");
-        if candidate.join("server.py").is_file() {
-            return candidate;
-        }
-    }
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join("AI/Image-PPT/saturated-ppt"))
-        .unwrap_or_else(|| studio_root.join("saturated-ppt"))
-}
-
-fn selector_decks_file(selector_root: &Path) -> Option<PathBuf> {
-    let candidate = selector_root.join("decks.json");
-    candidate.is_file().then_some(candidate)
-}
-
 fn desktop_config() -> Result<DesktopConfig, String> {
     let executable = env::current_exe()
         .map_err(|error| format!("cannot resolve desktop executable: {error}"))?;
@@ -587,19 +503,8 @@ fn desktop_config() -> Result<DesktopConfig, String> {
     Ok(DesktopConfig {
         data_root,
         monitoring_root,
-        selector_root: resolve_selector_root(&studio_root),
         node: node_command(home.clone()),
-        python: python_command(home),
-        selector_override: configured_path(
-            "SHAWN_PPT_STUDIO_SELECTOR_BIN",
-            Some("PPT_AI_LAB_SELECTOR_BIN"),
-        ),
         studio: LoopbackEndpoint::new(studio_port),
-        selector: LoopbackEndpoint::new(configured_port(
-            "SHAWN_PPT_STUDIO_SELECTOR_PORT",
-            None,
-            DEFAULT_SELECTOR_PORT,
-        )?),
         studio_root,
     })
 }
@@ -622,30 +527,7 @@ fn studio_command(config: &DesktopConfig) -> Result<Command, String> {
             std::process::id().to_string(),
         )
         .env("PPT_AI_LAB_PORT", config.studio.port.to_string());
-    if let Some(legacy_decks_file) = selector_decks_file(&config.selector_root) {
-        command.env("SHAWN_PPT_STUDIO_DECKS_FILE", legacy_decks_file);
-    }
     Ok(command)
-}
-
-fn selector_command(config: &DesktopConfig) -> Result<Command, String> {
-    let args = [
-        OsString::from("--host"),
-        OsString::from(LOOPBACK_HOST),
-        OsString::from("--port"),
-        OsString::from(config.selector.port.to_string()),
-    ];
-    if let Some(executable) = &config.selector_override {
-        return supervised_command(executable, &args, &config.studio_root);
-    }
-
-    let server = config.selector_root.join("server.py");
-    if !server.is_file() {
-        return Err(format!("selector server is missing: {}", server.display()));
-    }
-    let mut python_args = vec![server.into_os_string()];
-    python_args.extend(args);
-    supervised_command(&config.python, &python_args, &config.selector_root)
 }
 
 fn spawn_services(config: &DesktopConfig) -> Result<ManagedServices, String> {
@@ -657,24 +539,6 @@ fn spawn_services(config: &DesktopConfig) -> Result<ManagedServices, String> {
     }
 
     let mut managed = ManagedServices::default();
-    if is_ready(&config.selector) {
-        if !selector_is_healthy(&config.selector) {
-            return Err(format!(
-                "selector loopback address {} is occupied by an unknown or unhealthy service",
-                config.selector.address()
-            ));
-        }
-    } else {
-        let selector = selector_command(config)?
-            .spawn()
-            .map_err(|error| format!("cannot start saturated-ppt selector: {error}"))?;
-        managed.selector = Some(selector);
-        if !wait_selector_healthy(&config.selector, Duration::from_secs(20)) {
-            managed.stop();
-            return Err("saturated-ppt selector did not become healthy on loopback".into());
-        }
-    }
-
     let studio = match studio_command(config)?.spawn() {
         Ok(studio) => studio,
         Err(error) => {
@@ -829,11 +693,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        bundled_studio_root, configured_port, default_data_root, is_studio_root,
-        monitoring_root_from_sources, select_studio_port, selector_decks_file,
-        selector_health_response, smoke_exit_delay, source_studio_root, studio_command,
-        studio_health_response, studio_root, DesktopConfig, LoopbackEndpoint,
-        DEFAULT_SELECTOR_PORT, DEFAULT_STUDIO_PORT, LOOPBACK_HOST,
+        bundled_studio_root, default_data_root, is_studio_root,
+        monitoring_root_from_sources, select_studio_port, smoke_exit_delay, source_studio_root,
+        studio_command, studio_health_response, studio_root, DesktopConfig, LoopbackEndpoint,
+        DEFAULT_STUDIO_PORT, LOOPBACK_HOST,
     };
     use std::{
         collections::HashMap,
@@ -850,10 +713,6 @@ mod tests {
         assert_eq!(
             LoopbackEndpoint::new(DEFAULT_STUDIO_PORT).address(),
             "127.0.0.1:8772"
-        );
-        assert_eq!(
-            LoopbackEndpoint::new(DEFAULT_SELECTOR_PORT).url(),
-            "http://127.0.0.1:8765/"
         );
     }
 
@@ -951,12 +810,8 @@ mod tests {
             studio_root: root.join("resources/studio"),
             data_root: root.join("Library/Application Support/Shawn PPT Studio"),
             monitoring_root: monitoring_root.clone(),
-            selector_root: root.join("selector"),
             node: PathBuf::from("node"),
-            python: PathBuf::from("python3"),
-            selector_override: None,
             studio: LoopbackEndpoint::new(DEFAULT_STUDIO_PORT),
-            selector: LoopbackEndpoint::new(DEFAULT_SELECTOR_PORT),
         };
         let command = studio_command(&config).expect("studio command");
         let environment = command
@@ -974,39 +829,12 @@ mod tests {
     }
 
     #[test]
-    fn existing_selector_registry_is_forwarded_to_studio() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("shawn-ppt-selector-{unique}"));
-        fs::create_dir_all(&root).expect("selector root");
-        let decks = root.join("decks.json");
-        fs::write(&decks, b"{}\n").expect("decks registry");
-        assert_eq!(selector_decks_file(&root), Some(decks));
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
     fn smoke_exit_is_explicit_and_bounded() {
         assert_eq!(smoke_exit_delay(None), None);
         assert_eq!(smoke_exit_delay(Some("bad")), None);
         assert_eq!(smoke_exit_delay(Some("99")), None);
         assert_eq!(smoke_exit_delay(Some("5000")), Some(Duration::from_secs(5)));
         assert_eq!(smoke_exit_delay(Some("60001")), None);
-    }
-
-    #[test]
-    fn selector_health_requires_200_and_expected_json_identity() {
-        assert!(selector_health_response(
-            b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"ok\"}"
-        ));
-        assert!(!selector_health_response(
-            b"HTTP/1.0 200 OK\r\n\r\n{\"status\":\"bad\"}"
-        ));
-        assert!(!selector_health_response(
-            b"HTTP/1.0 404 Not Found\r\n\r\n{\"status\":\"ok\"}"
-        ));
     }
 
     #[test]
@@ -1036,13 +864,4 @@ mod tests {
         assert!(error.contains("explicit desktop loopback address 127.0.0.1:9123"));
     }
 
-    #[test]
-    fn configured_ports_reject_zero() {
-        // No environment mutation: the parser's stable defaults are the production ports.
-        assert_eq!(
-            configured_port("SHAWN_PPT_STUDIO_TEST_UNUSED", None, DEFAULT_STUDIO_PORT)
-                .expect("default port"),
-            DEFAULT_STUDIO_PORT
-        );
-    }
 }

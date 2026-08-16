@@ -6,7 +6,6 @@ APP="$STUDIO_ROOT/desktop/src-tauri/target/release/bundle/macos/Shawn PPT Studio
 FAKE_CODEX="$STUDIO_ROOT/tests/desktop/fixtures/fake-codex-app-server.mjs"
 NODE_BIN=${SHAWN_PPT_STUDIO_NODE:-}
 OLD_PORT=8772
-SELECTOR_PORT=8765
 
 if [ -z "$NODE_BIN" ]; then
   NODE_BIN=$(command -v node 2>/dev/null || true)
@@ -27,17 +26,6 @@ if [ -z "$OLD_PID" ]; then
 fi
 
 OLD_HEALTH=$(curl -fsS "http://127.0.0.1:$OLD_PORT/api/health")
-SELECTOR_PID=$(lsof -nP -t -iTCP:$SELECTOR_PORT -sTCP:LISTEN 2>/dev/null | head -1)
-if [ -z "$SELECTOR_PID" ]; then
-  echo "port fallback smoke requires the existing selector on 127.0.0.1:$SELECTOR_PORT" >&2
-  exit 77
-fi
-SELECTOR_HEALTH=$(curl -fsS "http://127.0.0.1:$SELECTOR_PORT/api/health")
-if ! printf '%s' "$SELECTOR_HEALTH" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then
-  echo "existing selector is not healthy" >&2
-  exit 77
-fi
-
 NEW_PORT=
 for port in $(jot - 8773 8782); do
   if ! nc -z 127.0.0.1 "$port" 2>/dev/null; then
@@ -106,10 +94,6 @@ grep -q '"tasks":\[\]' "$SMOKE_DIR/new-tasks.json"
 kill -0 "$OLD_PID"
 test "$(lsof -nP -t -iTCP:$OLD_PORT -sTCP:LISTEN 2>/dev/null | head -1)" = "$OLD_PID"
 curl -fsS "http://127.0.0.1:$OLD_PORT/api/health" >"$SMOKE_DIR/legacy-after-fallback.json"
-kill -0 "$SELECTOR_PID"
-test "$(lsof -nP -t -iTCP:$SELECTOR_PORT -sTCP:LISTEN 2>/dev/null | head -1)" = "$SELECTOR_PID"
-curl -fsS "http://127.0.0.1:$SELECTOR_PORT/api/health" >"$SMOKE_DIR/selector-after-fallback.json"
-
 wait "$DESKTOP_PID"
 DESKTOP_PID=
 if nc -z 127.0.0.1 "$NEW_PORT" 2>/dev/null; then
@@ -117,8 +101,6 @@ if nc -z 127.0.0.1 "$NEW_PORT" 2>/dev/null; then
   exit 1
 fi
 kill -0 "$OLD_PID"
-kill -0 "$SELECTOR_PID"
-test "$(lsof -nP -t -iTCP:$SELECTOR_PORT -sTCP:LISTEN 2>/dev/null | head -1)" = "$SELECTOR_PID"
 
 # An explicitly selected occupied port must fail rather than silently moving.
 if env \
@@ -137,6 +119,5 @@ fi
 grep -q 'explicit desktop loopback address 127.0.0.1:8772 is already in use' \
   "$SMOKE_DIR/explicit.stderr"
 kill -0 "$OLD_PID"
-kill -0 "$SELECTOR_PID"
 
-echo "desktop coexist: default 8772 -> $NEW_PORT PASS, explicit occupied reject PASS, user 8772 PID $OLD_PID and selector 8765 PID $SELECTOR_PID preserved PASS"
+echo "desktop coexist: default 8772 -> $NEW_PORT PASS, explicit occupied reject PASS, user 8772 PID $OLD_PID preserved PASS"

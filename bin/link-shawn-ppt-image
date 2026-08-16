@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+studio_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+skill_root="${SHAWN_PPT_IMAGE_PUBLIC_ROOT:-$(cd "$studio_root/.." && pwd)/shawn-ppt-image-skill}"
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+installed_root="$codex_home/skills/Shawn-PPT-image"
+
+if [[ ! -d "$skill_root/.git" || ! -f "$skill_root/SKILL.md" ]]; then
+  echo "Standalone Skill checkout not found: $skill_root" >&2
+  exit 1
+fi
+
+skill_root="$(cd "$skill_root" && pwd -P)"
+mkdir -p "$(dirname "$installed_root")"
+
+if [[ -L "$installed_root" ]]; then
+  if [[ ! -e "$installed_root" ]]; then
+    echo "Installed Skill link is broken: $installed_root" >&2
+    exit 1
+  fi
+  installed_target="$(cd "$installed_root" && pwd -P)"
+  if [[ "$installed_target" == "$skill_root" ]]; then
+    echo "Installed Skill already uses the standalone checkout."
+    exit 0
+  fi
+  echo "Installed Skill link points somewhere else: $installed_root" >&2
+  exit 1
+fi
+
+if [[ -e "$installed_root" ]]; then
+  echo "Installed Skill path already exists and was not changed: $installed_root" >&2
+  echo "Move or back it up explicitly, then rerun this command." >&2
+  exit 1
+fi
+
+ln -s "$skill_root" "$installed_root"
+echo "Installed Skill now uses the standalone checkout."

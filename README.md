@@ -33,9 +33,14 @@ Company decks, private assets, production selection state, generated images, run
 
 The Studio prefers the installed `~/.codex/skills/Shawn-PPT-image` copy so Studio and direct Codex use one live source. It falls back to the bundled project copy only when the installed Skill is unavailable. Set `SHAWN_PPT_IMAGE_SKILL_ROOT` only when developing against a separate local checkout.
 
-### Optional legacy integration
+For local development, the standalone `shawn-ppt-image-skill` repository is the only editable Skill source. Link the standard Codex installation path to that checkout instead of maintaining a second copy:
 
-Legacy EPC/SI projects can connect to a sibling `saturated-ppt` selector service. New Studio projects keep their own local candidate and selection state and do not require legacy project data.
+```bash
+./bin/link-shawn-ppt-image
+./bin/check-shawn-ppt-image-sync --require-installed-link
+```
+
+After the link is in place, changes made in the standalone repository are used by new Studio tasks immediately; Studio does not read the GitHub copy at runtime. Running tasks continue with their frozen task state.
 
 ## Development setup
 
@@ -69,20 +74,18 @@ The defaults work with a standard Codex home directory. These environment variab
 | `SHAWN_PPT_STUDIO_NODE` | Node.js executable used by the desktop shell |
 | `SHAWN_PPT_STUDIO_PYTHON` | Python executable used by the production adapter |
 | `SHAWN_PPT_STUDIO_RUNTIME_ROOT` | Runtime containing export tools |
-| `SHAWN_PPT_STUDIO_SELECTOR_ROOT` | Optional legacy selector checkout |
-| `SHAWN_PPT_STUDIO_DECKS_FILE` | Optional legacy deck registry |
 | `SHAWN_PPT_IMAGE_SKILL_ROOT` | Optional standalone `shawn-ppt-image` checkout; overrides both the installed and bundled copies |
 | `SHAWN_PPT_IMAGE_MONITORING_ROOT` | Shared image-generation slot registry |
 
 ## Updating the distribution fallback
 
-The installed Skill is the local live source. The bundled copy is retained only for distributing Studio to machines without that Skill. Before publishing a new Studio build, update that fallback from the standalone repository:
+The standalone Skill repository is the development source. The installed Skill is a link to it, while the bundled copy is retained only for distributing Studio to machines without that Skill. Before publishing a new Studio build, update that fallback from the standalone repository:
 
 ```bash
 ./bin/sync-shawn-ppt-image
 ```
 
-The script validates a clean standalone checkout, pushes its `main` branch, runs the Skill tests, and updates the Studio subtree. Review and test the resulting Studio commit before publishing Studio.
+The script validates a clean standalone checkout, pushes its `main` branch, runs the Skill tests, updates the Studio subtree, and verifies byte-for-byte parity for every tracked Skill file. Review and test the resulting Studio commit before publishing Studio.
 
 Run the source server without the desktop shell:
 

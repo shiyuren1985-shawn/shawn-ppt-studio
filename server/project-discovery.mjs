@@ -77,8 +77,8 @@ export class ProjectDiscovery {
     try {
       legacy = await this.legacyDiscovery.listDecks();
     } catch {
-      // Legacy EPC/SI discovery is optional. Studio projects and their
-      // conversations must remain usable when saturated-ppt is not installed.
+      // External legacy discovery is optional. Studio projects and their
+      // conversations remain usable without an external registry.
     }
     const records = this.projects.list();
     const studio = [];
