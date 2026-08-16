@@ -145,6 +145,14 @@ export async function getConversationHistory(deckId, conversationId) {
   return readJson(await fetch(`/api/decks/${encodeURIComponent(deckId)}/conversations/${encodeURIComponent(conversationId)}`, { cache: "no-store" }));
 }
 
+export async function openConversationFile(deckId, filePath) {
+  return readJson(await fetch(`/api/decks/${encodeURIComponent(deckId)}/conversation-file/open`, {
+    method: "POST",
+    headers: MUTATION_HEADERS,
+    body: JSON.stringify({ path: filePath }),
+  }));
+}
+
 export async function streamConversationTurn(deckId, conversationId, payload, onEvent, signal) {
   const response = await fetch(`/api/decks/${encodeURIComponent(deckId)}/conversations/${encodeURIComponent(conversationId)}/messages`, {
     method: "POST",

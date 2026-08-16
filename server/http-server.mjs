@@ -12,6 +12,7 @@ import {
 } from "./codex-interaction.mjs";
 import { sanitizeForBrowser } from "./path-policy.mjs";
 import { resolveConversationImage } from "./conversation-image.mjs";
+import { openConversationFile } from "./conversation-file.mjs";
 import { rememberedStudioRule } from "./studio-rules.mjs";
 import { handleSelectorProjectionRequest } from "./selector-http.mjs";
 import { handleSelectorWorkspaceRequest } from "./selector-workspace-http.mjs";
@@ -1414,6 +1415,19 @@ export function createLabHttpServer(context) {
           context,
           decodeURIComponent(conversationImageMatch[1]),
         );
+        return;
+      }
+
+      const conversationFileOpenMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/conversation-file\/open$/,
+      );
+      if (req.method === "POST" && conversationFileOpenMatch) {
+        const body = await readJson(req);
+        const deck = await context.discovery.readDeck(
+          decodeURIComponent(conversationFileOpenMatch[1]),
+        );
+        const opener = context.conversationFileOpener || openConversationFile;
+        json(res, 200, await opener(deck, body?.path));
         return;
       }
 

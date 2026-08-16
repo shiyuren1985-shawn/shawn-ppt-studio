@@ -68,6 +68,10 @@ test("long-term Studio rules are visible, editable, and can also be saved from r
   assert.match(api, /method: "PUT"/);
   assert.match(app, /async function openStudioRulesDialog\(\)/);
   assert.match(app, /async function saveStudioRules\(\)/);
+  const openDialog = app.match(/async function openStudioRulesDialog\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
+  assert.ok(openDialog.indexOf('showModal()') < openDialog.indexOf('input.value ='));
+  assert.match(openDialog, /input\.scrollTop = 0/);
+  assert.match(css, /-webkit-text-fill-color: var\(--ink\)/);
   assert.match(app, /event\.event === "studio_rule_saved"/);
   assert.match(server, /rememberFromMessage\(body\?\.message\)/);
   assert.match(server, /requestUrl\.pathname === "\/api\/studio-rules"/);

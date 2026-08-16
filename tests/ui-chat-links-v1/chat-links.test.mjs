@@ -15,6 +15,14 @@ test("Codex local image markdown becomes compact clickable labels without embedd
     { type: "local_image", label: "A", target: "/Users/test/output/origin_image/style_A.png" },
   ]);
   assert.equal(agentMessageSegments("![内嵌](data:image/png;base64,abc)")[0].type, "text");
+  assert.deepEqual(
+    agentMessageSegments("[查看修改后的权威大纲](</Users/test/project/outline.md:165>)"),
+    [{
+      type: "local_file",
+      label: "查看修改后的权威大纲",
+      target: "/Users/test/project/outline.md:165",
+    }],
+  );
 });
 
 test("chat renderer uses on-demand same-project image links instead of raw HTML or image tags", async () => {
@@ -27,10 +35,13 @@ test("chat renderer uses on-demand same-project image links instead of raw HTML 
   assert.match(app, /renderAgentMessageBody/);
   assert.match(app, /conversation-file-link/);
   assert.match(app, /openImage\(url\)/);
+  assert.match(app, /api\.openConversationFile\(state\.deckId, segment\.target\)/);
   assert.doesNotMatch(app, /body\.innerHTML\s*=/);
   assert.match(api, /conversation-image\?path=/);
+  assert.match(api, /conversation-file\/open/);
   assert.match(styles, /\.conversation-file-link/);
   assert.match(server, /conversation-image/);
+  assert.match(server, /conversationFileOpenMatch/);
 });
 
 test("each turn has one compact process group that collapses when work finishes", async () => {

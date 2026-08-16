@@ -105,6 +105,7 @@ async function waitForText(reader, pattern) {
 function fixtureContext() {
   const client = new FakeAppServer();
   const studioRuleState = { rules: ["测试中的全局长期规则"] };
+  const openedConversationFiles = [];
   const deck = {
     deck_id: "fixture",
     label: "Fixture",
@@ -179,6 +180,11 @@ function fixtureContext() {
       },
       health: () => ({ ready: true, rule_count: studioRuleState.rules.length, error: null }),
     },
+    conversationFileOpener: async (openedDeck, filePath) => {
+      openedConversationFiles.push({ deck_id: openedDeck.deck_id, path: filePath });
+      return { opened: true, kind: "file" };
+    },
+    openedConversationFiles,
   };
   return { client, context };
 }
@@ -237,6 +243,27 @@ test("HTTP uses start, steer and interrupt on one official turn", async () => {
       "imagegen",
     ]);
     assert.match(started.input.find((item) => item.type === "text").text, /测试中的全局长期规则/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("HTTP opens a rendered local file link through the current deck boundary", async () => {
+  const { context } = fixtureContext();
+  const server = createLabHttpServer(context);
+  const baseUrl = await listen(server);
+  try {
+    const response = await fetch(`${baseUrl}/api/decks/fixture/conversation-file/open`, {
+      method: "POST",
+      headers: writeHeaders(),
+      body: JSON.stringify({ path: "/tmp/shawn-studio/outline/outline.md:17" }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { opened: true, kind: "file" });
+    assert.deepEqual(context.openedConversationFiles, [{
+      deck_id: "fixture",
+      path: "/tmp/shawn-studio/outline/outline.md:17",
+    }]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

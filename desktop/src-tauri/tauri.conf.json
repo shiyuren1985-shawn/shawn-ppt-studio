@@ -31,6 +31,7 @@
       "../../server/app-server-client.mjs": "studio/server/app-server-client.mjs",
       "../../server/candidate-edits.mjs": "studio/server/candidate-edits.mjs",
       "../../server/codex-interaction.mjs": "studio/server/codex-interaction.mjs",
+      "../../server/conversation-file.mjs": "studio/server/conversation-file.mjs",
       "../../server/conversation-image.mjs": "studio/server/conversation-image.mjs",
       "../../server/conversations.mjs": "studio/server/conversations.mjs",
       "../../server/discovery.mjs": "studio/server/discovery.mjs",

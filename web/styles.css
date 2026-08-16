@@ -359,7 +359,7 @@ html[data-conversation-column="collapsed"] .conversation-heading .column-toggle 
 .remove-project-dialog > p strong { color: var(--ink); }
 .studio-rules-dialog { width: min(680px, calc(100vw - 32px)); }
 .studio-rules-label { display: block; margin-top: 18px; color: var(--ink); font-size: 13px; font-weight: 800; }
-.studio-rules-dialog textarea { width: 100%; min-height: 250px; margin-top: 7px; padding: 12px 13px; resize: vertical; border: 1px solid #bfcac4; border-radius: 10px; outline: none; color: var(--ink); background: var(--paper); font-size: 14px; line-height: 1.6; }
+.studio-rules-dialog textarea { width: 100%; min-height: 250px; margin-top: 7px; padding: 12px 13px; resize: vertical; border: 1px solid #bfcac4; border-radius: 10px; outline: none; color: var(--ink); -webkit-text-fill-color: var(--ink); caret-color: var(--ink); background: var(--paper); opacity: 1; font-size: 14px; line-height: 1.6; }
 .studio-rules-dialog textarea:focus { border-color: var(--forest-2); box-shadow: 0 0 0 3px rgba(32,96,77,.12); }
 .studio-rules-dialog .studio-rules-hint { margin: 8px 0 0; line-height: 1.55; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }

@@ -63,10 +63,16 @@ export function agentMessageSegments(value) {
       : rawTarget;
     const kind = target.startsWith("/") && LOCAL_IMAGE_RE.test(target)
       ? "local_image"
-      : /^https?:\/\//i.test(target) ? "web_link" : null;
+      : target.startsWith("/")
+        ? "local_file"
+        : /^https?:\/\//i.test(target) ? "web_link" : null;
     if (!kind) continue;
     if (match.index > cursor) segments.push({ type: "text", text: source.slice(cursor, match.index) });
-    segments.push({ type: kind, label: match[1].trim() || "查看图片", target });
+    segments.push({
+      type: kind,
+      label: match[1].trim() || (kind === "local_image" ? "查看图片" : "打开文件"),
+      target,
+    });
     cursor = match.index + match[0].length;
   }
   if (cursor < source.length) segments.push({ type: "text", text: source.slice(cursor) });

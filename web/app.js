@@ -340,10 +340,15 @@ async function openStudioRulesDialog() {
   el["studio-rules-button"].disabled = true;
   try {
     const payload = await api.getStudioRules();
-    el["studio-rules-input"].value = (payload?.rules || []).join("\n");
     setStudioRulesStatus(`${payload?.rules?.length || 0} 条规则`);
     el["studio-rules-dialog"].showModal();
-    requestAnimationFrame(() => el["studio-rules-input"].focus());
+    requestAnimationFrame(() => {
+      const input = el["studio-rules-input"];
+      input.value = (payload?.rules || []).join("\n");
+      input.scrollTop = 0;
+      input.setSelectionRange(0, 0);
+      input.focus();
+    });
   } catch (error) {
     el["studio-rules-button"].disabled = false;
     toast(`无法读取长期规则：${error.message}`);
@@ -658,7 +663,9 @@ function renderAgentMessageBody(body, text) {
     const link = document.createElement("a");
     link.className = "conversation-file-link";
     link.textContent = segment.label;
-    link.title = segment.type === "local_image" ? "点击查看图片" : "在新窗口打开";
+    link.title = segment.type === "local_image"
+      ? "点击查看图片"
+      : segment.type === "local_file" ? "用默认应用打开" : "在新窗口打开";
     if (segment.type === "local_image") {
       const url = api.conversationImageUrl(state.deckId, segment.target);
       if (!url) {
@@ -669,6 +676,16 @@ function renderAgentMessageBody(body, text) {
       link.addEventListener("click", (event) => {
         event.preventDefault();
         openImage(url);
+      });
+    } else if (segment.type === "local_file") {
+      link.href = "#";
+      link.addEventListener("click", async (event) => {
+        event.preventDefault();
+        try {
+          await api.openConversationFile(state.deckId, segment.target);
+        } catch (error) {
+          toast(`无法打开这个文件：${error.message}`);
+        }
       });
     } else {
       link.href = segment.target;
