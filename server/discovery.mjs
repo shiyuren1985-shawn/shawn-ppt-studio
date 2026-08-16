@@ -188,8 +188,9 @@ function expandUser(value) {
 }
 
 export class DeckDiscovery {
-  constructor({ decksFile = DEFAULT_DECKS_FILE }) {
+  constructor({ decksFile = DEFAULT_DECKS_FILE, allowMissing = false }) {
     this.decksFile = path.resolve(decksFile);
+    this.allowMissing = allowMissing;
     this.ready = false;
     this.lastError = null;
     this.lastCheckedAt = null;
@@ -321,6 +322,13 @@ export class DeckDiscovery {
       this.deckCount = decks.length;
       return { registry, decks };
     } catch (error) {
+      if (this.allowMissing && error?.code === "ENOENT") {
+        this.ready = true;
+        this.lastError = null;
+        this.lastCheckedAt = new Date().toISOString();
+        this.deckCount = 0;
+        return { registry: { default_deck: null, decks: [] }, decks: [] };
+      }
       this.ready = false;
       this.lastError = error;
       this.lastCheckedAt = new Date().toISOString();
@@ -333,7 +341,7 @@ export class DeckDiscovery {
     const { registry, decks } = await this.#load();
     return {
       contract_version: 2,
-      default_deck: registry.default_deck || decks[0].deck_id,
+      default_deck: registry.default_deck || decks[0]?.deck_id || null,
       decks: decks.map(publicDeck),
     };
   }

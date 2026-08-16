@@ -67,7 +67,10 @@ try {
   projects.lastError = error;
   process.stderr.write(`Shawn PPT Studio: project registry unavailable: ${error.message}\n`);
 }
-const legacyDiscovery = new DeckDiscovery({ decksFile });
+const legacyDiscovery = new DeckDiscovery({
+  decksFile,
+  allowMissing: process.env.PPT_AI_LAB_TEST_MODE !== "1",
+});
 const discovery = new ProjectDiscovery({ legacyDiscovery, projects });
 const projectPicker = new MacProjectPicker();
 await discovery.probe();

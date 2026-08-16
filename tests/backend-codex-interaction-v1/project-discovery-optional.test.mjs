@@ -37,3 +37,20 @@ test("Studio projects stay available when the optional legacy registry is absent
   assert.equal(outline.outline_path, await realpath(outlinePath));
   assert.equal(outline.outline_kind, "draft");
 });
+
+test("the normal Studio runtime treats its intentionally absent legacy registry as empty", async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "studio-empty-legacy-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const discovery = new DeckDiscovery({
+    decksFile: path.join(root, "missing", "decks.json"),
+    allowMissing: true,
+  });
+  const listed = await discovery.listDecks();
+
+  assert.equal(listed.default_deck, null);
+  assert.deepEqual(listed.decks, []);
+  assert.equal(discovery.health().ready, true);
+  assert.equal(discovery.health().deck_count, 0);
+  assert.equal(discovery.health().error, null);
+});
