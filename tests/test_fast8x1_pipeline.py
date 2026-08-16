@@ -24,19 +24,6 @@ SPEC.loader.exec_module(pipeline)
 
 
 class Fast8PipelineTest(unittest.TestCase):
-    def test_fast8_worker_prompt_is_dedicated_and_quality_locked(self) -> None:
-        prompt_path = MODULE_PATH.parents[1] / "prompts" / "fast8-image-worker.md"
-        text = prompt_path.read_text(encoding="utf-8")
-        self.assertLess(len(text), 6000)
-        self.assertIn("逐字", text)
-        self.assertIn("imagegen_referenced_paths", text)
-        self.assertIn("write-fast8-worker-receipt", text)
-        self.assertIn("原子写入", text)
-        self.assertIn("不得用 `apply_patch`", text)
-        self.assertNotIn("worker_receipt_template", text)
-        self.assertNotIn("Quick8 v5", text)
-        self.assertNotIn("严格 4×3", text)
-
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="shawn_fast8_")
         self.root = Path(self.temp.name)

@@ -22,26 +22,28 @@ def load_module(name: str, path: Path):
 class MediaIsolationContractTests(unittest.TestCase):
     def test_shared_quality_principles_remain_minimal_and_stable(self) -> None:
         skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("质量门保持“少而稳定”", skill_text)
-        self.assertIn("不把简单任务复杂化", skill_text)
-        self.assertIn("简化不能牺牲稳定性", skill_text)
-        self.assertIn("不增加第二个 Reviewer", skill_text)
+        self.assertIn("质量门保持少而稳定", skill_text)
+        self.assertIn("只保留一个隔离 Judge", skill_text)
+        self.assertIn("不增加第二 Reviewer", skill_text)
+        self.assertIn("正式 state", skill_text)
 
     def test_main_conversation_is_image_free_and_child_qa_is_allowed(self) -> None:
         skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        media_text = (
+            SKILL_ROOT / "references" / "媒体隔离与交付格式.md"
+        ).read_text(encoding="utf-8")
         worker_text = (SKILL_ROOT / "prompts" / "visual-review-worker.md").read_text(
             encoding="utf-8"
         )
         global_agents_text = (Path.home() / ".codex" / "AGENTS.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("主对话媒体隔离", skill_text)
-        self.assertIn("子 Agent 不受上述图片载荷限制", skill_text)
-        self.assertIn("视觉检查与 Judge 必须照常执行", skill_text)
-        self.assertIn("includeOutputs=false", skill_text)
-        self.assertIn("只使用普通可点击文件链接", skill_text)
-        self.assertIn("原始 `.jsonl`", skill_text)
-        self.assertIn("recover_image_artifact.py", skill_text)
+        self.assertIn("references/媒体隔离与交付格式.md", skill_text)
+        self.assertIn("视觉检查与 Judge 必须照常在子 Agent 内执行", media_text)
+        self.assertIn("includeOutputs=false", media_text)
+        self.assertIn("只使用普通可点击文件链接", media_text)
+        self.assertIn("原始 `.jsonl`", media_text)
+        self.assertIn("recover_image_artifact.py", media_text)
         self.assertIn("子 Agent 视觉审查合同", worker_text)
         self.assertIn("子 Agent 可以读取任务明确列出的本地图片", worker_text)
         self.assertIn('"suspect_paths"', worker_text)

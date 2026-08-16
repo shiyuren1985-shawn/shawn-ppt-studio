@@ -283,6 +283,21 @@ class SelectedExpansionSnapshotUnionTests(unittest.TestCase):
             (self.project_dir / "state" / "source_snapshot.json").exists()
         )
 
+    def test_explicit_anchorless_text_family_snapshot_needs_no_style_anchor(self) -> None:
+        self.write_complete_page_jobs(include_style_anchor=False)
+        state = pipeline.read_json(self.state_path)
+        state["visual_family_source"] = "director_defined_text_family"
+        state["style_anchors"] = []
+        pipeline.atomic_write_json(self.state_path, state)
+
+        snapshot = self.create_snapshot(
+            asset_items=self.snapshot_assets(include_style_anchor=False)
+        )
+
+        self.assertFalse(
+            any("style_anchor" in (item.get("roles") or []) for item in snapshot["assets"])
+        )
+
     def test_snapshot_missing_page_job_asset_is_rejected(self) -> None:
         self.write_complete_page_jobs()
 

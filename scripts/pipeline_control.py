@@ -5563,7 +5563,14 @@ def create_source_snapshot(
             raise SystemExit(
                 "扩页 source snapshot 的资产必须精确等于全部 page_jobs 外部输入并集"
             )
-        if not any("style_anchor" in (item.get("roles") or []) for item in assets):
+        anchorless_text_family = (
+            state.get("visual_family_source") == "director_defined_text_family"
+            and not (state.get("style_anchors") or [])
+        )
+        if (
+            not anchorless_text_family
+            and not any("style_anchor" in (item.get("roles") or []) for item in assets)
+        ):
             raise SystemExit(
                 "扩页 source snapshot 必须把实际使用的选中锚点标记为 style_anchor"
             )

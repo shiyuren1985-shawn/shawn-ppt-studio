@@ -1,6 +1,6 @@
 # Fast8 裁判与收口
 
-只在 A–H 当前候选均已结算后读取。默认不再做 4/6 中途 Judge；单次最终 Judge 降低协调长尾。旧任务或人工诊断仍可恢复其既有检查点。
+只在 A–H 当前候选均已结算后读取。只做一次最终 Judge，不设置 4/6 中途检查点。
 
 ## 最终组合裁判
 
@@ -28,9 +28,9 @@
 4. 标记 `candidate_ready` 并封存 `process_completed`；
 5. 生成并验证严格两行、九个普通链接的交付文本。
 
-`state/handoff.json|md`、完整 `validate-state --complete`、技术健康、中央索引和七问复盘均在两行链接交付后异步执行。它们必须保留，但不得作为可点击交付的前置条件。旧运行仍使用原 `pipeline_control.py finalize-fast8 --state ...` 合同。
+`state/handoff.json|md`、完整 `validate-state --complete`、技术健康、中央索引和七问复盘均在两行链接交付后异步执行。它们必须保留，但不得作为可点击交付的前置条件。
 
-新运行不得由模型逐项执行上述步骤，也不得等待 Judge 最终文字。图片执行子 Agent的 canonical `functions.exec` 返回机器摘要后，根任务只续收派发前已经启动的 `await-close` shell session；它连续等待并应用现有 Judge 报告，`pass|best_effort` 后立即 `lean-finalize` 生成总览与两行链接。返回 `completed` 时逐字交付，随后才做完整 handoff、审计、监测、索引和七问；返回 `replacement_required` 时按既有 1–2 席预算完成替代后再启动同一 watcher。只有未绑定旧运行可临时传 `finalize-fast8 --overview-python ...`；新运行不得替换或补写启动阶段绑定的解释器。
+新运行不得由模型逐项执行上述步骤，也不得等待 Judge 最终文字。图片执行子 Agent的 canonical `functions.exec` 返回机器摘要后，根任务只续收派发前已经启动的 `await-close` shell session；它连续等待并应用现有 Judge 报告，`pass|best_effort` 后立即 `lean-finalize` 生成总览与两行链接。返回 `completed` 时逐字交付，随后才做完整 handoff、审计、监测、索引和七问；返回 `replacement_required` 时按既有 1–2 席预算完成替代后再启动同一 watcher。不得替换或补写启动阶段绑定的解释器。
 
 父级主对话不得打开 contact sheet、单图或总览。视觉裁判在 Judge 子 Agent内执行；Judge 只回传文字报告路径和哈希，不回传图片载荷。Judge 子 Agent不可用时记录“未执行视觉检查”，不得伪造通过。
 

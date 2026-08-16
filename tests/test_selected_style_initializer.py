@@ -185,7 +185,45 @@ class SelectedStyleInitializerTest(unittest.TestCase):
                 (root / "output" / "epc_selected_style_expansion_20260807").exists()
             )
 
-    def test_requires_one_primary_and_rejects_expansion_args_without_opt_in(self) -> None:
+    def test_anchorless_multi_page_defaults_to_director_text_family(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="selected_style_anchorless_") as temp:
+            root = Path(temp)
+            source = root / "outline.md"
+            source.write_text("# P02\nTwo\n\n# P10\nTen\n", encoding="utf-8")
+            overview_python = self.fake_pillow_python(root)
+            result = self.run_init(
+                "--output-root", str(root / "output"),
+                "--task-name", "anchorless_multi_page",
+                "--run-mode", "selected_style_expansion",
+                "--page-ids", "02,10",
+                "--source-file", str(source),
+                "--overview-python", str(overview_python),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            state = json.loads(Path(payload["state"]).read_text(encoding="utf-8"))
+            packet = json.loads(
+                Path(state["source_packet_path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(state["selected_style"], "A")
+            self.assertEqual(state["style_anchors"], [])
+            self.assertEqual(state["visual_family_source"], "director_defined_text_family")
+            self.assertEqual(packet["style_anchors"], [])
+            self.assertEqual(packet["visual_family_source"], "director_defined_text_family")
+
+            rejected = self.run_init(
+                "--output-root", str(root / "other-output"),
+                "--task-name", "anchorless_final_anchor_scope",
+                "--run-mode", "selected_style_expansion",
+                "--page-ids", "02,10",
+                "--source-file", str(source),
+                "--anchor-approval-scope", "final_page_and_anchor",
+                "--overview-python", str(overview_python),
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("无锚点逐页制作不能使用 final_page_and_anchor", rejected.stderr)
+
+    def test_provided_anchors_require_one_primary_and_rejects_args_without_opt_in(self) -> None:
         with tempfile.TemporaryDirectory(prefix="selected_style_anchor_gate_") as temp:
             root = Path(temp)
             source = root / "outline.json"

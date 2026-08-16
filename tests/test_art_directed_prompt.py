@@ -60,13 +60,6 @@ def add_valid_spatial_topologies(styles: dict[str, dict[str, object]]) -> None:
 
 
 class ArtDirectedPromptTest(unittest.TestCase):
-    def test_recovery_worker_prompts_separate_recovery_and_original_tool_times(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        for relative in ("prompts/style-worker.md", "prompts/style-follower-worker.md"):
-            text = (root / relative).read_text(encoding="utf-8")
-            self.assertIn("绝不能复制原始生成回合时间", text)
-            self.assertIn("tool_started_at|tool_finished_at", text)
-
     def test_fast8_art_direction_compiles_relationship_and_craft(self) -> None:
         with tempfile.TemporaryDirectory(prefix="shawn_art_direction_") as temp:
             root = Path(temp)

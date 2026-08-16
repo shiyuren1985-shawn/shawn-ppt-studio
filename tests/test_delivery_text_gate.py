@@ -122,20 +122,20 @@ class DeliveryTextGateTests(unittest.TestCase):
     def test_docs_require_validating_exact_delivery_draft(self) -> None:
         skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
         reference_text = (
-            SKILL_ROOT / "references" / "四套风格并发生成.md"
+            SKILL_ROOT / "references" / "媒体隔离与交付格式.md"
         ).read_text(encoding="utf-8")
-        for text in (skill_text, reference_text):
-            self.assertIn("state/delivery_message.md", text)
-            self.assertIn("validate_delivery_text.py", text)
-            self.assertIn("逐字发送", text)
+        self.assertIn("references/媒体隔离与交付格式.md", skill_text)
+        self.assertIn("state/delivery_message.md", reference_text)
+        self.assertIn("validate_delivery_text.py", reference_text)
+        self.assertIn("逐字发送", reference_text)
 
-    def test_fast8_worker_prompt_requires_same_exec_receipt(self) -> None:
-        text = (SKILL_ROOT / "prompts" / "style-worker.md").read_text(
+    def test_fast8_burst_prompt_requires_same_exec_receipt(self) -> None:
+        text = (SKILL_ROOT / "prompts" / "fast8-burst-runner.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("worker_receipt", text)
-        self.assertIn("同一个 `functions.exec`", text)
-        self.assertIn("result.output_hint", text)
+        self.assertIn("await eval(action)", text)
+        self.assertIn("imagegen_referenced_paths", text)
+        self.assertIn("savedPath/receipt", text)
 
 
 if __name__ == "__main__":
