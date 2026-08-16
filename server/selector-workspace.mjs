@@ -73,10 +73,34 @@ function privateCandidateFiles(rawCatalog) {
         /^[a-f0-9]{64}$/.test(fileSha256) &&
         path.isAbsolute(sourcePath)
       ) {
+        const rawSources = Array.isArray(candidate.duplicate_sources) && candidate.duplicate_sources.length
+          ? candidate.duplicate_sources
+          : [candidate];
+        const sourcesByPath = new Map();
+        for (const rawSource of rawSources) {
+          const rawCandidateId = String(rawSource?.candidate_id || "");
+          const rawPath = typeof rawSource?.path === "string" ? rawSource.path : "";
+          if (!/^[a-f0-9]{24}$/.test(rawCandidateId) || !path.isAbsolute(rawPath)) continue;
+          const resolvedPath = path.resolve(rawPath);
+          sourcesByPath.set(resolvedPath, {
+            candidate_id: rawCandidateId,
+            file_sha256: fileSha256,
+            path: resolvedPath,
+          });
+        }
+        const resolvedSourcePath = path.resolve(sourcePath);
+        if (!sourcesByPath.has(resolvedSourcePath)) {
+          sourcesByPath.set(resolvedSourcePath, {
+            candidate_id: candidateId,
+            file_sha256: fileSha256,
+            path: resolvedSourcePath,
+          });
+        }
         files.set(candidateId, {
           candidate_id: candidateId,
           file_sha256: fileSha256,
-          path: path.resolve(sourcePath),
+          path: resolvedSourcePath,
+          sources: [...sourcesByPath.values()],
           run_id: typeof candidate.run_id === "string" ? candidate.run_id : null,
           handoff_path: typeof candidate.handoff_path === "string" ? candidate.handoff_path : null,
           native_candidate_id: typeof candidate.native_candidate_id === "string"
@@ -117,6 +141,16 @@ async function moveToTrash(sourcePath, trashRoot) {
   return target;
 }
 
+async function restoreFromTrash(targetPath, sourcePath) {
+  try {
+    await rename(targetPath, sourcePath);
+  } catch (error) {
+    if (error?.code !== "EXDEV") throw error;
+    await copyFile(targetPath, sourcePath, fsConstants.COPYFILE_EXCL);
+    await unlink(targetPath);
+  }
+}
+
 function publicCandidate(deckId, page, candidate) {
   const selectedIds = new Set(stringList(page.selected_candidate_ids));
   const candidateId = String(candidate.candidate_id || "");
@@ -137,6 +171,7 @@ function publicCandidate(deckId, page, candidate) {
     selected,
     selected_order: selectedIndex >= 0 ? selectedIndex + 1 : (selected ? 1 : null),
     previous_version: candidate.baseline === true,
+    source_count: Math.max(1, Number(candidate.duplicate_source_count) || 1),
     width: Number.isFinite(candidate.width) ? candidate.width : null,
     height: Number.isFinite(candidate.height) ? candidate.height : null,
     generated_at: typeof candidate.generated_at === "string" ? candidate.generated_at : null,
@@ -397,23 +432,23 @@ export class SelectorWorkspace {
       throw new HttpError(400, "请再次点击“确认删除”", "trash_confirmation_required");
     }
     const snapshot = this.snapshot(deckId);
-    const current = snapshot.pages
-      .flatMap((page) => page.candidates)
-      .find((candidate) => (
-        candidate.candidate_id === candidateId && candidate.file_sha256 === sha256
-      ));
+    const currentPage = snapshot.pages.find((page) => page.candidates.some((candidate) => (
+      candidate.candidate_id === candidateId && candidate.file_sha256 === sha256
+    )));
+    const current = currentPage?.candidates.find((candidate) => (
+      candidate.candidate_id === candidateId && candidate.file_sha256 === sha256
+    ));
     if (!current) {
       throw new HttpError(409, "这张图片已经不在当前候选中，请刷新后再试", "candidate_not_current");
-    }
-    if (current.selected) {
-      throw new HttpError(409, "这张图片已经选中，请先取消选择", "selected_candidate_cannot_be_trashed");
     }
     const source = this.candidateFiles.get(deckId)?.get(candidateId);
     if (!source || source.file_sha256 !== sha256) {
       throw new HttpError(409, "这张图片已经变化，请刷新后再试", "candidate_not_current");
     }
-    const sourceReal = await realpath(source.path).catch(() => null);
-    let allowed = false;
+    const sourceFiles = Array.isArray(source.sources) && source.sources.length
+      ? source.sources
+      : [source];
+    const verifiedSources = [];
     if (deck.source_kind === "studio") {
       const handoffPath = source.handoff_path ? path.resolve(source.handoff_path) : null;
       const projectRoot = handoffPath ? path.dirname(path.dirname(handoffPath)) : null;
@@ -422,43 +457,85 @@ export class SelectorWorkspace {
         projectRoot ? realpath(projectRoot).catch(() => null) : null,
         projectRoot ? realpath(path.join(projectRoot, "origin_image")).catch(() => null) : null,
       ]);
-      allowed = Boolean(
-        sourceReal &&
-        sourceReal === source.path &&
-        outputReal &&
-        projectReal &&
-        originReal &&
-        within(projectReal, outputReal) &&
-        handoffPath === path.join(projectReal, "state", "handoff.json") &&
-        within(sourceReal, originReal) &&
-        await sha256File(sourceReal) === sha256
-      );
+      for (const item of sourceFiles) {
+        const sourceReal = await realpath(item.path).catch(() => null);
+        const allowed = Boolean(
+          sourceReal &&
+          sourceReal === item.path &&
+          outputReal &&
+          projectReal &&
+          originReal &&
+          within(projectReal, outputReal) &&
+          handoffPath === path.join(projectReal, "state", "handoff.json") &&
+          within(sourceReal, originReal) &&
+          await sha256File(sourceReal) === sha256
+        );
+        if (!allowed) {
+          throw new HttpError(409, "这张图片无法移到废纸篓", "candidate_path_not_allowed");
+        }
+        verifiedSources.push({ ...item, path: sourceReal });
+      }
     } else {
       const roots = allowedCandidateRoots(deck);
-      allowed = Boolean(
-        sourceReal &&
-        sourceReal === source.path &&
-        roots.some((root) => within(sourceReal, root))
-      );
+      for (const item of sourceFiles) {
+        const sourceReal = await realpath(item.path).catch(() => null);
+        const allowed = Boolean(
+          sourceReal &&
+          sourceReal === item.path &&
+          roots.some((root) => within(sourceReal, root)) &&
+          await sha256File(sourceReal) === sha256
+        );
+        if (!allowed) {
+          throw new HttpError(409, "这张图片无法移到废纸篓", "candidate_path_not_allowed");
+        }
+        verifiedSources.push({ ...item, path: sourceReal });
+      }
     }
-    if (!allowed) {
-      throw new HttpError(409, "这张图片无法移到废纸篓", "candidate_path_not_allowed");
+    for (const item of verifiedSources) {
+      const info = await lstat(item.path);
+      if (!info.isFile() || info.isSymbolicLink()) {
+        throw new HttpError(409, "这张图片无法移到废纸篓", "candidate_path_not_allowed");
+      }
     }
-    const info = await lstat(sourceReal);
-    if (!info.isFile() || info.isSymbolicLink()) {
-      throw new HttpError(409, "这张图片无法移到废纸篓", "candidate_path_not_allowed");
+    let selectionRestoreCandidateId = candidateId;
+    if (current.selected) {
+      const deselectedCatalog = await this.select(deckId, currentPage.slide_uid, {
+        candidate_id: candidateId,
+        selected: false,
+      });
+      selectionRestoreCandidateId = deselectedCatalog.pages
+        .find((page) => page.slide_uid === currentPage.slide_uid)
+        ?.candidates.find((candidate) => candidate.file_sha256 === sha256)
+        ?.candidate_id || candidateId;
     }
-    let target;
+    const orderedSources = verifiedSources.toSorted((left, right) => (
+      Number(left.path === source.path) - Number(right.path === source.path)
+    ));
+    const moved = [];
     try {
-      target = await moveToTrash(sourceReal, this.trashRoot);
+      for (const item of orderedSources) {
+        moved.push({ source: item.path, target: await moveToTrash(item.path, this.trashRoot) });
+      }
     } catch {
+      for (const item of moved.toReversed()) {
+        await restoreFromTrash(item.target, item.source).catch(() => {});
+      }
+      if (current.selected) {
+        await this.select(deckId, currentPage.slide_uid, {
+          candidate_id: selectionRestoreCandidateId,
+          selected: true,
+        }).catch(() => {});
+      }
       throw new HttpError(500, "没有移到废纸篓，请稍后再试", "trash_move_failed");
     }
     const catalog = await this.refresh(deckId);
+    const targets = moved.map((item) => item.target);
     return {
       contract_version: 1,
       deleted: true,
-      trashed_name: path.basename(target),
+      trashed_count: targets.length,
+      trashed_name: path.basename(targets[0]),
+      trashed_names: targets.map((target) => path.basename(target)),
       catalog,
     };
   }

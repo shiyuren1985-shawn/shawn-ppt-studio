@@ -18,6 +18,7 @@ export function normalizeCandidate(value) {
     preview_url: previewUrl,
     selected: value.selected === true,
     baseline: value.previous_version === true || value.baseline === true,
+    source_count: Math.max(1, Number(value.source_count) || 1),
     generated_at: cleanString(value.generated_at) || null,
     width: Number.isFinite(value.width) ? value.width : null,
     height: Number.isFinite(value.height) ? value.height : null,

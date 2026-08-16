@@ -373,6 +373,9 @@ export function mountSelectorWorkspace({
       const badges = element("div", "selector-card-badges");
       if (candidate.baseline) badges.append(element("span", "baseline", "原 PPT"));
       if (selected) badges.append(element("span", "selected", "已选择"));
+      if (candidate.source_count > 1) {
+        badges.append(element("span", "duplicate", `相同图片 · ${candidate.source_count} 个来源`));
+      }
       imageButton.append(badges);
       const body = element("div", "selector-candidate-body");
       const label = candidate.baseline ? "原 PPT 图片" : `图片 ${index + 1}`;
@@ -395,12 +398,17 @@ export function mountSelectorWorkspace({
         view.deleteConfirmId === candidate.candidate_id
           ? "selector-delete confirming"
           : "selector-delete",
-        view.deleteConfirmId === candidate.candidate_id ? "确认删除" : "删除",
+        view.deleteConfirmId === candidate.candidate_id
+          ? (selected ? "取消选择并删除" : "确认删除")
+          : "删除",
       );
       trash.type = "button";
       trash.dataset.trashCandidate = candidate.candidate_id;
-      trash.disabled = view.busy || selected;
-      if (selected) trash.title = "请先取消选择，再删除这张图片";
+      trash.disabled = view.busy;
+      if (selected) trash.title = "确认后会先取消选择，再把图片移到废纸篓";
+      else if (candidate.source_count > 1) {
+        trash.title = `这张卡片包含 ${candidate.source_count} 个相同文件，确认后会一起移到废纸篓`;
+      }
       actions.append(toggle, trash);
       body.append(titleRow, actions);
       card.append(imageButton, body);
@@ -525,7 +533,7 @@ export function mountSelectorWorkspace({
   async function trashCandidate(candidateId) {
     if (!view.page || view.busy || !candidateId) return;
     const candidate = view.page.candidates.find((item) => item.candidate_id === candidateId);
-    if (!candidate || view.page.selected_candidate_ids.includes(candidateId)) return;
+    if (!candidate) return;
     if (view.deleteConfirmId !== candidateId) {
       view.deleteConfirmId = candidateId;
       render();

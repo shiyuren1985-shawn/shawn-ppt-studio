@@ -56,6 +56,16 @@ test("the selector keeps the requested page visible and the composer grows to a 
   assert.doesNotMatch(selector, /PPTX、PDF 和页面图片正在生成/);
 });
 
+test("selected and deduplicated candidate cards have one recoverable delete flow", async () => {
+  const selector = await readFile(new URL("../../web/selector/workspace.js", import.meta.url), "utf8");
+  const selectorModel = await readFile(new URL("../../web/selector/model.js", import.meta.url), "utf8");
+  assert.match(selector, /"取消选择并删除"/);
+  assert.match(selector, /相同图片/);
+  assert.match(selector, /trash\.disabled = view\.busy/);
+  assert.doesNotMatch(selector, /trash\.disabled = view\.busy \|\| selected/);
+  assert.match(selectorModel, /source_count:/);
+});
+
 test("long-term Studio rules are visible, editable, and can also be saved from remember messages", async () => {
   const server = await readFile(new URL("../../server/http-server.mjs", import.meta.url), "utf8");
   assert.match(html, /id="studio-rules-button"[^>]*>长期规则</);
