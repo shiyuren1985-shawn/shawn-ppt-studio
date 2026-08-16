@@ -46,3 +46,32 @@ slide_uids:
 
   assert.equal(outline.slides[0].subtitle, null);
 });
+
+test("a unified multilingual outline exposes deterministic Chinese and English layers", () => {
+  const outline = parse(`---
+deck_uid: STUDIO_MULTILINGUAL_TEST
+slide_uids:
+  P1: slide-multilingual
+identity_aliases:
+  - previous-outline.md
+---
+
+| 页码 | 客户钩子／页面标题 | 核心命题 | 信息密度／上屏层级 | 页面必讲内容 | English Page Content | 双语交付策略 | 同页双语配对 | 视觉表达目标／用户硬约束 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P1 | 海外交付 | 中文命题 | 中｜一级＋必要二级 | 中文必讲内容 | **English Title:** Overseas Delivery<br>**English Core Thesis:** Deliver with certainty.<br>**English Display Content:** One accountable system. | **bilingual_strategy:** same_page | 海外交付 ⇄ Overseas Delivery | 保持清楚的责任关系 |
+`);
+
+  assert.deepEqual(outline.slides[0].multilingual, {
+    default_view: "bilingual",
+    chinese: {
+      core_thesis: "中文命题",
+      density: "中｜一级＋必要二级",
+      required_content: "中文必讲内容",
+    },
+    english_page_content: "English Title: Overseas Delivery<br>English Core Thesis: Deliver with certainty.<br>English Display Content: One accountable system.",
+    bilingual_strategy: "bilingual_strategy: same_page",
+    same_page_pairing: "海外交付 ⇄ Overseas Delivery",
+    visual_constraints: "保持清楚的责任关系",
+  });
+  assert.deepEqual(outline.identity_aliases, ["/tmp/previous-outline.md"]);
+});

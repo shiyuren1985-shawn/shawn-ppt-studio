@@ -39,3 +39,33 @@ test("slide scope and outline UI expose labels without fabricating a subtitle", 
   assert.match(app, /appendField\("标题", model\.title/);
   assert.match(app, /if \(model\.subtitle\) appendField\("副标题"/);
 });
+
+test("multilingual outlines default to a combined view with Chinese and English filters", () => {
+  const multilingual = {
+    chinese: {
+      core_thesis: "中文命题",
+      density: "中｜一级＋必要二级",
+      required_content: "中文必讲内容",
+    },
+    english_page_content: "English Title: Overseas Delivery<br>English Core Thesis: Deliver with certainty.<br>English Display Content: One accountable system.",
+    bilingual_strategy: "bilingual_strategy: same_page",
+    same_page_pairing: "海外交付 ⇄ Overseas Delivery",
+    visual_constraints: "保持清楚的责任关系",
+  };
+
+  const combined = outlineReadingModel("", "海外交付", "", multilingual, "bilingual");
+  assert.equal(combined.title, "海外交付");
+  assert.ok(combined.sections.some((section) => section.label === "English Title"));
+  assert.ok(combined.sections.some((section) => section.label === "页面必讲内容"));
+
+  const english = outlineReadingModel("", "海外交付", "", multilingual, "en");
+  assert.equal(english.title, "Overseas Delivery");
+  assert.deepEqual(english.sections.map((section) => section.label), [
+    "English Core Thesis",
+    "English Display Content",
+  ]);
+
+  const chinese = outlineReadingModel("", "海外交付", "", multilingual, "zh");
+  assert.equal(chinese.sections.some((section) => section.label.startsWith("English")), false);
+  assert.match(app, /data-outline-language/);
+});

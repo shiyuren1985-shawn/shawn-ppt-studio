@@ -93,11 +93,15 @@ async function historicalSlideMap(deck, snapshot, projectReal) {
 }
 
 function identityMatches(identity, deck, slideUid, expectedPageId) {
+  const acceptedOutlinePaths = new Set([
+    deck.outline.path,
+    ...(Array.isArray(deck.outline.identity_aliases) ? deck.outline.identity_aliases : []),
+  ].map((value) => path.resolve(value)));
   if (
     !identity ||
     identity.required !== true ||
     identity.deck_uid !== deck.outline.deck_uid ||
-    path.resolve(identity.source_path || "") !== deck.outline.path
+    !acceptedOutlinePaths.has(path.resolve(identity.source_path || ""))
   ) return false;
   return Object.entries(identity.slide_uids || {}).some(
     ([candidatePageId, candidateSlideUid]) =>

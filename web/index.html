@@ -101,7 +101,14 @@
               <article class="outline-preview-card" aria-labelledby="outline-preview-title">
                 <div class="card-heading">
                   <h3 id="outline-preview-title">本页大纲</h3>
-                  <span id="outline-version"></span>
+                  <div class="outline-card-tools">
+                    <span id="outline-version"></span>
+                    <div class="outline-language-switch" id="outline-language-switch" role="group" aria-label="大纲语言显示" hidden>
+                      <button type="button" data-outline-language="bilingual" aria-pressed="true">中英</button>
+                      <button type="button" data-outline-language="zh" aria-pressed="false">中文</button>
+                      <button type="button" data-outline-language="en" aria-pressed="false">English</button>
+                    </div>
+                  </div>
                 </div>
                 <div class="outline-reading-view" id="outline-reading-view" data-testid="outline-preview">
                   <p class="loading-copy">正在读取这一页的大纲…</p>

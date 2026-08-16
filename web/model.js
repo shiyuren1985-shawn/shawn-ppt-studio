@@ -89,6 +89,7 @@ export function scopeFromSlide(detail) {
     page_label: detail.slide.page_label,
     title: detail.slide.title,
     subtitle: detail.slide.subtitle || null,
+    multilingual: detail.slide.multilingual || null,
     outline_markdown: detail.slide.markdown,
     revision_id: detail.revision_id,
     sha256: detail.sha256,
@@ -277,9 +278,71 @@ export function shortRevision(value) {
   return String(value || "未记录").replace(/^sha256:/, "").slice(0, 12);
 }
 
-export function outlineReadingModel(markdown, fallbackTitle = "", explicitSubtitle = "") {
+function outlineDisplayValue(value) {
+  return String(value || "")
+    .replaceAll("**", "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .trim();
+}
+
+function englishPageModel(value) {
+  const sections = [];
+  let title = "";
+  for (const line of outlineDisplayValue(value).split(/\n+/).map((item) => item.trim()).filter(Boolean)) {
+    const match = line.match(/^English\s+(Title|Core Thesis|Display Content)\s*:\s*(.*)$/i);
+    if (!match) {
+      sections.push({ label: "English Content", value: line });
+      continue;
+    }
+    const label = match[1].toLowerCase();
+    if (label === "title") title = match[2].trim();
+    else sections.push({
+      label: label === "core thesis" ? "English Core Thesis" : "English Display Content",
+      value: match[2].trim(),
+    });
+  }
+  return { title, sections };
+}
+
+export function outlineReadingModel(
+  markdown,
+  fallbackTitle = "",
+  explicitSubtitle = "",
+  multilingual = null,
+  languageView = "bilingual",
+) {
   const source = String(markdown || "").trim();
   const subtitle = String(explicitSubtitle || "").trim();
+  if (multilingual?.english_page_content) {
+    const view = ["bilingual", "zh", "en"].includes(languageView) ? languageView : "bilingual";
+    const english = englishPageModel(multilingual.english_page_content);
+    const chineseSections = [
+      { label: "核心命题", value: outlineDisplayValue(multilingual.chinese?.core_thesis) },
+      { label: "信息密度／上屏层级", value: outlineDisplayValue(multilingual.chinese?.density) },
+      { label: "页面必讲内容", value: outlineDisplayValue(multilingual.chinese?.required_content) },
+    ].filter((section) => section.value);
+    const sharedSections = [
+      { label: "双语交付策略", value: outlineDisplayValue(multilingual.bilingual_strategy) },
+      { label: "同页双语配对", value: outlineDisplayValue(multilingual.same_page_pairing) },
+      { label: "视觉表达目标／用户硬约束", value: outlineDisplayValue(multilingual.visual_constraints) },
+    ].filter((section) => section.value);
+    return {
+      multilingual: true,
+      languageView: view,
+      title: view === "en" ? english.title || fallbackTitle || "This slide" : fallbackTitle || "这一页的大纲",
+      subtitle: view === "en" ? "" : subtitle,
+      sections: view === "zh"
+        ? [...chineseSections, sharedSections.at(-1)].filter(Boolean)
+        : view === "en"
+          ? english.sections
+          : [
+              ...chineseSections,
+              ...(english.title ? [{ label: "English Title", value: english.title }] : []),
+              ...english.sections,
+              ...sharedSections,
+            ],
+    };
+  }
   if (!source.startsWith("|") || !source.endsWith("|")) {
     return {
       title: fallbackTitle || "这一页的大纲",

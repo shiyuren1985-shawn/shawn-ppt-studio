@@ -54,13 +54,14 @@ const state = {
   taskLoading: false,
   showCompletedTasks: false,
   studioRulesLoading: false,
+  outlineLanguageView: "bilingual",
 };
 
 const ids = [
   "main-content", "deck-switcher", "outline-slide-count", "outline-slide-list", "retouch-slide-count",
   "retouch-slide-list", "current-page-label", "current-page-title", "composer-page", "composer-scope-copy", "selection-count",
   "current-page-context-copy", "retouch-page-label", "retouch-page-title",
-  "selected-preview", "outline-version", "outline-reading-view", "active-conversation-title",
+  "selected-preview", "outline-version", "outline-language-switch", "outline-reading-view", "active-conversation-title",
   "active-conversation-time", "message-list", "conversation-form", "message-input", "attachment-list",
   "attachment-input", "attach-button", "send-button", "conversation-menu-button", "conversation-drawer",
   "stop-button", "turn-status", "turn-status-copy",
@@ -92,6 +93,7 @@ function persist() {
     conversationWidth: getComputedStyle(document.documentElement).getPropertyValue("--conversation-width").trim(),
     outlineImageHeight: getComputedStyle(document.documentElement).getPropertyValue("--outline-image-height").trim(),
     columns: state.columns,
+    outlineLanguageView: state.outlineLanguageView,
   }));
 }
 
@@ -489,10 +491,17 @@ function renderOutline() {
     ? `你正在查看 ${state.scope.page_label}。AI 会把它作为参考，但仍会结合整套 PPT 理解你的要求。`
     : "当前页会作为参考；下方对话仍面向整套 PPT。";
   el["outline-version"].textContent = currentDeck()?.version_label || "";
+  const multilingual = state.scope?.multilingual || slide?.multilingual || null;
+  el["outline-language-switch"].hidden = !multilingual;
+  for (const button of el["outline-language-switch"].querySelectorAll("[data-outline-language]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.outlineLanguage === state.outlineLanguageView));
+  }
   const model = outlineReadingModel(
     state.scope?.outline_markdown,
     state.scope?.title || slide?.title,
     state.scope?.subtitle || slide?.subtitle,
+    multilingual,
+    state.outlineLanguageView,
   );
   el["outline-reading-view"].replaceChildren();
   const list = document.createElement("dl");
@@ -535,6 +544,7 @@ function projectEmptyNode(title, copy) {
 
 function renderProjectWithoutSlides() {
   const deck = currentDeck();
+  el["outline-language-switch"].hidden = true;
   el["current-page-label"].textContent = "";
   el["current-page-title"].textContent = deck?.label || "新的 PPT";
   el["current-page-context-copy"].textContent = deck?.outline_kind === "draft" ? "大纲草稿" : "";
@@ -2140,6 +2150,13 @@ function bindEvents() {
   el["close-conversation-drawer"].addEventListener("click", closeConversationDrawer);
   el["drawer-backdrop"].addEventListener("click", closeConversationDrawer);
   el["drawer-new-conversation"].addEventListener("click", () => createConversation());
+  el["outline-language-switch"].addEventListener("click", (event) => {
+    const button = event.target.closest("[data-outline-language]");
+    if (!button) return;
+    state.outlineLanguageView = button.dataset.outlineLanguage;
+    renderOutline();
+    persist();
+  });
   for (const button of document.querySelectorAll("[data-column-toggle]")) {
     button.addEventListener("click", () => toggleColumn(button.dataset.columnToggle));
   }
@@ -2193,6 +2210,9 @@ async function initialize() {
   state.workspace = ["outline", "selector", "retouch"].includes(saved.workspace) ? saved.workspace : "outline";
   state.deckId = typeof saved.deckId === "string" ? saved.deckId : "";
   state.slideUid = typeof saved.slideUid === "string" ? saved.slideUid : "";
+  state.outlineLanguageView = ["bilingual", "zh", "en"].includes(saved.outlineLanguageView)
+    ? saved.outlineLanguageView
+    : "bilingual";
   if (saved.columns && typeof saved.columns === "object") {
     state.columns = {
       left: saved.columns.left !== false,

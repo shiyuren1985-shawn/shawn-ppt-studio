@@ -48,6 +48,58 @@ function subtitleColumnIndex(headers) {
   return headers.findIndex((header) => /^(?:副标题|subtitle)$/i.test(cleanTableCell(header)));
 }
 
+function tableColumn(headers, cells, names) {
+  const wanted = new Set(names.map((name) => cleanTableCell(name)));
+  const index = headers.findIndex((header) => wanted.has(cleanTableCell(header)));
+  return index >= 0 ? cleanTableCell(cells[index]) : "";
+}
+
+function multilingualOutlineFields(headers, cells) {
+  const englishPageContent = tableColumn(headers, cells, ["English Page Content"]);
+  if (!englishPageContent) return null;
+  const chineseCoreThesis = tableColumn(headers, cells, ["核心命题"]);
+  const chineseDensity = tableColumn(headers, cells, ["信息密度／上屏层级", "信息密度/上屏层级"]);
+  const chineseRequiredContent = tableColumn(headers, cells, ["页面必讲内容"]);
+  const bilingualStrategy = tableColumn(headers, cells, ["双语交付策略"]);
+  const samePagePairing = tableColumn(headers, cells, ["同页双语配对"]);
+  const visualConstraints = tableColumn(headers, cells, [
+    "视觉表达目标／用户硬约束",
+    "视觉表达目标/用户硬约束",
+  ]);
+  if (!chineseCoreThesis || !chineseRequiredContent || !bilingualStrategy || !visualConstraints) return null;
+  return {
+    default_view: "bilingual",
+    chinese: {
+      core_thesis: chineseCoreThesis,
+      density: chineseDensity,
+      required_content: chineseRequiredContent,
+    },
+    english_page_content: englishPageContent,
+    bilingual_strategy: bilingualStrategy,
+    same_page_pairing: samePagePairing,
+    visual_constraints: visualConstraints,
+  };
+}
+
+function identityAliases(frontmatter, outlinePath) {
+  const aliases = [];
+  let inAliases = false;
+  for (const line of frontmatter.split(/\r?\n/)) {
+    if (/^identity_aliases:\s*$/.test(line)) {
+      inAliases = true;
+      continue;
+    }
+    if (!inAliases) continue;
+    const item = line.match(/^\s{2}-\s*(\S.*?)\s*$/);
+    if (item) {
+      aliases.push(path.resolve(path.dirname(outlinePath), item[1]));
+      continue;
+    }
+    if (line && !line.startsWith(" ")) inAliases = false;
+  }
+  return [...new Set(aliases)];
+}
+
 export function parseOutlineText({ text, bytes, outlinePath, info }) {
   if (!text.startsWith("---\n") && !text.startsWith("---\r\n")) {
     throw new Error("outline is missing YAML front matter");
@@ -106,6 +158,7 @@ export function parseOutlineText({ text, bytes, outlinePath, info }) {
           slide_uid: slideUids[pageId],
           title: cleanTableCell(cells[1]),
           subtitle: subtitle || null,
+          multilingual: multilingualOutlineFields(activeHeaders, cells),
           markdown: line,
           span: [offset, offset + rawLine.length],
           column_count: cells.length,
@@ -131,6 +184,7 @@ export function parseOutlineText({ text, bytes, outlinePath, info }) {
     size: info.size,
     slides,
     slide_uids: slideUids,
+    identity_aliases: identityAliases(frontmatter, outlinePath),
     text,
     bytes,
     body_start: bodyStart,

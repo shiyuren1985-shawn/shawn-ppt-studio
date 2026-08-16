@@ -312,3 +312,71 @@ test("historical candidates follow stable slides, deduplicate, and trash every c
   await assert.rejects(() => readFile(sourcePath), { code: "ENOENT" });
   await assert.rejects(() => readFile(deliveryPath), { code: "ENOENT" });
 });
+
+test("historical identity-bound candidates remain valid after an authoritative outline path migration", async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "studio-outline-alias-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const outputRoot = path.join(root, "output");
+  const runRoot = path.join(outputRoot, "identity-run");
+  const stateDir = path.join(runRoot, "state");
+  const originDir = path.join(runRoot, "origin_image");
+  await Promise.all([
+    mkdir(stateDir, { recursive: true }),
+    mkdir(originDir, { recursive: true }),
+  ]);
+  const oldOutlinePath = path.join(root, "old-outline.md");
+  const newOutlinePath = path.join(root, "bilingual-outline.md");
+  const deck = {
+    deck_id: "outline-alias",
+    label: "Outline alias",
+    source_kind: "studio",
+    project_root: root,
+    output_root: outputRoot,
+    candidate_roots: [{ id: "output", path: outputRoot }],
+    outline: {
+      deck_uid: "DECK_ALIAS",
+      path: newOutlinePath,
+      identity_aliases: [oldOutlinePath],
+      slides: [{ page_id: "P1", page_label: "P01", order: 1, slide_uid: "SLIDE_STABLE", title: "双语标题" }],
+    },
+  };
+  const imageBytes = png(1600, 900, "identity-alias");
+  const imageHash = createHash("sha256").update(imageBytes).digest("hex");
+  const imagePath = path.join(originDir, "style_A_page_01.png");
+  await writeFile(imagePath, imageBytes);
+  const runId = "identity-alias-run";
+  const snapshotPath = path.join(stateDir, "source_snapshot.json");
+  const snapshotSha = await jsonFile(snapshotPath, {
+    run_id: runId,
+    run_mode: "selected_style_expansion",
+    slide_identity: {
+      required: true,
+      deck_uid: "DECK_ALIAS",
+      source_path: oldOutlinePath,
+      slide_uids: { P1: "SLIDE_STABLE" },
+    },
+  });
+  await jsonFile(path.join(stateDir, "selected_style_run_state.json"), {
+    run_id: runId,
+    run_mode: "selected_style_expansion",
+    status: "completed",
+    project_dir: runRoot,
+    source_snapshot_path: snapshotPath,
+    source_snapshot_sha256: snapshotSha,
+    pages: {
+      "01": {
+        page_id: "01",
+        status: "accepted",
+        final_path: imagePath,
+        source_sha256: imageHash,
+        source_width: 1600,
+        source_height: 900,
+      },
+    },
+  });
+
+  const candidates = await scanStudioCandidates(deck);
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].slide_uid, "SLIDE_STABLE");
+  assert.equal(candidates[0].path, imagePath);
+});
