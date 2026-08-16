@@ -78,6 +78,19 @@ function privateCandidateFiles(rawCatalog) {
             candidate_id: rawCandidateId,
             file_sha256: fileSha256,
             path: resolvedPath,
+            project_root: typeof rawSource.project_root === "string"
+              ? path.resolve(rawSource.project_root)
+              : null,
+            origin_root: typeof rawSource.origin_root === "string"
+              ? path.resolve(rawSource.origin_root)
+              : null,
+            catalog_path: typeof rawSource.handoff_path === "string"
+              ? path.resolve(rawSource.handoff_path)
+              : null,
+            run_id: typeof rawSource.run_id === "string" ? rawSource.run_id : null,
+            native_candidate_id: typeof rawSource.native_candidate_id === "string"
+              ? rawSource.native_candidate_id
+              : null,
           });
         }
         const resolvedSourcePath = path.resolve(sourcePath);
@@ -86,6 +99,19 @@ function privateCandidateFiles(rawCatalog) {
             candidate_id: candidateId,
             file_sha256: fileSha256,
             path: resolvedSourcePath,
+            project_root: typeof candidate.project_root === "string"
+              ? path.resolve(candidate.project_root)
+              : null,
+            origin_root: typeof candidate.origin_root === "string"
+              ? path.resolve(candidate.origin_root)
+              : null,
+            catalog_path: typeof candidate.handoff_path === "string"
+              ? path.resolve(candidate.handoff_path)
+              : null,
+            run_id: typeof candidate.run_id === "string" ? candidate.run_id : null,
+            native_candidate_id: typeof candidate.native_candidate_id === "string"
+              ? candidate.native_candidate_id
+              : null,
           });
         }
         files.set(candidateId, {
@@ -98,6 +124,25 @@ function privateCandidateFiles(rawCatalog) {
           native_candidate_id: typeof candidate.native_candidate_id === "string"
             ? candidate.native_candidate_id
             : null,
+          project_root: typeof candidate.project_root === "string"
+            ? path.resolve(candidate.project_root)
+            : null,
+          origin_root: typeof candidate.origin_root === "string"
+            ? path.resolve(candidate.origin_root)
+            : null,
+          selected_source_refs: Array.isArray(candidate.selected_source_refs)
+            ? candidate.selected_source_refs.filter((ref) => (
+              ref &&
+              typeof ref.run_id === "string" &&
+              typeof ref.handoff_path === "string" &&
+              path.isAbsolute(ref.handoff_path) &&
+              typeof ref.native_candidate_id === "string"
+            )).map((ref) => ({
+              run_id: ref.run_id,
+              handoff_path: path.resolve(ref.handoff_path),
+              native_candidate_id: ref.native_candidate_id,
+            }))
+            : [],
         });
       }
     }
@@ -332,7 +377,13 @@ export class SelectorWorkspace {
     const refresh = (async () => {
       const deck = await this.#deck(deckId);
       if (deck.source_kind === "studio") {
-        return this.#acceptCatalog(deckId, await buildStudioCatalog(deck));
+        const diagnostics = {};
+        const catalog = await buildStudioCatalog(deck, { diagnostics });
+        await this.#record("selector_catalog_scan_completed", {
+          deck_id: deckId,
+          ...diagnostics,
+        });
+        return this.#acceptCatalog(deckId, catalog);
       }
       const query = new URLSearchParams({ deck: deckId });
       return this.#acceptCatalog(deckId, await this.#requestJson(`/api/catalog?${query}`));
@@ -529,14 +580,25 @@ export class SelectorWorkspace {
     const verifiedSources = [];
     if (deck.source_kind === "studio") {
       const handoffPath = source.handoff_path ? path.resolve(source.handoff_path) : null;
-      const projectRoot = handoffPath ? path.dirname(path.dirname(handoffPath)) : null;
-      const [outputReal, projectReal, originReal] = await Promise.all([
-        realpath(deck.output_root).catch(() => null),
-        projectRoot ? realpath(projectRoot).catch(() => null) : null,
-        projectRoot ? realpath(path.join(projectRoot, "origin_image")).catch(() => null) : null,
-      ]);
+      const outputReal = await realpath(deck.output_root).catch(() => null);
       for (const item of sourceFiles) {
-        const sourceReal = await realpath(item.path).catch(() => null);
+        const projectRoot = item.project_root || source.project_root;
+        const originRoot = item.origin_root || source.origin_root;
+        const [sourceReal, projectReal, originReal] = await Promise.all([
+          realpath(item.path).catch(() => null),
+          projectRoot ? realpath(projectRoot).catch(() => null) : null,
+          originRoot ? realpath(originRoot).catch(() => null) : null,
+        ]);
+        const catalogPath = item.catalog_path || handoffPath;
+        const catalogPathAllowed = Boolean(
+          catalogPath && projectReal && (
+            catalogPath === path.join(projectReal, "state", "handoff.json") ||
+            catalogPath === path.join(projectReal, "state", "style_run_state.json") ||
+            catalogPath === path.join(projectReal, "state", "selected_style_run_state.json") ||
+            catalogPath === path.join(projectReal, "state", "final_selection_manifest.json") ||
+            catalogPath === sourceReal && /(?:^|[_-])final(?:[_-]|$)/i.test(path.basename(projectReal))
+          )
+        );
         const allowed = Boolean(
           sourceReal &&
           sourceReal === item.path &&
@@ -544,7 +606,7 @@ export class SelectorWorkspace {
           projectReal &&
           originReal &&
           within(projectReal, outputReal) &&
-          handoffPath === path.join(projectReal, "state", "handoff.json") &&
+          catalogPathAllowed &&
           within(sourceReal, originReal) &&
           await sha256File(sourceReal) === sha256
         );
@@ -576,25 +638,16 @@ export class SelectorWorkspace {
       }
     }
     let selectionRestoreCandidateId = candidateId;
-    let studioSelectionRestore = null;
+    let studioSelectionRestore = [];
     if (current.selected) {
       if (
         deck.source_kind === "studio" &&
-        source.run_id &&
-        source.handoff_path &&
-        source.native_candidate_id
+        source.selected_source_refs.length
       ) {
-        studioSelectionRestore = {
-          run_id: source.run_id,
-          handoff_path: source.handoff_path,
-          native_candidate_id: source.native_candidate_id,
-        };
-        await this.studioSelections.setCandidate(
-          deck,
-          currentPage.slide_uid,
-          studioSelectionRestore,
-          false,
-        );
+        studioSelectionRestore = source.selected_source_refs;
+        for (const ref of studioSelectionRestore) {
+          await this.studioSelections.setCandidate(deck, currentPage.slide_uid, ref, false);
+        }
       } else {
         const deselectedCatalog = await this.select(deckId, currentPage.slide_uid, {
           candidate_id: candidateId,
@@ -624,13 +677,15 @@ export class SelectorWorkspace {
         await restoreFromTrash(item.target, item.source).catch(() => {});
       }
       if (current.selected) {
-        if (studioSelectionRestore) {
-          await this.studioSelections.setCandidate(
-            deck,
-            currentPage.slide_uid,
-            studioSelectionRestore,
-            true,
-          ).catch(() => {});
+        if (studioSelectionRestore.length) {
+          for (const ref of studioSelectionRestore) {
+            await this.studioSelections.setCandidate(
+              deck,
+              currentPage.slide_uid,
+              ref,
+              true,
+            ).catch(() => {});
+          }
         } else {
           await this.select(deckId, currentPage.slide_uid, {
             candidate_id: selectionRestoreCandidateId,
