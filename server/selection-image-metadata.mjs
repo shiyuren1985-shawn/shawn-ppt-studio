@@ -17,6 +17,19 @@ export async function sha256File(filePath) {
   for await (const chunk of createReadStream(filePath)) digest.update(chunk);
   return digest.digest("hex");
 }
+
+export async function sha256FileHandle(handle) {
+  const digest = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  let position = 0;
+  while (true) {
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+    if (!bytesRead) break;
+    digest.update(buffer.subarray(0, bytesRead));
+    position += bytesRead;
+  }
+  return digest.digest("hex");
+}
 function pngDimensions(buffer) {
   if (buffer.length < 24 || buffer.toString("hex", 0, 8) !== "89504e470d0a1a0a") return null;
   return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };

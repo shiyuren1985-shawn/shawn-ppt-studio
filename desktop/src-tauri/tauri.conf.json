@@ -44,6 +44,7 @@
       "../../server/outline-store.mjs": "studio/server/outline-store.mjs",
       "../../server/path-policy.mjs": "studio/server/path-policy.mjs",
       "../../server/production-intents.mjs": "studio/server/production-intents.mjs",
+      "../../server/runtime-event-log.mjs": "studio/server/runtime-event-log.mjs",
       "../../server/project-discovery.mjs": "studio/server/project-discovery.mjs",
       "../../server/project-picker.mjs": "studio/server/project-picker.mjs",
       "../../server/projects.mjs": "studio/server/projects.mjs",

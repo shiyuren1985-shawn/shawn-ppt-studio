@@ -24,6 +24,7 @@ import { SingleEditTurnFinalizer } from "./single-edit-turn-finalizer.mjs";
 import { TaskProjection } from "./task-projection.mjs";
 import { TaskAssociationIndex } from "./task-associations.mjs";
 import { StudioRulesStore } from "./studio-rules.mjs";
+import { RuntimeEventLog } from "./runtime-event-log.mjs";
 import {
   DEFAULT_MONITORING_ROOT,
   DEFAULT_OVERVIEW_PYTHON,
@@ -50,6 +51,8 @@ const dataRoot =
 const labRoot = dataRoot;
 const pathPolicy = createPathPolicy(dataRoot);
 await pathPolicy.ensureRuntime();
+const runtimeEvents = new RuntimeEventLog({ dataRoot });
+await runtimeEvents.initialize();
 const ledger = new LabLedger({ labRoot: dataRoot });
 try {
   await ledger.initialize();
@@ -80,6 +83,7 @@ const singleEditTurnFinalizer = new SingleEditTurnFinalizer();
 const selectorWorkspace = new SelectorWorkspace({
   discovery,
   selectorOrigin: process.env.SHAWN_PPT_SELECTOR_ORIGIN || "http://127.0.0.1:8765/",
+  eventLog: runtimeEvents,
 });
 const exports = new ExportService({
   discovery,
@@ -218,32 +222,63 @@ await new Promise((resolve, reject) => {
 
 const address = server.address();
 process.stdout.write(`PPT AI Lab listening on http://127.0.0.1:${address.port}\n`);
+await runtimeEvents.record("server_started", { port: address.port });
 
 let closing = false;
-async function close() {
+async function close(reason = "unknown") {
   if (closing) return;
   closing = true;
-  await new Promise((resolve) => server.close(resolve));
+  await runtimeEvents.record("server_shutdown_started", { reason });
+  await new Promise((resolve) => {
+    let settled = false;
+    let forceTimer = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (forceTimer) clearTimeout(forceTimer);
+      resolve();
+    };
+    server.close(finish);
+    forceTimer = setTimeout(() => {
+      void runtimeEvents.record("server_shutdown_connections_forced", { reason });
+      server.closeIdleConnections?.();
+      server.closeAllConnections?.();
+      finish();
+    }, 1_500);
+    forceTimer.unref();
+  });
   production.stop();
   candidateEdits.stop();
   await client.stop();
+  await runtimeEvents.record("server_shutdown_completed", { reason });
 }
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, async () => {
-    await close();
+    await runtimeEvents.record("server_signal_received", { signal });
+    await close(`signal:${signal}`);
     process.exit(0);
   });
 }
 
 process.on("uncaughtException", async (error) => {
   process.stderr.write(`PPT AI Lab uncaught exception: ${error.stack || error.message}\n`);
-  await close();
+  await runtimeEvents.record("server_uncaught_exception", {
+    error_code: error?.code || null,
+    error_message: error?.message || String(error),
+    error_stack: error?.stack || null,
+  });
+  await close("uncaught_exception");
   process.exit(1);
 });
 
 process.on("unhandledRejection", async (error) => {
   process.stderr.write(`PPT AI Lab unhandled rejection: ${error?.stack || error}\n`);
-  await close();
+  await runtimeEvents.record("server_unhandled_rejection", {
+    error_code: error?.code || null,
+    error_message: error?.message || String(error),
+    error_stack: error?.stack || null,
+  });
+  await close("unhandled_rejection");
   process.exit(1);
 });

@@ -1,11 +1,15 @@
-import { constants as fsConstants, createReadStream } from "node:fs";
-import { copyFile, lstat, mkdir, realpath, rename, unlink } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { copyFile, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 
 import { HttpError } from "./errors.mjs";
-import { IMAGE_CONTENT_TYPES, sha256File } from "./selection-image-metadata.mjs";
+import {
+  IMAGE_CONTENT_TYPES,
+  sha256File,
+  sha256FileHandle,
+} from "./selection-image-metadata.mjs";
 import { buildStudioCatalog } from "./studio-selection-catalog.mjs";
 import { StudioSelectionStore } from "./studio-selection-store.mjs";
 
@@ -243,15 +247,21 @@ export class SelectorWorkspace {
     fetchImpl = fetch,
     trashRoot = path.join(os.homedir(), ".Trash"),
     studioSelections = new StudioSelectionStore(),
+    eventLog = null,
   }) {
     this.discovery = discovery;
     this.selectorOrigin = loopbackOrigin(selectorOrigin);
     this.fetch = fetchImpl;
     this.trashRoot = path.resolve(trashRoot);
     this.studioSelections = studioSelections;
+    this.eventLog = eventLog;
     this.snapshots = new Map();
     this.candidateFiles = new Map();
     this.refreshes = new Map();
+  }
+
+  #record(type, fields = {}) {
+    return this.eventLog?.record(type, fields) || Promise.resolve(null);
   }
 
   health() {
@@ -410,7 +420,87 @@ export class SelectorWorkspace {
     return this.#mutate(deckId, "/api/confirm-defaults", {});
   }
 
-  async trashCandidate(deckId, candidateId, { sha256, confirmed } = {}) {
+  #removeCandidateFromSnapshot(deckId, slideUid, candidateId, fileSha256) {
+    const current = this.snapshot(deckId);
+    const pages = current.pages.map((page) => {
+      if (page.slide_uid !== slideUid) return page;
+      const removed = page.candidates.find((candidate) => (
+        candidate.candidate_id === candidateId || candidate.file_sha256 === fileSha256
+      ));
+      const candidates = page.candidates.filter((candidate) => (
+        candidate.candidate_id !== candidateId && candidate.file_sha256 !== fileSha256
+      ));
+      const candidateIds = new Set(candidates.map((candidate) => candidate.candidate_id));
+      const selectedCandidateIds = page.selected_candidate_ids.filter((id) => candidateIds.has(id));
+      let confirmed = page.confirmed;
+      let resolution = page.resolution;
+      if (resolution === "selected" && selectedCandidateIds.length === 0) {
+        confirmed = false;
+        resolution = "missing";
+      }
+      if (resolution === "baseline" && removed?.previous_version === true) {
+        confirmed = false;
+        resolution = "missing";
+      }
+      return {
+        ...page,
+        confirmed,
+        resolution,
+        selected_candidate_ids: selectedCandidateIds,
+        selected_count: candidates.filter((candidate) => candidate.selected).length,
+        baseline_available: removed?.previous_version === true ? false : page.baseline_available,
+        candidate_count: candidates.length,
+        candidates,
+      };
+    });
+    const next = {
+      ...current,
+      refreshed_at: new Date().toISOString(),
+      summary: {
+        page_count: pages.length,
+        included_count: pages.filter((page) => page.included).length,
+        confirmed_count: pages.filter((page) => page.included && page.confirmed).length,
+        pending_count: pages.filter((page) => page.included && !page.confirmed).length,
+        selected_image_count: pages.reduce(
+          (total, page) => total + (page.included ? page.selected_count : 0),
+          0,
+        ),
+      },
+      pages,
+    };
+    this.candidateFiles.get(deckId)?.delete(candidateId);
+    this.snapshots.set(deckId, next);
+    return next;
+  }
+
+  async trashCandidate(deckId, candidateId, options = {}) {
+    const startedAt = Date.now();
+    await this.#record("selector_trash_started", {
+      deck_id: deckId,
+      candidate_id: candidateId,
+    });
+    try {
+      const result = await this.#trashCandidate(deckId, candidateId, options);
+      await this.#record("selector_trash_completed", {
+        deck_id: deckId,
+        candidate_id: candidateId,
+        trashed_count: result.trashed_count,
+        duration_ms: Date.now() - startedAt,
+      });
+      return result;
+    } catch (error) {
+      await this.#record("selector_trash_failed", {
+        deck_id: deckId,
+        candidate_id: candidateId,
+        duration_ms: Date.now() - startedAt,
+        error_code: error?.code || null,
+        error_message: error?.message || String(error),
+      });
+      throw error;
+    }
+  }
+
+  async #trashCandidate(deckId, candidateId, { sha256, confirmed } = {}) {
     const deck = await this.#deck(deckId);
     if (
       !/^[a-f0-9]{24}$/.test(candidateId || "") ||
@@ -486,15 +576,40 @@ export class SelectorWorkspace {
       }
     }
     let selectionRestoreCandidateId = candidateId;
+    let studioSelectionRestore = null;
     if (current.selected) {
-      const deselectedCatalog = await this.select(deckId, currentPage.slide_uid, {
+      if (
+        deck.source_kind === "studio" &&
+        source.run_id &&
+        source.handoff_path &&
+        source.native_candidate_id
+      ) {
+        studioSelectionRestore = {
+          run_id: source.run_id,
+          handoff_path: source.handoff_path,
+          native_candidate_id: source.native_candidate_id,
+        };
+        await this.studioSelections.setCandidate(
+          deck,
+          currentPage.slide_uid,
+          studioSelectionRestore,
+          false,
+        );
+      } else {
+        const deselectedCatalog = await this.select(deckId, currentPage.slide_uid, {
+          candidate_id: candidateId,
+          selected: false,
+        });
+        selectionRestoreCandidateId = deselectedCatalog.pages
+          .find((page) => page.slide_uid === currentPage.slide_uid)
+          ?.candidates.find((candidate) => candidate.file_sha256 === sha256)
+          ?.candidate_id || candidateId;
+      }
+      await this.#record("selector_trash_selection_cleared", {
+        deck_id: deckId,
         candidate_id: candidateId,
-        selected: false,
+        slide_uid: currentPage.slide_uid,
       });
-      selectionRestoreCandidateId = deselectedCatalog.pages
-        .find((page) => page.slide_uid === currentPage.slide_uid)
-        ?.candidates.find((candidate) => candidate.file_sha256 === sha256)
-        ?.candidate_id || candidateId;
     }
     const orderedSources = verifiedSources.toSorted((left, right) => (
       Number(left.path === source.path) - Number(right.path === source.path)
@@ -509,14 +624,28 @@ export class SelectorWorkspace {
         await restoreFromTrash(item.target, item.source).catch(() => {});
       }
       if (current.selected) {
-        await this.select(deckId, currentPage.slide_uid, {
-          candidate_id: selectionRestoreCandidateId,
-          selected: true,
-        }).catch(() => {});
+        if (studioSelectionRestore) {
+          await this.studioSelections.setCandidate(
+            deck,
+            currentPage.slide_uid,
+            studioSelectionRestore,
+            true,
+          ).catch(() => {});
+        } else {
+          await this.select(deckId, currentPage.slide_uid, {
+            candidate_id: selectionRestoreCandidateId,
+            selected: true,
+          }).catch(() => {});
+        }
       }
       throw new HttpError(500, "没有移到废纸篓，请稍后再试", "trash_move_failed");
     }
-    const catalog = await this.refresh(deckId);
+    const catalog = this.#removeCandidateFromSnapshot(
+      deckId,
+      currentPage.slide_uid,
+      candidateId,
+      sha256,
+    );
     const targets = moved.map((item) => item.target);
     return {
       contract_version: 1,
@@ -544,7 +673,9 @@ export class SelectorWorkspace {
       const source = this.candidateFiles.get(deckId)?.get(candidateId);
       const sourceReal = source ? await realpath(source.path).catch(() => null) : null;
       const outputReal = await realpath(deck.output_root).catch(() => null);
-      const info = sourceReal ? await lstat(sourceReal).catch(() => null) : null;
+      const contentType = sourceReal
+        ? IMAGE_CONTENT_TYPES.get(path.extname(sourceReal).toLowerCase())
+        : null;
       if (
         !source ||
         source.file_sha256 !== sha256 ||
@@ -552,23 +683,40 @@ export class SelectorWorkspace {
         sourceReal !== source.path ||
         !outputReal ||
         !within(sourceReal, outputReal) ||
-        !info?.isFile() ||
-        info.isSymbolicLink() ||
-        await sha256File(sourceReal) !== sha256
+        !contentType
       ) {
         throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
       }
-      const contentType = IMAGE_CONTENT_TYPES.get(path.extname(sourceReal).toLowerCase());
-      if (!contentType) throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
-      res.writeHead(200, {
-        "content-type": contentType,
-        "content-length": info.size,
-        "cache-control": "no-store",
-        "x-content-type-options": "nosniff",
-        "content-security-policy": "default-src 'none'",
-      });
-      createReadStream(sourceReal).pipe(res);
-      return;
+      const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0);
+      const handle = await open(sourceReal, flags).catch(() => null);
+      if (!handle) {
+        throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
+      }
+      let handedOff = false;
+      try {
+        const info = await handle.stat();
+        if (!info.isFile() || await sha256FileHandle(handle) !== sha256) {
+          throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
+        }
+        res.writeHead(200, {
+          "content-type": contentType,
+          "content-length": info.size,
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+          "content-security-policy": "default-src 'none'",
+        });
+        const stream = handle.createReadStream({ autoClose: true });
+        stream.on("error", () => {
+          if (!res.destroyed) res.destroy();
+        });
+        res.once("error", () => stream.destroy());
+        res.once("close", () => stream.destroy());
+        handedOff = true;
+        stream.pipe(res);
+        return;
+      } finally {
+        if (!handedOff) await handle.close().catch(() => {});
+      }
     }
     const query = new URLSearchParams({ deck: deckId, candidate: candidateId });
     let response;
@@ -593,6 +741,12 @@ export class SelectorWorkspace {
     };
     if (/^\d+$/.test(length || "")) headers["content-length"] = length;
     res.writeHead(200, headers);
-    Readable.fromWeb(response.body).pipe(res);
+    const stream = Readable.fromWeb(response.body);
+    stream.on("error", () => {
+      if (!res.destroyed) res.destroy();
+    });
+    res.once("error", () => stream.destroy());
+    res.once("close", () => stream.destroy());
+    stream.pipe(res);
   }
 }

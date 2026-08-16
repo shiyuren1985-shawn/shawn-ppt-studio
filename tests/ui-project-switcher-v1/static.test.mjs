@@ -63,6 +63,8 @@ test("selected and deduplicated candidate cards have one recoverable delete flow
   assert.match(selector, /相同图片/);
   assert.match(selector, /trash\.disabled = view\.busy/);
   assert.doesNotMatch(selector, /trash\.disabled = view\.busy \|\| selected/);
+  assert.match(selector, /view\.candidateRenderKey === renderKey/);
+  assert.match(selector, /mutationPayload\?\.catalog \|\| mutationPayload/);
   assert.match(selectorModel, /source_count:/);
 });
 

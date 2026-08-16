@@ -68,6 +68,7 @@ export function mountSelectorWorkspace({
     exportBusy: false,
     exportError: "",
     destroyed: false,
+    candidateRenderKey: "",
   };
 
   const shell = element("div", "selector-shell");
@@ -329,15 +330,18 @@ export function mountSelectorWorkspace({
   }
 
   function renderCandidates() {
-    nodes.grid.replaceChildren();
     const page = view.page;
     nodes.empty.hidden = true;
     if (view.loading) {
+      view.candidateRenderKey = "";
+      nodes.grid.replaceChildren();
       nodes.empty.hidden = false;
       nodes.empty.innerHTML = "<strong>正在读取可选图片…</strong>";
       return;
     }
     if (view.error) {
+      view.candidateRenderKey = "";
+      nodes.grid.replaceChildren();
       nodes.empty.hidden = false;
       nodes.empty.replaceChildren(
         element("strong", "", "选稿内容没有打开"),
@@ -350,6 +354,8 @@ export function mountSelectorWorkspace({
       return;
     }
     if (!page || page.candidates.length === 0) {
+      view.candidateRenderKey = "";
+      nodes.grid.replaceChildren();
       nodes.empty.hidden = false;
       nodes.empty.replaceChildren(
         element("strong", "", "这一页还没有可选图片"),
@@ -357,6 +363,39 @@ export function mountSelectorWorkspace({
       );
       return;
     }
+    const renderKey = JSON.stringify([
+      page.slide_uid,
+      ...page.candidates.map((candidate) => [
+        candidate.candidate_id,
+        candidate.preview_url,
+        candidate.source_count,
+        candidate.generated_at,
+        candidate.baseline === true,
+        page.selected_candidate_ids.includes(candidate.candidate_id),
+      ]),
+    ]);
+    if (view.candidateRenderKey === renderKey) {
+      for (const candidate of page.candidates) {
+        const card = [...nodes.grid.children]
+          .find((item) => item.dataset.candidateId === candidate.candidate_id);
+        if (!card) continue;
+        const selected = page.selected_candidate_ids.includes(candidate.candidate_id);
+        const toggle = card.querySelector("[data-toggle-candidate]");
+        const trash = card.querySelector("[data-trash-candidate]");
+        if (toggle) toggle.disabled = view.busy || !page.included;
+        if (trash) {
+          const confirming = view.deleteConfirmId === candidate.candidate_id;
+          trash.className = confirming ? "selector-delete confirming" : "selector-delete";
+          trash.textContent = confirming
+            ? (selected ? "取消选择并删除" : "确认删除")
+            : "删除";
+          trash.disabled = view.busy;
+        }
+      }
+      return;
+    }
+    view.candidateRenderKey = renderKey;
+    nodes.grid.replaceChildren();
     page.candidates.forEach((candidate, index) => {
       const selected = page.selected_candidate_ids.includes(candidate.candidate_id);
       const card = element("article", `selector-candidate-card${selected ? " selected" : ""}`);
@@ -499,10 +538,14 @@ export function mountSelectorWorkspace({
     }
   }
 
-  async function refreshAfterMutation(message = "") {
-    const payload = await api.getCatalog(view.deckId);
+  async function refreshAfterMutation(message = "", mutationPayload = null) {
+    const suppliedCatalog = mutationPayload?.catalog || mutationPayload;
+    const payload = Array.isArray(suppliedCatalog?.pages)
+      ? suppliedCatalog
+      : await api.getCatalog(view.deckId);
     view.catalog = normalizeSelectorCatalog(payload);
-    await readPage(view.slideUid);
+    const page = view.catalog.pages.find((item) => item.slide_uid === view.slideUid) || null;
+    setPage(page);
     onSelectionChange({
       deckId: view.deckId,
       slideUid: view.slideUid,
@@ -519,8 +562,8 @@ export function mountSelectorWorkspace({
     view.busy = true;
     render();
     try {
-      await api.selectCandidate(view.deckId, view.slideUid, candidateId, !selected);
-      await refreshAfterMutation(selected ? "已取消选择" : "已选择这张图片");
+      const result = await api.selectCandidate(view.deckId, view.slideUid, candidateId, !selected);
+      await refreshAfterMutation(selected ? "已取消选择" : "已选择这张图片", result);
     } catch (error) {
       reportError(error, selected ? "没有取消成功，请重试" : "这张图片没有选上，请重试");
       try { await refreshAfterMutation(); } catch { /* keep the useful error */ }
@@ -544,9 +587,9 @@ export function mountSelectorWorkspace({
     try {
       const sha256 = candidateSha256(candidate);
       if (!sha256) throw new Error("这张图片已经变化，请刷新后再试");
-      await api.trashCandidate(view.deckId, candidateId, sha256);
+      const result = await api.trashCandidate(view.deckId, candidateId, sha256);
       view.deleteConfirmId = "";
-      await refreshAfterMutation("图片已移到废纸篓");
+      await refreshAfterMutation("图片已移到废纸篓", result);
     } catch (error) {
       view.deleteConfirmId = "";
       reportError(error, "没有移到废纸篓，请重试");
