@@ -74,6 +74,7 @@
       "../../web/index.html": "studio/web/index.html",
       "../../web/model.js": "studio/web/model.js",
       "../../web/styles.css": "studio/web/styles.css",
+      "../../web/task-catalog-refresh.js": "studio/web/task-catalog-refresh.js",
       "../../web/selector/api.js": "studio/web/selector/api.js",
       "../../web/selector/model.js": "studio/web/selector/model.js",
       "../../web/selector/styles.css": "studio/web/selector/styles.css",

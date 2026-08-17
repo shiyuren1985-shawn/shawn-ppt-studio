@@ -15,6 +15,7 @@ import {
   scopeFromSlide,
   retouchDisplayLabel,
 } from "./model.js";
+import { createTaskCatalogRefreshTracker } from "./task-catalog-refresh.js";
 
 const STORAGE_KEY = "shawn-ppt-studio.ui.v5";
 const state = {
@@ -78,6 +79,17 @@ const ids = [
   "studio-rules-cancel", "studio-rules-save", "studio-rules-status",
 ];
 const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
+
+const observeTaskCatalogRefresh = createTaskCatalogRefreshTracker({
+  refreshCatalog: async (deckId) => {
+    if (deckId === state.deckId && state.selectorController) {
+      await state.selectorController.refresh();
+      return;
+    }
+    const { selectorApi } = await import("./selector/api.js");
+    await selectorApi.refreshCatalog(deckId);
+  },
+});
 
 function savedState() {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
@@ -1431,6 +1443,11 @@ async function loadTasks({ force = false } = {}) {
       attention: Number(payload?.attention_count || 0),
     };
     renderTaskCenter();
+    try {
+      await observeTaskCatalogRefresh(state.tasks);
+    } catch (error) {
+      console.warn("Unable to refresh selector catalog after task completion", error);
+    }
   } catch (error) {
     if (force) toast(`任务状态暂时无法读取：${error.message}`);
   } finally {
