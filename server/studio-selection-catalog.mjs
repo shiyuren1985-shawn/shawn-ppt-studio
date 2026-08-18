@@ -66,9 +66,39 @@ function normalizedTitle(value) {
     .toLowerCase();
 }
 
+function markdownTableTitle(markdown, expectedPageId) {
+  const wanted = pageId(expectedPageId);
+  if (!wanted) return null;
+  for (const line of String(markdown || "").split(/\r?\n/)) {
+    const match = /^\|\s*(P0*\d+)\s*\|\s*([^|]+?)\s*\|/.exec(line);
+    if (pageId(match?.[1]) !== wanted) continue;
+    return match[2].replace(/[*_`]/g, "").trim() || null;
+  }
+  return null;
+}
+
+async function verifiedSnapshotText(ref, projectReal) {
+  const lexical = path.resolve(ref?.path || "");
+  if (!inside(projectReal, lexical)) throw new Error("snapshot text is outside project");
+  const [real, info, bytes, link] = await Promise.all([
+    realpath(lexical),
+    stat(lexical),
+    readFile(lexical),
+    lstat(lexical),
+  ]);
+  if (
+    real !== lexical ||
+    !info.isFile() ||
+    link.isSymbolicLink() ||
+    ref.sha256 !== sha256(bytes)
+  ) throw new Error("snapshot text does not match recorded source");
+  return bytes.toString("utf8");
+}
+
 async function historicalSlideMap(deck, snapshot, projectReal) {
   const map = new Map();
-  if (snapshot?.slide_identity?.required === true) return map;
+  const semanticPageIds = new Set();
+  if (snapshot?.slide_identity?.required === true) return { map, semanticPageIds };
   const currentByTitle = new Map();
   for (const slide of deck.outline.slides) {
     const key = normalizedTitle(slide.title);
@@ -83,13 +113,30 @@ async function historicalSlideMap(deck, snapshot, projectReal) {
       const contractFile = await jsonFile(contractPath);
       if (ref.sha256 !== contractFile.sha256) continue;
       const sourcePageId = pageId(contractFile.document.page_id);
-      const slide = currentByTitle.get(normalizedTitle(contractFile.document.title));
+      const titleKey = normalizedTitle(contractFile.document.title);
+      if (sourcePageId && titleKey) semanticPageIds.add(sourcePageId);
+      const slide = currentByTitle.get(titleKey);
       if (sourcePageId && slide) map.set(sourcePageId, slide);
     } catch {
       // Older snapshots may not retain every content contract file.
     }
   }
-  return map;
+  if (snapshot?.authoritative_source) {
+    const sourcePageIds = (Array.isArray(snapshot.page_ids) ? snapshot.page_ids : [])
+      .map(pageId)
+      .filter(Boolean);
+    sourcePageIds.forEach((sourcePageId) => semanticPageIds.add(sourcePageId));
+    try {
+      const markdown = await verifiedSnapshotText(snapshot.authoritative_source, projectReal);
+      for (const sourcePageId of sourcePageIds) {
+        const slide = currentByTitle.get(normalizedTitle(markdownTableTitle(markdown, sourcePageId)));
+        if (slide) map.set(sourcePageId, slide);
+      }
+    } catch {
+      // A frozen source that cannot be verified must not fall back to page-number identity.
+    }
+  }
+  return { map, semanticPageIds };
 }
 
 function identityMatches(identity, deck, slideUid, expectedPageId) {
@@ -374,7 +421,10 @@ async function verifyHistoricalState(deck, statePath, outputReal) {
   const candidates = [];
   for (const row of historicalRows(state)) {
     try {
-      const slide = historicalSlides.get(pageId(row.page_id)) || slideForPage(deck, row.page_id);
+      const sourcePageId = pageId(row.page_id);
+      const slide = historicalSlides.map.get(sourcePageId) || (
+        historicalSlides.semanticPageIds.has(sourcePageId) ? null : slideForPage(deck, row.page_id)
+      );
       if (
         !slide ||
         !["candidate_ready", "accepted"].includes(row.status) ||

@@ -313,6 +313,92 @@ test("historical candidates follow stable slides, deduplicate, and trash every c
   await assert.rejects(() => readFile(deliveryPath), { code: "ENOENT" });
 });
 
+test("identity-less historical Fast8 follows its frozen title instead of a reused page number", async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "studio-historical-title-selector-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const projectRoot = path.join(root, "project");
+  const outputRoot = path.join(projectRoot, "output");
+  const outlinePath = path.join(projectRoot, "outline.md");
+  const runRoot = path.join(outputRoot, "old-fast8-page-11");
+  const stateDir = path.join(runRoot, "state");
+  const inputsDir = path.join(stateDir, "director_inputs");
+  const originDir = path.join(runRoot, "origin_image");
+  await Promise.all([
+    mkdir(inputsDir, { recursive: true }),
+    mkdir(originDir, { recursive: true }),
+  ]);
+  await writeFile(outlinePath, "fixture outline");
+  const deck = {
+    output_root: outputRoot,
+    outline: {
+      deck_uid: "HISTORICAL_DECK",
+      path: outlinePath,
+      slides: [
+        { page_id: "P11", page_label: "P11", order: 11, slide_uid: "CURRENT_P11", title: "Current proposal page" },
+        { page_id: "P26", page_label: "P26", order: 26, slide_uid: "E_HOUSE", title: "Is putting equipment in a building an E-House?" },
+      ],
+    },
+  };
+  const runId = "legacy-fast8-page-11";
+  const sourcePath = path.join(originDir, "style_A_page_P11.png");
+  const imageBytes = png(1600, 900, "legacy-e-house");
+  const imageHash = createHash("sha256").update(imageBytes).digest("hex");
+  await writeFile(sourcePath, imageBytes);
+  const contractPath = path.join(inputsDir, "content_contract.json");
+  const contractSha = await jsonFile(contractPath, {
+    page_id: "P11",
+    display_required: ["Is putting equipment in a building an E-House?"],
+  });
+  const packetPath = path.join(inputsDir, "authoritative_page_packet.md");
+  const packetBytes = Buffer.from([
+    "# Frozen page packet",
+    "| Page | Title | Thesis |",
+    "|---|---|---|",
+    "| P11 | Is putting equipment in a building an E-House? | Historical content |",
+    "",
+  ].join("\n"));
+  await writeFile(packetPath, packetBytes);
+  const snapshotPath = path.join(stateDir, "source_snapshot.json");
+  const snapshotSha = await jsonFile(snapshotPath, {
+    run_id: runId,
+    run_mode: "fast_8x1_diverse",
+    page_ids: ["P11"],
+    authoritative_source: {
+      path: packetPath,
+      sha256: createHash("sha256").update(packetBytes).digest("hex"),
+    },
+    content_contracts: [{ path: contractPath, sha256: contractSha }],
+  });
+  await jsonFile(path.join(stateDir, "style_run_state.json"), {
+    run_id: runId,
+    run_mode: "fast_8x1_diverse",
+    status: "completed",
+    project_dir: runRoot,
+    source_snapshot_path: snapshotPath,
+    source_snapshot_sha256: snapshotSha,
+    anchor_page_id: "P11",
+    styles: {
+      A: {
+        pages: {
+          P11: {
+            status: "candidate_ready",
+            final_path: sourcePath,
+            source_sha256: imageHash,
+            source_width: 1600,
+            source_height: 900,
+          },
+        },
+      },
+    },
+  });
+
+  const candidates = await scanStudioCandidates(deck);
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].source_page_id, "P11");
+  assert.equal(candidates[0].page_id, "P26");
+  assert.equal(candidates[0].slide_uid, "E_HOUSE");
+});
+
 test("historical identity-bound candidates remain valid after an authoritative outline path migration", async (t) => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "studio-outline-alias-")));
   t.after(() => rm(root, { recursive: true, force: true }));
