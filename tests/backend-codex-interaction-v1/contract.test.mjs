@@ -84,7 +84,11 @@ test("workspace turn is one natural Codex turn with official skills and no propo
   assert.match(text, /candidate_output_roots:/);
   assert.match(text, /role=primary_style_reference/);
   assert.match(text, /style_anchor_only is an approval scope, never an asset role/);
-  assert.match(text, /first mechanical action must build the preflight manifest/);
+  assert.match(text, /perform one bounded read-only input enumeration/);
+  assert.match(text, /directly referenced page-level asset index/);
+  assert.match(text, /Register every mandatory ImageGen logo, product image, or photo/);
+  assert.match(text, /do not scan unrelated pages, collect optional\/planning assets/);
+  assert.match(text, /first state-mutating command must then build the preflight manifest/);
   assert.match(text, /never use a distinct slide identity sidecar/);
   assert.match(text, /never pass --slide-identity-file again; init reads/);
   assert.match(text, /studio_request_started_at: 2026-08-15T05:09:18\.123Z/);
