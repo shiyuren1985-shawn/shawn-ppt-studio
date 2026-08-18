@@ -403,6 +403,23 @@ async function confirmedSelectionRefs(deck, selectionProjection) {
   return refs;
 }
 
+function isArchivedThreadError(error) {
+  const message = String(error?.message || "");
+  return /\b(?:session|thread)\s+\S+\s+is archived\b/i.test(message)
+    && /\bunarchive\b/i.test(message);
+}
+
+async function startTurnWithArchivedRecovery(client, { threadId, params, resumeParams }) {
+  try {
+    return await client.request("turn/start", params);
+  } catch (error) {
+    if (!isArchivedThreadError(error)) throw error;
+    await client.request("thread/unarchive", { threadId });
+    await client.request("thread/resume", resumeParams);
+    return client.request("turn/start", params);
+  }
+}
+
 async function streamWorkspaceTurn(req, res, context, route) {
   const requestStartedAt = new Date().toISOString();
   const body = await readJson(req);
@@ -425,10 +442,12 @@ async function streamWorkspaceTurn(req, res, context, route) {
     deck.outline.deck_uid,
     route.conversationId,
   );
-  await context.client.request(
-    "thread/resume",
-    threadResumeParams(context.dataRoot || context.labRoot, threadId, studioRules),
+  const resumeParams = threadResumeParams(
+    context.dataRoot || context.labRoot,
+    threadId,
+    studioRules,
   );
+  await context.client.request("thread/resume", resumeParams);
   const relay = context.codexInteraction;
   if (!relay.markStarting(threadId)) {
     throw new HttpError(409, "this conversation already has an active turn", "turn_already_active");
@@ -499,7 +518,11 @@ async function streamWorkspaceTurn(req, res, context, route) {
   });
 
   try {
-    await context.client.request("turn/start", params);
+    await startTurnWithArchivedRecovery(context.client, {
+      threadId,
+      params,
+      resumeParams,
+    });
   } catch (error) {
     relay.clearStarting(threadId);
     context.singleEditTurnFinalizer?.clearStarting?.(threadId);

@@ -15,6 +15,7 @@ class FakeAppServer extends EventEmitter {
     this.approvalResponses = [];
     this.serverRequests = new Map();
     this.thread = { id: "thread-1", status: { type: "idle" }, turns: [] };
+    this.archivedTurnStartFailures = 0;
   }
   subscribe(listener) {
     this.on("notification", listener);
@@ -27,8 +28,15 @@ class FakeAppServer extends EventEmitter {
   async request(method, params) {
     this.calls.push({ method, params });
     if (method === "thread/resume") return { thread: this.thread };
+    if (method === "thread/unarchive") return { thread: this.thread };
     if (method === "thread/read") return { thread: this.thread };
     if (method === "turn/start") {
+      if (this.archivedTurnStartFailures > 0) {
+        this.archivedTurnStartFailures -= 1;
+        throw new Error(
+          "session thread-1 is archived. Run `codex unarchive thread-1` to unarchive it first.",
+        );
+      }
       setTimeout(() => {
         this.emit("notification", {
           method: "turn/started",
@@ -243,6 +251,42 @@ test("HTTP uses start, steer and interrupt on one official turn", async () => {
       "imagegen",
     ]);
     assert.match(started.input.find((item) => item.type === "text").text, /测试中的全局长期规则/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("HTTP unarchives an externally archived conversation and retries its message once", async () => {
+  const { client, context } = fixtureContext();
+  client.archivedTurnStartFailures = 1;
+  const server = createLabHttpServer(context);
+  const baseUrl = await listen(server);
+  try {
+    const response = await fetch(
+      `${baseUrl}/api/decks/fixture/conversations/conversation-1/messages`,
+      {
+        method: "POST",
+        headers: { ...writeHeaders(), accept: "text/event-stream" },
+        body: JSON.stringify({ message: "继续修改 P01", current_slide_uid: "SLIDE_1" }),
+      },
+    );
+    assert.equal(response.status, 200);
+    const reader = response.body.getReader();
+    const events = await waitForText(reader, /item\/agentMessage\/delta/);
+    assert.match(events, /"delta":"正在处理。"/);
+    await reader.cancel();
+
+    assert.deepEqual(client.calls.map((call) => call.method), [
+      "thread/resume",
+      "turn/start",
+      "thread/unarchive",
+      "thread/resume",
+      "turn/start",
+    ]);
+    assert.equal(
+      client.calls.filter((call) => call.method === "thread/unarchive").length,
+      1,
+    );
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

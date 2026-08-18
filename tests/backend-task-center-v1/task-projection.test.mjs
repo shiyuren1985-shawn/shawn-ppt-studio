@@ -847,6 +847,9 @@ test("the Studio host records a request binding before starting its turn", async
   const end = httpSource.indexOf("async function serveRuntimeFile", start);
   const workspaceTurn = httpSource.slice(start, end);
   assert.match(workspaceTurn, /associations\?\.rememberRequest/);
-  assert.ok(workspaceTurn.indexOf("rememberRequest") < workspaceTurn.lastIndexOf('client.request("turn/start"'));
+  assert.ok(
+    workspaceTurn.indexOf("rememberRequest")
+      < workspaceTurn.lastIndexOf("startTurnWithArchivedRecovery"),
+  );
   assert.match(serverSource, /new TaskAssociationIndex\(\{ dataRoot \}\)/);
 });
