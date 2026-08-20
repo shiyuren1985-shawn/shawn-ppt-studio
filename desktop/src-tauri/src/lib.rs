@@ -727,10 +727,15 @@ mod tests {
 
     #[test]
     fn app_bundle_resolves_its_own_resources() {
-        let executable =
-            Path::new("/Applications/Shawn PPT Studio.app/Contents/MacOS/shawn-ppt-studio");
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let executable = std::env::temp_dir()
+            .join(format!("shawn-ppt-missing-app-{unique}.app"))
+            .join("Contents/MacOS/shawn-ppt-studio");
         assert_eq!(
-            bundled_studio_root(executable),
+            bundled_studio_root(&executable),
             None,
             "a synthetic path is rejected until its resources exist"
         );
