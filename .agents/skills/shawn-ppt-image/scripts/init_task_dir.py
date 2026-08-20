@@ -36,6 +36,7 @@ SELECTED_STYLE_EXPANSION_DIRS = (
 )
 TASK_INIT_CONTRACT_VERSION = 1
 FAST8_PREFLIGHT_MANIFEST_VERSION = 1
+FAST8_RASTER_ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 FAST8_STARTUP_CONTRACT_VERSION = 1
 FAST8_IMAGEGEN_SLOT_POLICY = "worker_jit_v1"
 MONITORING_CONFIG_VERSION = 1
@@ -161,11 +162,12 @@ def normalize_expansion_page_ids(value: str | None) -> list[str]:
     normalized: list[str] = []
     for item in raw:
         match = re.fullmatch(
-            r"(?i)(?:p(?:age)?|slide)?[-_ ]*0*(\d+)", item
+            r"(?i)(?:p(?:age)?|slide)?[-_ ]*0*(\d+)(?:[-_ ]*(ZH|EN))?", item
         )
         if not match or int(match.group(1)) < 1:
             raise SystemExit(f"--page-ids 包含无效页码：{item}")
-        normalized.append(f"{int(match.group(1)):02d}")
+        suffix = f"-{match.group(2).upper()}" if match.group(2) else ""
+        normalized.append(f"{int(match.group(1)):02d}{suffix}")
     if len(normalized) != len(set(normalized)):
         raise SystemExit("--page-ids 规范化后包含重复页码")
     return normalized
@@ -188,22 +190,41 @@ def validate_expansion_source(value: str | None) -> Path:
 EXPANSION_SCOPE_PAGE_LIST_KEYS = {
     "include_page_ids", "exclude_page_ids", "applies_to_page_ids", "page_ids"
 }
-EXPANSION_PAGE_TOKEN = re.compile(r"(?i)\bP(?:age)?[-_ ]*0*(\d+)\b")
+EXPANSION_PAGE_TOKEN = re.compile(
+    r"(?i)\bP(?:age)?[-_ ]*0*(\d+)(?:[-_ ]*(ZH|EN))?\b"
+)
 
 
 def expansion_page_alias(value: object) -> str | None:
     match = re.fullmatch(
-        r"(?i)(?:p(?:age)?|slide)?[-_ ]*0*(\d+)", str(value).strip()
+        r"(?i)(?:p(?:age)?|slide)?[-_ ]*0*(\d+)(?:[-_ ]*(ZH|EN))?",
+        str(value).strip(),
     )
     if not match or int(match.group(1)) < 1:
         return None
-    return f"{int(match.group(1)):02d}"
+    suffix = f"-{match.group(2).upper()}" if match.group(2) else ""
+    return f"{int(match.group(1)):02d}{suffix}"
+
+
+def expansion_target_covers(alias: str | None, target_page_ids: list[str]) -> bool:
+    if alias is None:
+        return False
+    target = set(target_page_ids)
+    if alias in target:
+        return True
+    if "-" not in alias:
+        return any(item.startswith(alias + "-") for item in target)
+    return False
+
+
+def expansion_token_alias(match: re.Match[str]) -> str:
+    suffix = f"-{match.group(2).upper()}" if match.group(2) else ""
+    return f"{int(match.group(1)):02d}{suffix}"
 
 
 def project_deck_contract_value(value: object, target_page_ids: list[str]) -> object:
     """Narrow deck JSON scope mechanically without interpreting title semantics."""
 
-    target = set(target_page_ids)
     if isinstance(value, list):
         return [project_deck_contract_value(item, target_page_ids) for item in value]
     if not isinstance(value, dict):
@@ -213,13 +234,13 @@ def project_deck_contract_value(value: object, target_page_ids: list[str]) -> ob
         return {
             key: project_deck_contract_value(item, target_page_ids)
             for key, item in value.items()
-            if expansion_page_alias(key) in target
+            if expansion_target_covers(expansion_page_alias(key), target_page_ids)
         }
     projected: dict[str, object] = {}
     for key, item in value.items():
         page_key = expansion_page_alias(key)
         if page_key is not None:
-            if page_key in target:
+            if expansion_target_covers(page_key, target_page_ids):
                 projected[key] = project_deck_contract_value(item, target_page_ids)
             continue
         if key in EXPANSION_SCOPE_PAGE_LIST_KEYS:
@@ -227,7 +248,7 @@ def project_deck_contract_value(value: object, target_page_ids: list[str]) -> ob
                 raise SystemExit(f"deck contract {key} 必须是页码数组")
             projected[key] = [
                 raw for raw in item
-                if expansion_page_alias(raw) in target
+                if expansion_target_covers(expansion_page_alias(raw), target_page_ids)
             ]
             continue
         if key == "scope" and isinstance(item, dict):
@@ -238,10 +259,12 @@ def project_deck_contract_value(value: object, target_page_ids: list[str]) -> ob
                         raise SystemExit(f"deck contract scope.{scope_key} 必须是页码数组")
                     scoped[scope_key] = [
                         raw for raw in scope_item
-                        if expansion_page_alias(raw) in target
+                        if expansion_target_covers(expansion_page_alias(raw), target_page_ids)
                     ]
                 elif not any(
-                    f"{int(match.group(1)):02d}" not in target
+                    not expansion_target_covers(
+                        expansion_token_alias(match), target_page_ids
+                    )
                     for match in EXPANSION_PAGE_TOKEN.finditer(
                         json.dumps(scope_item, ensure_ascii=False)
                     )
@@ -277,9 +300,11 @@ def freeze_expansion_supporting_text(
         projection_sha256 = hashlib.sha256(exact_text.encode("utf-8")).hexdigest()
     if source_scope == "deck":
         leaked = sorted({
-            f"{int(match.group(1)):02d}"
+            expansion_token_alias(match)
             for match in EXPANSION_PAGE_TOKEN.finditer(exact_text)
-            if f"{int(match.group(1)):02d}" not in set(page_ids)
+            if not expansion_target_covers(
+                expansion_token_alias(match), page_ids
+            )
         })
         if leaked:
             raise SystemExit(
@@ -772,6 +797,9 @@ def validate_fast8_preflight_manifest(
     raw_assets = value.get("asset_items", [])
     if not isinstance(raw_assets, list):
         raise SystemExit("Fast8 预备清单 asset_items 必须是数组")
+    source_paths = {
+        str(item["path"]) for item in [*required_files, *optional_files]
+    }
     assets: list[dict[str, object]] = []
     for index, item in enumerate(raw_assets):
         if not isinstance(item, dict):
@@ -788,6 +816,16 @@ def validate_fast8_preflight_manifest(
         resolved = resolved.resolve()
         if not resolved.is_file():
             raise SystemExit(f"Fast8 实际输入资产不存在：{resolved}")
+        if str(resolved) in source_paths:
+            raise SystemExit(
+                "Fast8 预备清单路径重复；"
+                "来源文件与实际 ImageGen 输入资产必须分开登记"
+            )
+        if resolved.suffix.lower() not in FAST8_RASTER_ASSET_SUFFIXES:
+            raise SystemExit(
+                "Fast8 实际输入资产只接受 PNG/JPG/JPEG/WEBP；"
+                f"请在冻结清单前先转换文档指定页：{resolved}"
+            )
         assets.append(
             {"path": str(resolved), "role": role.strip(), "sha256": file_sha256(resolved)}
         )

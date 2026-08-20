@@ -16,6 +16,8 @@
 4. `adaptation_and_craft`：是否明显跨页机械复制同一内容区骨架，或出现严重构图、工艺、可读性退化。轻微瑕疵、主观偏好、参考图不够像或“还可以更漂亮”不能失败。
 5. `anchor_authorization`：`style_anchor_only` 不审核锚点旧页是否能作为当前最终页；`final_page_and_anchor` 必须像其他最终页一样检查本页事实、标题、资产与视觉正确性。
 
+若内容合同含 `language_presentation`，把它作为同一个 `visual_correctness` 门的一部分，不新增 Reviewer：`same_page` 的每组英文必须紧邻对应中文并共享同一信息单元；`split_peer` 的中文页／英文页各自只检查本页语言，不要求同图双语，也不得出现兄弟页另一语言的新增正文。兄弟页是否齐全由控制面机械校验，Judge 不重复审查。明显缺失同页获授权配对英文，或把英文集中成独立底栏、侧栏、第二套版式，属于明确失败。正式品牌名、产品名和标准名除外。只在 contact sheet 出现明确疑点时占用既有最多 6 张单图预算，不增加 OCR、逐页放大或第二轮审查。
+
 当候选的 `anchor_input_mode=raster` 且 `expected_main_title` 非空时，同一个 Judge 必须确认视觉上占主导的标题就是该当前页标题；若 `expected_subtitle=null`，不得把锚点或附件中的旧副标题当成本页副标题。只差无语义影响的末尾 `。.;；` 不触发返工，除非当前内容合同或用户要求明确规定标点必须逐字一致。不要为此增加 OCR、第二个 Reviewer 或全页逐字复审。
 
 只对明确失败页提出一次定向修复，必须写清 `must_change`、不应破坏的 `invariants` 和 `repair_input_policy`：普通局部编辑用 `preserve_candidate`；语义污染但来源不是锚点时用 `regenerate_without_candidate`；明确由 raster 锚点文字污染导致时用 `regenerate_text_family`，不得把已污染候选和同一污染锚点再次传入。需要改变内容义务或用户判断时写入 `needs_content_decision_pages`，不允许继续视觉抽样，也不阻塞其他页面继续。一次 repair 后只允许 `delta_review` 收口为 `pass|best_effort` 并保留待决定页，不得因为主观偏好再次修复。

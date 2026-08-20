@@ -14,7 +14,11 @@ import os
 from pathlib import Path
 import tempfile
 
+import materialize_visual_asset as visual_assets
 import pipeline_control as pipeline
+
+
+RASTER_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 def existing_absolute_file(value: str, label: str) -> str:
@@ -34,6 +38,16 @@ def optional_absolute_path(value: str, label: str) -> str:
     return str(path.resolve())
 
 
+def require_raster(path_value: str, label: str) -> str:
+    path = Path(existing_absolute_file(path_value, label))
+    if path.suffix.lower() not in RASTER_SUFFIXES:
+        raise SystemExit(
+            f"{label} 必须是 PNG/JPG/JPEG/WEBP；PDF 等文档不能直接传给 ImageGen。"
+            "指定 PDF 页请使用 --document-page-asset /absolute/file.pdf::页码::role"
+        )
+    return str(path)
+
+
 def parse_asset(value: str) -> dict[str, str]:
     try:
         path_value, role = value.rsplit("::", 1)
@@ -43,9 +57,95 @@ def parse_asset(value: str) -> dict[str, str]:
     if not role:
         raise SystemExit("--asset role 不能为空")
     return {
-        "path": existing_absolute_file(path_value, "Fast8 实际输入资产"),
+        "path": require_raster(path_value, "Fast8 实际输入资产"),
         "role": role,
     }
+
+
+def parse_document_page_asset(value: str) -> dict[str, object]:
+    try:
+        path_value, page_value, role = value.rsplit("::", 2)
+    except ValueError as exc:
+        raise SystemExit(
+            "--document-page-asset 必须使用 /absolute/file.pdf::页码::role"
+        ) from exc
+    source = Path(existing_absolute_file(path_value, "Fast8 文档页来源"))
+    if source.suffix.lower() != ".pdf":
+        raise SystemExit("--document-page-asset 当前只接受 PDF")
+    try:
+        page_number = int(page_value)
+    except ValueError as exc:
+        raise SystemExit("--document-page-asset 页码必须是正整数") from exc
+    if page_number < 1:
+        raise SystemExit("--document-page-asset 页码必须是正整数")
+    role = role.strip()
+    if not role:
+        raise SystemExit("--document-page-asset role 不能为空")
+    return {
+        "source": str(source),
+        "role": role,
+        "locator": {"page": page_number},
+    }
+
+
+def parse_source_asset_spec(value: str) -> dict[str, object]:
+    return visual_assets.parse_spec_json(value)
+
+
+def global_chrome_assets(
+    contract_value: str, page_id: str
+) -> tuple[str, list[dict[str, str]]]:
+    contract_path = Path(
+        existing_absolute_file(contract_value, "Fast8 全稿标题合同")
+    )
+    try:
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"Fast8 全稿标题合同无法读取：{contract_path}：{exc}") from exc
+    if not isinstance(contract, dict) or contract.get(
+        "global_chrome_contract_version"
+    ) != 1:
+        raise SystemExit("Fast8 全稿标题合同必须为 global_chrome_contract_version=1")
+    if (contract.get("authorization") or {}).get("status") != "authorized":
+        raise SystemExit("Fast8 全稿标题合同必须已有 status=authorized 的来源授权")
+    deck = contract.get("deck_title_system") or {}
+    scope = deck.get("scope") or {}
+    includes = scope.get("include_page_ids") or []
+    excludes = scope.get("exclude_page_ids") or []
+    applies = (
+        deck.get("enabled") is True
+        and (not includes or any(pipeline.page_ids_match(page_id, item) for item in includes))
+        and not any(pipeline.page_ids_match(page_id, item) for item in excludes)
+    )
+    if not applies or (deck.get("logo") or {}).get("required") is not True:
+        return str(contract_path), []
+    assets_by_tone = ((deck.get("logo") or {}).get("assets_by_tone") or {})
+    if not isinstance(assets_by_tone, dict):
+        raise SystemExit("Fast8 全稿标题合同要求 Logo，但缺少 assets_by_tone")
+    assets: list[dict[str, str]] = []
+    for tone in ("dark", "light"):
+        item = assets_by_tone.get(tone)
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            raise SystemExit(f"Fast8 全稿标题合同缺少 {tone} Logo 路径")
+        assets.append(
+            {
+                "path": require_raster(item["path"], f"Fast8 {tone} 标题 Logo"),
+                "role": f"global_chrome_logo_{tone}",
+            }
+        )
+    return str(contract_path), assets
+
+
+def append_unique_path(values: list[str], value: str) -> None:
+    if value not in values:
+        values.append(value)
+
+
+def append_unique_asset(
+    values: list[dict[str, str]], item: dict[str, str]
+) -> None:
+    if not any(existing["path"] == item["path"] for existing in values):
+        values.append(item)
 
 
 def atomic_write(path: Path, value: dict) -> None:
@@ -90,6 +190,32 @@ def main() -> None:
         default=[],
         help="Actual ImageGen input asset as /absolute/path::role",
     )
+    parser.add_argument(
+        "--document-page-asset",
+        action="append",
+        default=[],
+        help=(
+            "Render one frozen PDF page before manifest creation, as "
+            "/absolute/file.pdf::page_number::role"
+        ),
+    )
+    parser.add_argument(
+        "--source-asset-spec",
+        action="append",
+        default=[],
+        help=(
+            "Generic visual source JSON, for example "
+            "{\"source\":\"/a/file.pptx\",\"role\":\"source_slide\","
+            "\"locator\":{\"slide\":3}}"
+        ),
+    )
+    parser.add_argument(
+        "--global-chrome-contract",
+        help=(
+            "Existing authorized deck title contract; applicable tone-specific "
+            "Logo assets are frozen automatically"
+        ),
+    )
     parser.add_argument("--request-started-at")
     parser.add_argument(
         "--tone",
@@ -122,6 +248,11 @@ def main() -> None:
     if not page_id:
         raise SystemExit("--page-id 不能为空")
 
+    output = Path(args.output).expanduser()
+    if not output.is_absolute():
+        raise SystemExit("--output 必须是绝对路径")
+    output = output.resolve()
+
     required = [
         existing_absolute_file(value, "Fast8 必需来源文件")
         for value in args.required_file
@@ -131,6 +262,35 @@ def main() -> None:
         for value in args.optional_file
     ]
     assets = [parse_asset(value) for value in args.asset]
+    explicit_paths = [*required, *optional, *[item["path"] for item in assets]]
+    if len(explicit_paths) != len(set(explicit_paths)):
+        raise SystemExit("来源文件与实际 ImageGen 输入资产不得重复登记")
+    source_specs = [
+        parse_source_asset_spec(value) for value in args.source_asset_spec
+    ]
+    source_specs.extend(
+        parse_document_page_asset(value) for value in args.document_page_asset
+    )
+    for spec in source_specs:
+        materialized = visual_assets.materialize_visual_asset(
+            spec, output.parent / f"{output.stem}.assets"
+        )
+        source_file = materialized.get("source_file")
+        output_path = str(materialized["output_path"])
+        if isinstance(source_file, str) and source_file != output_path:
+            append_unique_path(required, source_file)
+        append_unique_path(required, str(materialized["receipt_path"]))
+        append_unique_asset(
+            assets,
+            {"path": output_path, "role": str(materialized["role"])},
+        )
+    if args.global_chrome_contract:
+        contract_path, contract_assets = global_chrome_assets(
+            args.global_chrome_contract, page_id
+        )
+        append_unique_path(required, contract_path)
+        for item in contract_assets:
+            append_unique_asset(assets, item)
     all_paths = [*required, *optional, *[item["path"] for item in assets]]
     if len(all_paths) != len(set(all_paths)):
         raise SystemExit("来源文件与实际 ImageGen 输入资产不得重复登记")
@@ -154,10 +314,6 @@ def main() -> None:
         except ValueError as exc:
             raise SystemExit("--request-started-at 不是合法 ISO 时间") from exc
 
-    output = Path(args.output).expanduser()
-    if not output.is_absolute():
-        raise SystemExit("--output 必须是绝对路径")
-    output = output.resolve()
     manifest = {
         "fast8_preflight_manifest_version": 1,
         "run_mode": "fast_8x1_diverse",
@@ -196,6 +352,9 @@ def main() -> None:
                 "request_started_at": started_at,
                 "tone": args.tone,
                 "page_source_validated": bool(args.page_source),
+                "document_pages_materialized": len(args.document_page_asset),
+                "source_assets_materialized": len(source_specs),
+                "global_chrome_bound": bool(args.global_chrome_contract),
             },
             ensure_ascii=False,
         )

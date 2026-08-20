@@ -16,6 +16,7 @@
   "four_by_three_visual_system_version": 1,
   "page_order": ["<三页规范 ID>"],
   "anchor_page_id": "<锚点页>",
+  "background_tone_policy": {"mode":"default_mixed|uniform","tone":"dark|light|null","source":"pipeline_default|primary_style_reference|user_explicit"},
   "creative_intents": {
     "<page_id>": {
       "creative_intent_contract_version": 1,
@@ -56,7 +57,7 @@ A–D 每席必须且只能包含：
 
 `director_rationale` 是顶层短说明，必须不超过 240 个字符；在输出前自行压缩，不要等确定性脚本截断。
 
-A/B 为深色、C/D 为浅色，但不能只靠明暗区分。四席的关系表达家族、锚点可见命题、工艺轴和空间拓扑必须真实分离；至少三种 primary_entry、三种 region_logic，拓扑签名逐席唯一。至少一席 restrained，expressive 最多一席。
+背景色调优先级固定为：用户当前明确要求 > primary 风格定位图的主背景色调 > 无参考图时的默认矩阵。只要存在用户指定的风格定位图，且用户没有另行要求混合或改变色调，`background_tone_policy` 就使用 `uniform`，A–D 全部跟随 primary 参考图的主画布背景色调；不要再拆成两深两浅。只有没有风格定位图、也没有明确色调要求，或用户明确要求保留深浅混合时，才用 `default_mixed`，此时 A/B 深色、C/D 浅色。参考图背景介于两者时按占主导面积的画布底色判断，不因局部卡片或插画改判。无论明暗是否统一，四席的关系表达家族、锚点可见命题、工艺轴和空间拓扑必须真实分离；至少三种 primary_entry、三种 region_logic，拓扑签名逐席唯一。至少一席 restrained，expressive 最多一席。
 
 `style_family_thesis` 与 `continuity_invariants` 传递视觉家族；生成后的本风格锚点图也默认作为两张跟随页的风格附件，但不授权其标题、正文、事实、对象或具体构图。每页自己的 `relationship_thesis` 传递当前内容关系。`relationship_thesis` 只能使用冻结来源明确给出的关系：来源未规定的上下级、因果、时序或归属，只能写成无汇报线的并列支持组或外部接口，不能为了让图更完整而补出连线、树枝、箭头或嵌套从属。不得把锚点页关系复制给跟随页，也不得把“风格一致”写成三页复刻同一双栏、卡片或底栏。完成后只返回路径、三页关系摘要和 A–D 家族摘要。
 ```

@@ -21,6 +21,7 @@
       "page_id": "<page_id>",
       "title": "来源明确标题；没有明确标题则省略本字段",
       "language": "zh-CN|en-US|mixed|source",
+      "language_presentation": {"mode":"source|zh_only|en_only|bilingual","delivery":"single|same_page","logical_page_id":"<逻辑页>","peer_page_id":null,"pairing":"none|paired|summary","pairs":[]},
       "source_facts": [],
       "display_required": [],
       "display_flexible": [],
@@ -40,7 +41,7 @@
 
 原文优先：大纲中的表达已经清楚、自然时，保留原有措辞和语气，不要为了显得更专业而重新改写。只有为去除重复、压缩过长内容或修正明显不通顺时才轻度改写；使用业务人员会直接说出口的简洁表达，少用抽象名词堆叠，不写“先……再……最后……”等导演式叙述。`flexible_story` 只概括本页必须传达的含义，不新增口号、观点或结论。
 
-语言逐页编译：只有“用户当前内容要求”明确提出中英双语或 bilingual，才启用 `bilingual-if-available`。对三页分别判断；某页来源明确提供并授权上屏的 English Display Copy、English Title 或同类英文层时，把该页中文主层和英文辅助层一起写入显示义务并使用 `language=mixed`，不得漏掉该页全部已授权英文。某页没有现成英文层时，保持该页源文继续，不翻译、不报错、不写 `needs_user_decision`，也不影响另外两页。未明确要求双语时，不激活来源中标注“仅双语模式”的条件字段；英文技术术语或 `mixed` 不能反推双语请求。页面级明确指定语言时，以该页指定为准；不得跨页借用英文。
+语言只按三页各自的冻结投影编译，不回读完整多语言大纲。同页双语使用 `delivery=same_page` 并只编译获授权 `pairs`；单语使用 `delivery=single`。若来源逻辑页规定 `split_zh_en`，本轮 4×3 的该代表页只能选择中文或英文一个投影变体，不能把两个变体合并成同一候选。不得临场翻译，也不得借用其他页、兄弟页或锚点文案。
 
 每页都必须显式保留 `prompt_semantic_guardrails` 和 `prompt_user_constraints` 两个页内顶层数组，没有内容时写 `[]`，不得省略。两者各为 0–3 条；写入前先合并同类约束，不得输出第 4 条再等脚本截断。`prompt_semantic_guardrails` 只保留真正会导致画面误读的短约束，三条合计不超过 300 个字符；`prompt_user_constraints` 只保留其他字段无法推出的用户硬要求。不要把完整事实、岗位清单或说明性文字重复塞进护栏或用户约束。
 护栏必须完全页内自洽，只写当前页必须成立的关系和边界；不得引用其他页码、其他页来源、数字、对象或路径，即使目的是写“不要继承”也不得把那些跨页词带入当前页提示。

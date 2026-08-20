@@ -15,6 +15,34 @@ SCRIPT = (
 )
 
 
+def write_minimal_pdf(path: Path) -> None:
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << >> /Contents 4 0 R >>",
+        b"<< /Length 0 >>\nstream\n\nendstream",
+    ]
+    payload = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, value in enumerate(objects, start=1):
+        offsets.append(len(payload))
+        payload.extend(f"{index} 0 obj\n".encode())
+        payload.extend(value)
+        payload.extend(b"\nendobj\n")
+    xref_offset = len(payload)
+    payload.extend(f"xref\n0 {len(objects) + 1}\n".encode())
+    payload.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        payload.extend(f"{offset:010d} 00000 n \n".encode())
+    payload.extend(
+        (
+            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode()
+    )
+    path.write_bytes(payload)
+
+
 class Fast8PreflightBuilderTests(unittest.TestCase):
     def run_builder(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -86,6 +114,135 @@ class Fast8PreflightBuilderTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("不存在", result.stderr)
             self.assertFalse(output.exists())
+
+    def test_rejects_raw_pdf_as_imagegen_asset(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fast8_preflight_raw_pdf_") as temp:
+            root = Path(temp).resolve()
+            source = root / "source.pdf"
+            output = root / "preflight.json"
+            write_minimal_pdf(source)
+            result = self.run_builder(
+                "--output", str(output),
+                "--task-name", "P23_raw_pdf",
+                "--page-id", "P23",
+                "--asset", f"{source}::required_chart_source",
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("不能直接传给 ImageGen", result.stderr)
+            self.assertFalse(output.exists())
+
+    def test_materializes_one_pdf_page_before_freezing_manifest(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fast8_preflight_pdf_page_") as temp:
+            root = Path(temp).resolve()
+            source = root / "source.pdf"
+            output = root / "preflight.json"
+            write_minimal_pdf(source)
+            result = self.run_builder(
+                "--output", str(output),
+                "--task-name", "P23_pdf_page",
+                "--page-id", "P23",
+                "--document-page-asset",
+                f"{source}::1::required_chart_source",
+            )
+            if "缺少视觉资产转换器" in result.stderr:
+                self.skipTest("pdftoppm is not installed")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["required_files"][0], str(source))
+            self.assertEqual(len(manifest["required_files"]), 2)
+            self.assertTrue(
+                manifest["required_files"][1].endswith(".materialization.json")
+            )
+            self.assertEqual(len(manifest["asset_items"]), 1)
+            rendered = Path(manifest["asset_items"][0]["path"])
+            self.assertEqual(rendered.suffix, ".png")
+            self.assertEqual(rendered.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(
+                manifest["asset_items"][0]["role"], "required_chart_source"
+            )
+
+    def test_generic_source_spec_uses_the_shared_materializer(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fast8_preflight_source_spec_") as temp:
+            root = Path(temp).resolve()
+            source = root / "source.pdf"
+            output = root / "preflight.json"
+            write_minimal_pdf(source)
+            result = self.run_builder(
+                "--output", str(output),
+                "--task-name", "P23_source_spec",
+                "--page-id", "P23",
+                "--source-asset-spec",
+                json.dumps(
+                    {
+                        "source": str(source),
+                        "role": "source_page",
+                        "locator": {"page": 1},
+                    }
+                ),
+            )
+            if "缺少视觉资产转换器" in result.stderr:
+                self.skipTest("pdftoppm is not installed")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["source_assets_materialized"], 1)
+            manifest = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["asset_items"][0]["role"], "source_page")
+            self.assertTrue(manifest["asset_items"][0]["path"].endswith(".png"))
+
+    def test_global_chrome_contract_freezes_applicable_tone_logos(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fast8_preflight_chrome_") as temp:
+            root = Path(temp).resolve()
+            dark_logo = root / "logo-dark.png"
+            light_logo = root / "logo-light.png"
+            contract = root / "global-chrome.json"
+            output = root / "preflight.json"
+            dark_logo.write_bytes(b"dark")
+            light_logo.write_bytes(b"light")
+            contract.write_text(
+                json.dumps(
+                    {
+                        "global_chrome_contract_version": 1,
+                        "authorization": {"status": "authorized"},
+                        "deck_title_system": {
+                            "enabled": True,
+                            "scope": {
+                                "include_page_ids": ["P21", "P22", "P23"],
+                                "exclude_page_ids": [],
+                            },
+                            "logo": {
+                                "required": True,
+                                "assets_by_tone": {
+                                    "dark": {"path": str(dark_logo)},
+                                    "light": {"path": str(light_logo)},
+                                },
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            result = self.run_builder(
+                "--output", str(output),
+                "--task-name", "P23_global_chrome",
+                "--page-id", "P23",
+                "--global-chrome-contract", str(contract),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["required_files"], [str(contract)])
+            self.assertEqual(
+                manifest["asset_items"],
+                [
+                    {
+                        "path": str(dark_logo),
+                        "role": "global_chrome_logo_dark",
+                    },
+                    {
+                        "path": str(light_logo),
+                        "role": "global_chrome_logo_light",
+                    },
+                ],
+            )
 
     def test_explicit_light_tone_persists_all_eight_overrides(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fast8_preflight_tone_") as temp:

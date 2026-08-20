@@ -22,6 +22,7 @@
       "title": "来源明确时逐字写入；否则省略",
       "subtitle": "来源明确标为副标题时逐字写入；否则省略",
       "language": "zh-CN|en-US|mixed|source",
+      "language_presentation": {"mode":"source|zh_only|en_only|bilingual","delivery":"single|same_page|split_peer","logical_page_id":"<逻辑页>","peer_page_id":null,"pairing":"none|paired|summary","pairs":[]},
       "source_facts": [],
       "source_status": "verified|source_claim|estimate|target|placeholder|draft|unconfirmed|mixed",
       "display_required": [],
@@ -44,7 +45,7 @@
 
 原文优先：大纲中的表达已经清楚、自然时，保留原有措辞和语气，不要为了显得更专业而重新改写。只有为去除重复、压缩过长内容或修正明显不通顺时才轻度改写；使用业务人员会直接说出口的简洁表达，少用抽象名词堆叠，不写“先……再……最后……”等导演式叙述。`flexible_story` 只概括本页必须传达的含义，不新增口号、观点或结论。
 
-语言逐页编译：只有“用户当前内容要求”明确提出中英双语或 bilingual，才启用 `bilingual-if-available`。逐页检查冻结记录；当前页来源明确提供并授权上屏的 English Display Copy、English Title 或同类英文层时，把中文主层和英文辅助层一起写入显示义务并使用 `language=mixed`，不得漏掉该页全部已授权英文。当前页没有现成英文层时，保持该页源文继续，不翻译、不报错、不写 `needs_user_decision`，也不阻断整轮。未明确要求双语时，不激活来源中标注“仅双语模式”的条件字段；英文技术术语或 `mixed` 不能反推双语请求。页面级明确指定语言时，以该页指定为准；不得从 deck context、其他页或锚点借用英文。
+语言只按冻结投影编译，不回读完整多语言大纲。`same_page` 物理页使用 `mode=bilingual`，只把投影中选定的英文和对应中文写入显示义务，并逐项写入 `pairs`；英文紧邻对应中文，不得形成底栏、侧栏或第二套版式。`split_peer` 物理页必须原样保留投影给出的 `logical_page_id`、`peer_page_id` 和 `mode=zh_only|en_only`：中文兄弟页只编译中文，英文兄弟页只编译英文，不能读取或补写另一语言。普通单语投影使用 `delivery=single`。任何模式都不得从 deck context、其他页、兄弟页或锚点借文案，也不得临场翻译。
 
 `title` 只写当前页主标题，`subtitle` 只在来源明确把一段文字标为副标题时写入；不得从锚点图、参考图、其他页或视觉习惯补副标题。`content_load_review` 与 `spatial_feasibility` 中能由控制面机械确定的字段可保持上述空对象/枚举，不要为补机械字段拖长导演工作；控制面只补机械默认值，不替你编造事实或语义判断。
 

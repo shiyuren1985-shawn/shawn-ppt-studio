@@ -487,6 +487,39 @@ class Fast8ControlPlaneV1Test(unittest.TestCase):
             ):
                 self.assertEqual(legacy_job[field], combined_job[field])
 
+    def test_style_reference_background_tone_is_applied_to_all_eight_jobs(self) -> None:
+        fixture = self.unprepared_fixture()
+        style_reference = self.fixture.root / "uniform_tone_style_reference.png"
+        evidence = self.fixture.root / "uniform_tone_evidence.png"
+        write_png(style_reference, color=bytes((245, 245, 240)))
+        write_png(evidence, color=bytes((200, 210, 220)))
+        paths = self.write_director_bundle(
+            fixture, style_reference=style_reference, evidence=evidence
+        )
+        layout = pipeline.read_json(paths["layout_raw"])
+        layout["background_tone_policy"] = {
+            "mode": "uniform",
+            "tone": "light",
+            "source": "primary_style_reference",
+        }
+        write_json(paths["layout_raw"], layout)
+
+        result = control.prepare_director_inputs(fixture.state_path.resolve())
+
+        self.assertEqual(result["status"], "ok")
+        state = pipeline.read_json(fixture.state_path)
+        self.assertEqual(
+            state["tone_overrides"], {style: "light" for style in control.STYLES}
+        )
+        for style in control.STYLES:
+            job = pipeline.read_json(
+                fixture.root / "style_jobs" / f"style_{style}.json"
+            )
+            self.assertEqual(job["tone"], "light")
+            self.assertEqual(
+                job["reference_images"][0]["path"], str(style_reference.resolve())
+            )
+
     def test_prepare_directors_accepts_global_chrome_qa_reference_without_routing_it_to_imagegen(
         self,
     ) -> None:

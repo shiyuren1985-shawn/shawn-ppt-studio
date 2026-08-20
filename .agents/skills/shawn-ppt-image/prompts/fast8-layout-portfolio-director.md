@@ -13,7 +13,9 @@
 
 只读取权威来源中本页及全稿视觉要求。若用户提供参考图或 master，可在本隔离任务内检查它，并让参考图优先于通用审美规则；但不得覆盖事实、品牌或用户当前明确硬要求。不要读取历史候选来寻找固定 A–H 模板。
 
-写固定顶层结构的 v7 layout_portfolio：`layout_portfolio_contract_version=7`、`art_direction_contract_version=1`、`visual_activity_portfolio_version=1`、`spatial_topology_portfolio_version=1`、准确 `page_id`、简短 `director_rationale`，以及名为 `styles` 的对象（不得写 `directions`）；`styles` 必须且只能包含 A–H。每席包含唯一的 `direction_id`、`visual_thesis`、`relationship_representation_family`、`craft_axis`、`visual_activity_mode`、`attention_strategy` 和 `spatial_topology`。
+写固定顶层结构的 v7 layout_portfolio：`layout_portfolio_contract_version=7`、`art_direction_contract_version=1`、`visual_activity_portfolio_version=1`、`spatial_topology_portfolio_version=1`、准确 `page_id`、简短 `director_rationale`、`background_tone_policy`，以及名为 `styles` 的对象（不得写 `directions`）；`styles` 必须且只能包含 A–H。每席包含唯一的 `direction_id`、`visual_thesis`、`relationship_representation_family`、`craft_axis`、`visual_activity_mode`、`attention_strategy` 和 `spatial_topology`。
+
+`background_tone_policy` 只允许三项：`mode=default_mixed|uniform`、`tone=dark|light|null`、`source=pipeline_default|primary_style_reference|user_explicit`。优先级固定为：用户当前明确色调要求 > primary 风格定位图的主背景色调 > 无参考图时的默认矩阵。只要存在用户指定的风格定位图，且用户没有另行要求混合或改变色调，就使用 `uniform`，让 A–H 全部跟随 primary 参考图的主画布背景色调；不要再做 A–D 深色、E–H 浅色。只有没有风格定位图、也没有明确色调要求，或用户明确要求保留深浅混合时，才使用 `default_mixed`。参考图背景介于两者时按占主导面积的画布底色判断，不因局部深色卡片或插画改判。排版与关系表达的八路差异仍保持开放。
 
 每席 `spatial_topology` 必须且只能包含四个键：`primary_entry`、`region_logic`、`evidence_attachment`、`spatial_topology_intent`。允许值严格如下，不得创造近义枚举或改字段名：
 - `primary_entry`：`single_focus|paired_contrast|path|network|field|hierarchy|radial|evidence_hero`

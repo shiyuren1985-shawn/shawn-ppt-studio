@@ -92,6 +92,11 @@ class NormalizeFast8DirectorOutputsTest(unittest.TestCase):
         return {
             "page_id": "P31",
             "director_rationale": "人工构造的等价 fixture，用于覆盖已观察到的容器和版本缺失。",
+            "background_tone_policy": {
+                "mode": "uniform",
+                "tone": "light",
+                "source": "primary_style_reference",
+            },
             container: styles,
         }
 
@@ -149,6 +154,10 @@ class NormalizeFast8DirectorOutputsTest(unittest.TestCase):
         self.assertEqual(normalized_layout["art_direction_contract_version"], 1)
         self.assertEqual(normalized_layout["visual_activity_portfolio_version"], 1)
         self.assertEqual(normalized_layout["spatial_topology_portfolio_version"], 1)
+        self.assertEqual(
+            normalized_layout["background_tone_policy"],
+            raw_layout["background_tone_policy"],
+        )
         for style in "ABCDEFGH":
             for field in (
                 "visual_thesis",
@@ -188,6 +197,45 @@ class NormalizeFast8DirectorOutputsTest(unittest.TestCase):
         self.assertIn("不会猜测近义值", result.stderr)
         self.assertFalse(content_output.exists())
         self.assertFalse(layout_output.exists())
+
+    def test_optional_bilingual_presentation_is_preserved_and_validated(self) -> None:
+        content = self.base_content()
+        content["language"] = "mixed"
+        content["display_required"] = [
+            "一个品牌、一个公司",
+            "One Brand, One Company",
+        ]
+        content["language_presentation"] = {
+            "mode": "bilingual",
+            "delivery": "same_page",
+            "logical_page_id": "P6",
+            "peer_page_id": None,
+            "pairing": "paired",
+            "pairs": [
+                {
+                    "primary": "一个品牌、一个公司",
+                    "secondary": "One Brand, One Company",
+                }
+            ],
+        }
+
+        result, _, _, content_output, _, _ = self.run_normalizer(
+            content, self.base_layout()
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        normalized = json.loads(content_output.read_text(encoding="utf-8"))
+        self.assertEqual(
+            normalized["language_presentation"],
+            content["language_presentation"],
+        )
+
+        invalid = copy.deepcopy(content)
+        invalid["language_presentation"]["pairs"][0]["secondary"] = (
+            "Unauthorized English"
+        )
+        result, *_ = self.run_normalizer(invalid, self.base_layout())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("必须同时存在", result.stderr)
 
     def test_invalid_free_topology_is_not_mapped(self) -> None:
         layout = self.base_layout()
