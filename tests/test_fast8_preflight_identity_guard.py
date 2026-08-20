@@ -58,6 +58,39 @@ class Fast8PreflightIdentityGuardTests(unittest.TestCase):
                 init_task_dir.file_sha256(source),
             )
 
+    def test_initializer_rejects_document_as_imagegen_asset(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fast8_init_asset_guard_") as temp:
+            root = Path(temp).resolve()
+            document = root / "trend.pdf"
+            manifest = root / "preflight.json"
+            document.write_bytes(b"%PDF-1.4\n%%EOF\n")
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "fast8_preflight_manifest_version": 1,
+                        "run_mode": "fast_8x1_diverse",
+                        "task_name": "P23_8x1_20260819_guard",
+                        "timestamp_policy": "script_owned",
+                        "request_started_at": "2026-08-19T12:00:00+08:00",
+                        "page_ids": ["P23"],
+                        "required_files": [],
+                        "optional_files": [],
+                        "asset_items": [
+                            {"path": str(document), "role": "required_chart_source"}
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(SystemExit) as context:
+                init_task_dir.validate_fast8_preflight_manifest(
+                    manifest, "P23_8x1_20260819_guard"
+                )
+
+            self.assertIn("只接受 PNG/JPG/JPEG/WEBP", str(context.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

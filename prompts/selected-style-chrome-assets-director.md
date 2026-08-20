@@ -32,7 +32,7 @@
 
 当 `global_chrome_authorized=true` 时，`global_chrome_contract_raw.authorization` 必须是对象 `{"status":"authorized","basis":"<冻结来源证据>"}`；`deck_title_system` 必须同时提供显式 `scope`、`logo.required`、`main_title.required`、`subtitle_policy`，以及语义一致且各自非空的短模块 `prompt_briefs.zh` 与 `prompt_briefs.en`。两条 brief 都控制在 1–360 字符。缺少任一必填字段会在生图前阻断，因此一次写全，不用根任务或脚本补写。
 
-`shared_required_assets` 只放确实适用于全部目标页的资产声明；逐页资产写入对应 `required_page_assets`，不得跨页广播。用户或冻结来源要求某项资产用于一页时，该页的正式任务必须保留它；不得仅因审美、对比度、背景明暗或锚点风格自行省略，必要时让页面为资产增加合适承载底。真正要出现在成图中的 Logo、产品图、授权现场图等声明为 `render_asset`，且必须是现存光栅图片；旧片截图、旧架构图、旧组织图等只供事实提取的材料声明为 `planning_evidence`，绝不能作为 ImageGen raster 附件。案例照片、地图、产品图、工程图和 Logo 不得伪装成 style reference。不要写 style anchors；锚点及 `raster|text_family` 由视觉导演决定。每页尽量把事实/品牌必要渲染资产收敛到 5 附件预算内，但不要为了额度丢弃必要资产；最终去重、global chrome 投影和 cap5 由 `prepare-directors` 处理。
+`shared_required_assets` 只放确实适用于全部目标页的资产声明；逐页资产写入对应 `required_page_assets`，不得跨页广播。用户或冻结来源要求某项资产用于一页时，该页的正式任务必须保留它；不得仅因审美、对比度、背景明暗或锚点风格自行省略，必要时让页面为资产增加合适承载底。真正要出现在成图中的 Logo、产品图、授权现场图等声明为 `render_asset`，且必须是现存光栅图片。若冻结来源明确指定 PDF/PPT/PPTX/文档某页、网页视口或其他非光栅视觉，先按 `references/视觉资产解析与冻结.md` 调用共享 materializer 输出到 `<project_dir>/references/materialized_assets/`；只把返回的 `output_path` 声明为 `render_asset`，并把 `.materialization.json` 回执另列为 `planning_evidence`，不占图片附件预算。旧片截图、旧架构图、旧组织图等只供事实提取的材料声明为 `planning_evidence`，绝不能作为 ImageGen raster 附件。案例照片、地图、产品图、工程图和 Logo 不得伪装成 style reference。不要写 style anchors；锚点及 `raster|text_family` 由视觉导演决定。每页尽量把事实/品牌必要渲染资产收敛到 5 附件预算内，但不要为了额度丢弃必要资产；最终去重、global chrome 投影和 cap5 由 `prepare-directors` 处理。
 
 完成后只返回输出路径、是否授权 global chrome、逐页资产数量和任何真实缺失资产。
 ```

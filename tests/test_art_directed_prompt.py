@@ -60,6 +60,107 @@ def add_valid_spatial_topologies(styles: dict[str, dict[str, object]]) -> None:
 
 
 class ArtDirectedPromptTest(unittest.TestCase):
+    def test_split_bilingual_bundle_requires_reciprocal_zh_en_peers(self) -> None:
+        pages = {
+            "09-ZH": {
+                "page_id": "09-ZH",
+                "language_presentation": {
+                    "mode": "zh_only",
+                    "delivery": "split_peer",
+                    "logical_page_id": "09",
+                    "peer_page_id": "09-EN",
+                    "pairing": "none",
+                    "pairs": [],
+                },
+            },
+            "09-EN": {
+                "page_id": "09-EN",
+                "language_presentation": {
+                    "mode": "en_only",
+                    "delivery": "split_peer",
+                    "logical_page_id": "09",
+                    "peer_page_id": "09-ZH",
+                    "pairing": "none",
+                    "pairs": [],
+                },
+            },
+        }
+        for page_id, page in pages.items():
+            pipeline.validate_language_presentation(page, page_id)
+        pipeline.validate_language_presentation_bundle(pages, "test")
+
+        missing_peer = {"09-ZH": pages["09-ZH"]}
+        with self.assertRaisesRegex(SystemExit, "缺少兄弟物理页"):
+            pipeline.validate_language_presentation_bundle(missing_peer, "test")
+
+    def test_bilingual_pairs_must_be_authorized_exact_copy(self) -> None:
+        valid = {
+            "title": "全球团队",
+            "display_required": ["One Global Team"],
+            "language_presentation": {
+                "mode": "bilingual",
+                "pairing": "paired",
+                "pairs": [
+                    {"primary": "全球团队", "secondary": "One Global Team"}
+                ],
+            },
+        }
+        pipeline.validate_language_presentation(valid, "test")
+
+        invalid = json.loads(json.dumps(valid, ensure_ascii=False))
+        invalid["language_presentation"]["pairs"][0]["secondary"] = "Invented English"
+        with self.assertRaisesRegex(SystemExit, "必须同时存在于"):
+            pipeline.validate_language_presentation(invalid, "test")
+
+    def test_bilingual_pairs_compile_as_one_shared_information_structure(self) -> None:
+        content = {
+            "content_contract_version": 2,
+            "prompt_contract_version": 4,
+            "language": "mixed",
+            "page_id": "10",
+            "title": "项目管理，把全球资源转化为可预测的交付",
+            "display_required": [
+                "全球团队",
+                "One Global Team",
+                "管理节奏",
+                "One Operating Rhythm",
+            ],
+            "display_flexible": [],
+            "language_presentation": {
+                "mode": "bilingual",
+                "pairing": "paired",
+                "pairs": [
+                    {"primary": "全球团队", "secondary": "One Global Team"},
+                    {"primary": "管理节奏", "secondary": "One Operating Rhythm"},
+                ],
+            },
+            "prompt_semantic_guardrails": [],
+            "prompt_user_constraints": [],
+            "spatial_pressure_profile": "low",
+            "spatial_generation_brief": pipeline.QUICK8_BREATHING_PROMPT_CUES[
+                "zh"
+            ]["low"],
+        }
+        prompt = pipeline.compile_minimal_prompt_v4(
+            {
+                "run_mode": pipeline.SELECTED_STYLE_EXPANSION_MODE,
+                "tone": "light",
+                "language": "mixed",
+                "anchor_page": content,
+                "layout_direction": {
+                    "layout_contract_version": pipeline.SELECTED_STYLE_LAYOUT_VERSION
+                },
+                "reference_images": [],
+                "required_assets": [],
+            }
+        )
+
+        self.assertIn("Language presentation", prompt)
+        self.assertIn("全球团队 ⇄ One Global Team", prompt)
+        self.assertIn("管理节奏 ⇄ One Operating Rhythm", prompt)
+        self.assertIn("do not create a separate footer", prompt)
+        self.assertIn("Show only the listed authorized English copy", prompt)
+
     def test_fast8_art_direction_compiles_relationship_and_craft(self) -> None:
         with tempfile.TemporaryDirectory(prefix="shawn_art_direction_") as temp:
             root = Path(temp)

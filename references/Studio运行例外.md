@@ -16,4 +16,6 @@
 - 只在 ImageGen 明确 failed/cancelled 且没有 completed 结果时执行 `release`。claim 必须复用中央 cap5；`complete/release` 是唯一允许导入新图、写 state/handoff 或释放租约的入口。
 - completed 但根 turn 看不到 `savedPath` 时，不得猜路径或 release；返回 host-finalize marker，由宿主把实际观察到的唯一 completed `savedPath` 交给同一个 canonical `complete`。
 - 不打开结果，不调用 `generatedImage(...)` 或 `image(...)`，不覆盖父图，不修改 selection，不增加 Judge/Reviewer，不把图片块带回对话。
+- 父图同时是本次编辑的视觉定位图；除非用户明确要求改变背景色调，编辑提示必须保持父图的主画布背景 tone，不把单图编辑变成深浅背景重探索。
+- 用户额外指定 PDF/PPT/文档页、网页或其他非光栅视觉参考时，先按 `视觉资产解析与冻结.md` 使用 Skill 的共享 materializer；Studio 只负责把上传文件或 URL 交给 Skill，不自行维护第二套转换逻辑。父图本身不转换、不复制。
 - 没有精确 transport 标记时，单图修改仍由图片执行子 Agent承载。

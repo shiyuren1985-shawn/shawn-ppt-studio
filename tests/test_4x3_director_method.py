@@ -115,6 +115,11 @@ class FourByThreeDirectorMethodTest(unittest.TestCase):
                 "four_by_three_visual_system_version": 1,
                 "page_order": self.pages,
                 "anchor_page_id": "02",
+                "background_tone_policy": {
+                    "mode": "uniform",
+                    "tone": "light",
+                    "source": "primary_style_reference",
+                },
                 "creative_intents": {
                     page: creative_intent(page) for page in self.pages
                 },
@@ -160,6 +165,11 @@ class FourByThreeDirectorMethodTest(unittest.TestCase):
     def test_three_director_merge_and_family_projection_reach_followers(self) -> None:
         merged = self.merge_inputs()
         self.assertEqual(merged["page_order"], self.pages)
+        tone_state = pipeline.read_json(self.fixture.state_path)
+        self.assertEqual(
+            tone_state["tone_overrides"],
+            {style: "light" for style in "ABCD"},
+        )
         self.reseal_source()
         self.fixture.prepare_anchors()
         state = pipeline.read_json(self.fixture.state_path)
@@ -467,6 +477,19 @@ class FourByThreeDirectorMethodTest(unittest.TestCase):
         self.assertIn("不建立评分器", contract)
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("references/4x3运行合同.md", skill)
+
+    def test_fast8_preflight_enumerates_only_current_page_required_assets(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        fast8 = (ROOT / "references" / "Fast8准备与派发.md").read_text(
+            encoding="utf-8"
+        )
+        for text in (skill, fast8):
+            self.assertIn("冻结前输入枚举", text)
+            self.assertIn("页级资产索引", text)
+            self.assertIn("不扫描其他页面", text)
+        self.assertIn("第一项状态写入", fast8)
+        self.assertIn("不启动 Director/Reviewer", fast8)
+        self.assertIn("全部必用图片", fast8)
 
     def test_new_run_does_not_reuse_director_agent_conversations(self) -> None:
         contract = (ROOT / "references" / "4x3运行合同.md").read_text(

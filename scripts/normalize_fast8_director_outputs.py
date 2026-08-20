@@ -47,11 +47,12 @@ CONTENT_REQUIRED = {
     "prompt_user_constraints",
     "content_resolution",
 }
-CONTENT_ALLOWED = CONTENT_REQUIRED | set(CONTENT_VERSIONS)
+CONTENT_ALLOWED = CONTENT_REQUIRED | set(CONTENT_VERSIONS) | {"language_presentation"}
 LAYOUT_ALLOWED = {
     *LAYOUT_VERSIONS,
     "page_id",
     "director_rationale",
+    "background_tone_policy",
     "styles",
     "directions",
 }
@@ -147,6 +148,7 @@ def normalize_content(raw: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
             "not_needed|confirmed|needs_user_decision；不会猜测近义值"
         )
     require_nonempty_string(resolution.get("reason"), "content_resolution.reason")
+    pipeline.validate_language_presentation(raw, "content_contract")
     normalized = copy.deepcopy(raw)
     changes: list[dict[str, Any]] = []
     for field, fixed in CONTENT_VERSIONS.items():
@@ -228,6 +230,15 @@ def normalize_layout(raw: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str
     require_nonempty_string(
         normalized.get("director_rationale"), "layout_portfolio.director_rationale"
     )
+    if "background_tone_policy" in normalized:
+        # Validate the small run-level decision without changing it.
+        scratch: dict[str, Any] = {}
+        pipeline.apply_background_tone_policy(
+            scratch,
+            normalized["background_tone_policy"],
+            STYLES,
+            label="layout_portfolio.background_tone_policy",
+        )
     for style in STYLES:
         validate_style(style, styles[style])
     for field, fixed in LAYOUT_VERSIONS.items():

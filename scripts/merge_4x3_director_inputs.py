@@ -302,6 +302,13 @@ def merge_bundle(
     portfolio = validate_layout_portfolio(
         visual_system.get("layout_portfolio"), expected_pages[0]
     )
+    if pc.apply_background_tone_policy(
+        state,
+        visual_system.get("background_tone_policy"),
+        STYLES,
+        label="visual_system.background_tone_policy",
+    ):
+        pc.atomic_write_json(state_path, state)
     pc.atomic_write_json(layout_output_path, portfolio)
     return {
         "status": "ok",

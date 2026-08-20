@@ -514,6 +514,9 @@ def prepare_directors(state_path: Path) -> dict[str, Any]:
     if visual_raw.get("selected_style_visual_plan_version") != VISUAL_PLAN_VERSION:
         raise SystemExit("visual_family_plan.raw.json 版本必须为 1")
     content_pages = exact_page_map(content_raw.get("pages"), page_order, "content pages")
+    pc.validate_language_presentation_bundle(
+        content_pages, "selected-style content pages"
+    )
     chrome_contract_path = normalize_global_chrome_from_assets(
         assets_raw=assets_raw,
         content_pages=content_pages,

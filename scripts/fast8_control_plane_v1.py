@@ -261,6 +261,25 @@ def prepare_director_inputs(state_path: Path) -> dict[str, Any]:
             "style_job_count": 0,
         }
 
+    try:
+        normalized_layout = pc.read_json(paths["layout_normalized"])
+        current_state = pc.read_json(state_path)
+        if pc.apply_background_tone_policy(
+            current_state,
+            normalized_layout.get("background_tone_policy"),
+            tuple("ABCDEFGH"),
+            label="layout_portfolio.background_tone_policy",
+        ):
+            pc.atomic_write_json(state_path, current_state)
+    except SystemExit as exc:
+        return {
+            "status": "failed",
+            "failed_stage": "background_tone_policy",
+            "error": str(exc),
+            "stages": stages,
+            "style_job_count": 0,
+        }
+
     started = time.perf_counter()
     merged, error = _run_small_json_command(
         [

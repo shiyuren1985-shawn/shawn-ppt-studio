@@ -214,6 +214,27 @@ class Fast8PipelineTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_explicit_preflight_tone_override_outranks_reference_policy(self) -> None:
+        state = pipeline.read_json(self.state_path)
+        state["tone_overrides"] = {style: "dark" for style in pipeline.QUICK_STYLES}
+
+        changed = pipeline.apply_background_tone_policy(
+            state,
+            {
+                "mode": "uniform",
+                "tone": "light",
+                "source": "primary_style_reference",
+            },
+            pipeline.QUICK_STYLES,
+            label="test.background_tone_policy",
+        )
+
+        self.assertFalse(changed)
+        self.assertEqual(
+            state["tone_overrides"],
+            {style: "dark" for style in pipeline.QUICK_STYLES},
+        )
+
     def test_required_assets_file_normalizes_v1_director_envelope(self) -> None:
         light_logo = self.root / "fixtures" / "director_light.png"
         evidence = self.root / "fixtures" / "director_evidence.png"

@@ -14,6 +14,7 @@
 
 一次完成并用 apply_patch 只写 `content_contract.json`。这是精简事实合同，必须包含且只需判断以下字段：
 - `content_contract_version=2`、`prompt_contract_version=4`、`page_id`、`language`；
+- 可选 `language_presentation={mode,delivery,logical_page_id,peer_page_id,pairing,pairs}`；同页双语只用 `delivery=same_page`，单语只用 `delivery=single`；`split_zh_en` 逻辑页的一次 Fast8 只接收一个已投影语言变体；
 - `source_facts`：完整事实、来源和状态边界；
 - `display_required`、`display_flexible`、`display_supporting`；
 - 不超过 320 字的 `flexible_story` 与 `information_density_target=low|medium|high`；
@@ -23,7 +24,7 @@
 
 原文优先：大纲中的表达已经清楚、自然时，保留原有措辞和语气，不要为了显得更专业而重新改写。只有为去除重复、压缩过长内容或修正明显不通顺时才轻度改写；使用业务人员会直接说出口的简洁表达，少用抽象名词堆叠，不写“先……再……最后……”等导演式叙述。`flexible_story` 只概括本页必须传达的含义，不新增口号、观点或结论。
 
-语言按当前页编译：只有“用户当前要求”明确提出中英双语或 bilingual，才启用 `bilingual-if-available`。若本页来源明确提供并授权上屏的 English Display Copy、English Title 或同类英文层，把中文主层和该英文辅助层一起写入显示义务并使用 `language=mixed`，不得把本页全部已授权英文漏掉。若本页没有现成英文层，保持本页源文继续，不翻译、不报错、不写 `needs_user_decision`。未明确要求双语时，不激活来源中标注“仅双语模式”的条件字段；仅含 FEED、MAC 等英文术语或最后得到 `mixed` 都不能反推双语请求。页面级明确指定语言时，以该页指定为准；不得借用其他页英文。
+语言只按当前页冻结投影编译，不回读完整多语言大纲。同页双语使用 `delivery=same_page`，只编译获授权 `pairs` 并保持中英相邻。单语使用 `delivery=single`。若逻辑页规定 `split_zh_en`，一次 Fast8 只能探索中文或英文一个已投影变体，不能把两个变体塞入同一个内容合同。不得临场翻译，也不得借用其他页、兄弟页或锚点文案。
 
 不要生成 `relationship_thesis`、`visual_quality_intent`、`visual_support_goal`、`craft_ambition`、`creative_freedom`、`content_load_review`、任何 `spatial_*` 字段或 `overall_requirements.txt`。前四项由 sol/high 视觉导演负责；空间字段、负载 QA 摘要和总体要求由合并脚本确定性投影。不要把目标、占位符或当前业务主张伪装成外部验证事实。
 
