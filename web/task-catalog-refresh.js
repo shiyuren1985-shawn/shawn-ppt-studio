@@ -11,7 +11,6 @@ function taskDeckId(task) {
 export function createTaskCatalogRefreshTracker({ refreshCatalog } = {}) {
   if (typeof refreshCatalog !== "function") throw new TypeError("refreshCatalog is required");
 
-  let initialized = false;
   let previousStatuses = new Map();
   const pendingDeckIds = new Set();
 
@@ -23,17 +22,11 @@ export function createTaskCatalogRefreshTracker({ refreshCatalog } = {}) {
       if (id) nextStatuses.set(id, String(task?.status || ""));
     }
 
-    if (!initialized) {
-      initialized = true;
-      previousStatuses = nextStatuses;
-      return [];
-    }
-
     const newlyCompletedDeckIds = [...new Set(normalized
       .filter((task) => String(task?.status || "") === COMPLETED_STATUS)
       .filter((task) => {
         const id = taskId(task);
-        return id && previousStatuses.has(id) && previousStatuses.get(id) !== COMPLETED_STATUS;
+        return id && previousStatuses.get(id) !== COMPLETED_STATUS;
       })
       .map(taskDeckId)
       .filter(Boolean))];

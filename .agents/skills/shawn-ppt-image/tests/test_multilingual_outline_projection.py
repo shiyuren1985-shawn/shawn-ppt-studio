@@ -17,6 +17,13 @@ class MultilingualOutlineProjectionTest(unittest.TestCase):
     @staticmethod
     def outline() -> str:
         return (
+            "---\n"
+            "slide_identity_required: true\n"
+            "deck_uid: TEST_MULTILINGUAL_DECK\n"
+            "slide_uids:\n"
+            "  P2: TEST_PAGE_TWO\n"
+            "  P9: TEST_PAGE_NINE\n"
+            "---\n"
             "# Unified outline\n\n"
             "| 页码 | 客户钩子／页面标题 | 核心命题 | 信息密度／上屏层级 | 页面必讲内容 | English Page Content | 双语交付策略 | 同页双语配对 | 视觉表达目标／用户硬约束 |\n"
             "|---|---|---|---|---|---|---|---|---|\n"
@@ -163,6 +170,13 @@ class MultilingualOutlineProjectionTest(unittest.TestCase):
             payload = json.loads(init.stdout)
             state = json.loads(Path(payload["state"]).read_text(encoding="utf-8"))
             self.assertEqual(state["page_order"], ["02", "09-ZH", "09-EN"])
+            task_init = json.loads(
+                Path(payload["task_init_contract"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                task_init["slide_identity_file"]["path"],
+                str((root / "outline.md").resolve()),
+            )
 
     def test_split_scope_does_not_treat_siblings_as_logical_page_leak(self) -> None:
         with tempfile.TemporaryDirectory(prefix="multilingual_split_scope_") as temp:

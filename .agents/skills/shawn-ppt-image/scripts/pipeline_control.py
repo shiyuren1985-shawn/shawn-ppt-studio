@@ -4621,12 +4621,25 @@ def slide_identity_from_file(
                     raise SystemExit(f"UID 文件的 deck_uid/slide_uids 不完整：{path}")
                 return validate_slide_identity(deck_uid, raw_map, page_ids, path)
             authoritative = value.get("authoritative_source")
+            if not isinstance(authoritative, dict):
+                authoritative = value.get("authoritative_outline")
             authoritative_path = (
                 authoritative.get("path") if isinstance(authoritative, dict) else None
             )
             if isinstance(authoritative_path, str) and authoritative_path.strip():
+                authoritative_file = Path(authoritative_path).expanduser().resolve()
+                expected_sha256 = authoritative.get("sha256")
+                if (
+                    isinstance(expected_sha256, str)
+                    and expected_sha256
+                    and authoritative_file.is_file()
+                    and file_sha256(authoritative_file) != expected_sha256
+                ):
+                    raise SystemExit(
+                        f"语言投影引用的权威大纲已变化：{authoritative_file}"
+                    )
                 nested = slide_identity_from_file(
-                    Path(authoritative_path), page_ids, visited=visited
+                    authoritative_file, page_ids, visited=visited
                 )
                 if nested is not None:
                     return nested
@@ -4672,6 +4685,15 @@ def validate_slide_identity(
     naming_warnings: list[str] = []
     if re.search(r"\d", deck_uid):
         naming_warnings.append("deck_uid 含数字，建议改用简短内容描述以免与页码混淆")
+    def identity_page_key(value: Any) -> str:
+        match = re.fullmatch(
+            r"(?i)(?:p(?:age)?|slide)?[-_ ]*0*(\d+)(?:[-_ ](?:zh|en))?",
+            str(value).strip(),
+        )
+        if match:
+            return f"page:{int(match.group(1))}"
+        return canonical_page_id(value)
+
     normalized: dict[str, str] = {}
     for raw_page_id, raw_slide_uid in raw_map.items():
         if not isinstance(raw_slide_uid, str) or not raw_slide_uid.strip():
@@ -4681,7 +4703,7 @@ def validate_slide_identity(
             naming_warnings.append(
                 f"slide_uid 含数字，建议改用简短内容描述以免与页码混淆：{slide_uid}"
             )
-        key = canonical_page_id(raw_page_id)
+        key = identity_page_key(raw_page_id)
         if key in normalized:
             raise SystemExit(f"UID 大纲存在重复语义页码：{raw_page_id}")
         normalized[key] = slide_uid
@@ -4689,7 +4711,7 @@ def validate_slide_identity(
         raise SystemExit(f"UID 大纲存在重复 slide_uid：{source_path}")
     projected: dict[str, str] = {}
     for page_id in page_ids:
-        slide_uid = normalized.get(canonical_page_id(page_id))
+        slide_uid = normalized.get(identity_page_key(page_id))
         if slide_uid is None:
             raise SystemExit(f"UID 大纲缺少正式页面 {page_id} 的 slide_uid：{source_path}")
         projected[str(page_id)] = slide_uid

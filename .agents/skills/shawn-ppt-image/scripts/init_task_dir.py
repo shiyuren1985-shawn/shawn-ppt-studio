@@ -1155,6 +1155,10 @@ def main() -> int:
                 "新运行不接受独立 slide identity 文件；"
                 "请把 deck_uid/slide_uids 直接写入权威原大纲"
             )
+        explicit_slide_identity = {
+            "path": str(identity_path),
+            "sha256": file_sha256(identity_path),
+        }
     manifest_slide_identity = (
         preflight_manifest.get("slide_identity_file")
         if isinstance(preflight_manifest, dict)
@@ -1169,6 +1173,13 @@ def main() -> int:
             "--slide-identity-file 与 Fast8 预备清单中的 slide_identity_file 不一致"
         )
     effective_slide_identity = explicit_slide_identity or manifest_slide_identity
+    if expansion_mode and effective_slide_identity is None:
+        source_identity = pipeline.slide_identity_from_file(source_file, page_ids)
+        if source_identity is not None:
+            effective_slide_identity = {
+                "path": source_identity["source_path"],
+                "sha256": source_identity["source_sha256"],
+            }
     overview_python: Path | None = overview_python if expansion_mode else None
     preflight_resolved_at: str | None = (
         preflight_resolved_at if expansion_mode else None

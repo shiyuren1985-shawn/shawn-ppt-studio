@@ -316,6 +316,30 @@ class SelectedStyleInitializerTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("不接受独立 slide identity 文件", result.stderr)
 
+    def test_freezes_identity_when_the_authoritative_source_is_passed_explicitly(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="selected_style_same_identity_") as temp:
+            root = Path(temp)
+            source = root / "outline.md"
+            source.write_text(
+                "---\nslide_identity_required: true\ndeck_uid: EPC_测试\n"
+                "slide_uids:\n  P2: EPC_页面二\n  P10: EPC_页面十\n---\n"
+                "# P02\nTwo\n\n# P10\nTen\n",
+                encoding="utf-8",
+            )
+            primary = root / "primary.png"
+            primary.write_bytes(b"primary")
+            overview_python = self.fake_pillow_python(root)
+            result = self.run_init(
+                *self.base_args(root, source, primary, overview_python),
+                "--slide-identity-file", str(source.resolve()),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            task_init = json.loads(
+                Path(payload["task_init_contract"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(task_init["slide_identity_file"]["path"], str(source.resolve()))
+
     def test_does_not_auto_discover_identity_sidecar_for_selected_style(self) -> None:
         with tempfile.TemporaryDirectory(prefix="selected_style_identity_auto_") as temp:
             root = Path(temp)

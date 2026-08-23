@@ -7,7 +7,7 @@ function task(taskId, deckId, status) {
   return { task_id: taskId, deck_id: deckId, status };
 }
 
-test("refreshes each affected deck once when an observed task completes", async () => {
+test("refreshes each affected deck once, including tasks first observed after completion", async () => {
   const refreshed = [];
   const observe = createTaskCatalogRefreshTracker({
     refreshCatalog: async (deckId) => refreshed.push(deckId),
@@ -17,24 +17,24 @@ test("refreshes each affected deck once when an observed task completes", async 
     task("fast8-a", "deck-a", "generating"),
     task("fast8-b", "deck-a", "preparing"),
     task("old", "deck-b", "completed"),
-  ]), []);
-  assert.deepEqual(refreshed, [], "initial history must not trigger a bulk rescan");
+  ]), ["deck-b"]);
+  assert.deepEqual(refreshed, ["deck-b"], "late completion must repair a stale selector catalog");
 
   assert.deepEqual(await observe([
     task("fast8-a", "deck-a", "completed"),
     task("fast8-b", "deck-a", "completed"),
     task("old", "deck-b", "completed"),
   ]), ["deck-a"]);
-  assert.deepEqual(refreshed, ["deck-a"]);
+  assert.deepEqual(refreshed, ["deck-b", "deck-a"]);
 
   assert.deepEqual(await observe([
     task("fast8-a", "deck-a", "completed"),
     task("fast8-b", "deck-a", "completed"),
   ]), []);
-  assert.deepEqual(refreshed, ["deck-a"], "completed tasks must not refresh repeatedly");
+  assert.deepEqual(refreshed, ["deck-b", "deck-a"], "completed tasks must not refresh repeatedly");
 });
 
-test("does not refresh failed tasks or tasks first seen after completion", async () => {
+test("does not refresh failed tasks and does refresh a late completed task", async () => {
   const refreshed = [];
   const observe = createTaskCatalogRefreshTracker({
     refreshCatalog: async (deckId) => refreshed.push(deckId),
@@ -44,8 +44,8 @@ test("does not refresh failed tasks or tasks first seen after completion", async
   assert.deepEqual(await observe([
     task("failed", "deck-a", "failed"),
     task("late-history", "deck-b", "completed"),
-  ]), []);
-  assert.deepEqual(refreshed, []);
+  ]), ["deck-b"]);
+  assert.deepEqual(refreshed, ["deck-b"]);
 });
 
 test("retries a completed task catalog when the first refresh fails", async () => {
