@@ -48,9 +48,10 @@ class MediaIsolationContractTests(unittest.TestCase):
         self.assertIn("子 Agent 可以读取任务明确列出的本地图片", worker_text)
         self.assertIn('"suspect_paths"', worker_text)
         self.assertIn("图片检查与主对话负载控制", global_agents_text)
-        self.assertIn("子 Agent 不受上述图片载荷限制", global_agents_text)
+        self.assertIn("隔离的子 Agent", global_agents_text)
+        self.assertIn("子 Agent 可以按任务需要使用图片工具", global_agents_text)
         self.assertIn("includeOutputs=false", global_agents_text)
-        self.assertIn("不限制子 Agent 的正常工作", global_agents_text)
+        self.assertIn("不得因为主对话的负载规则削弱", global_agents_text)
 
     def test_imagegen_wrappers_never_emit_generated_image_blocks(self) -> None:
         fast8_script = (SKILL_ROOT / "scripts" / "fast8_control_plane_v1.py").read_text(

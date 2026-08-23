@@ -46,7 +46,7 @@
         <div class="top-actions">
           <div class="task-center">
             <button class="task-center-button" id="task-center-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="task-center-popover">
-              <span>任务</span><span class="task-count" id="task-count" hidden>0</span>
+              <span>作图任务</span><span class="task-count" id="task-count" hidden>0</span>
             </button>
             <div class="task-center-popover" id="task-center-popover" role="dialog" aria-label="作图任务" hidden>
               <div class="task-center-heading"><div><strong>作图任务</strong><span id="task-center-summary">正在读取…</span></div><button class="task-close" id="task-center-close" type="button" aria-label="关闭任务中心">×</button></div>
@@ -192,8 +192,15 @@
       <div class="drawer-header"><div><h2>历史对话</h2><p>这套 PPT 的对话都会自动保存</p></div><button class="icon-button light" id="close-conversation-drawer" type="button" aria-label="关闭历史对话">×</button></div>
       <button class="primary-button full-width" id="drawer-new-conversation" data-testid="new-conversation" type="button">新建对话</button>
       <div class="conversation-list" id="conversation-list" data-testid="conversation-list"></div>
+      <button class="conversation-archive-toggle" id="conversation-archive-toggle" type="button" aria-expanded="false">已删除对话 <span id="conversation-archive-count">0</span></button>
+      <div class="conversation-archive-list" id="conversation-archive-list" hidden></div>
     </aside>
     <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+
+    <div class="conversation-context-menu" id="conversation-context-menu" role="menu" hidden>
+      <button id="conversation-context-rename" type="button" role="menuitem">重命名</button>
+      <button id="conversation-context-delete" class="danger-menu-item" type="button" role="menuitem">删除对话</button>
+    </div>
 
     <dialog class="image-dialog" id="image-dialog" data-testid="image-zoom-dialog">
       <button class="dialog-close" id="image-dialog-close" type="button" aria-label="关闭大图">×</button>
@@ -234,6 +241,27 @@
         <button class="primary-button" id="studio-rules-save" type="button">保存规则</button>
       </div>
       <p class="project-dialog-status" id="studio-rules-status" role="status" hidden></p>
+    </dialog>
+
+    <dialog class="project-dialog conversation-rename-dialog" id="conversation-rename-dialog" aria-labelledby="conversation-rename-title">
+      <h2 id="conversation-rename-title">重命名对话</h2>
+      <label class="studio-rules-label" for="conversation-rename-input">对话名称</label>
+      <input id="conversation-rename-input" type="text" maxlength="80" autocomplete="off" />
+      <div class="dialog-actions">
+        <button class="secondary-button" id="conversation-rename-cancel" type="button">取消</button>
+        <button class="primary-button" id="conversation-rename-save" type="button">保存</button>
+      </div>
+      <p class="project-dialog-status" id="conversation-rename-status" role="status" hidden></p>
+    </dialog>
+
+    <dialog class="project-dialog conversation-delete-dialog" id="conversation-delete-dialog" aria-labelledby="conversation-delete-title">
+      <h2 id="conversation-delete-title">删除这个对话？</h2>
+      <p><strong id="conversation-delete-name"></strong> 将从历史列表移到“已删除对话”。大纲、图片、选稿和作图任务记录不会删除。</p>
+      <div class="dialog-actions">
+        <button class="secondary-button" id="conversation-delete-cancel" type="button">取消</button>
+        <button class="danger-button" id="conversation-delete-confirm" type="button">删除对话</button>
+      </div>
+      <p class="project-dialog-status" id="conversation-delete-status" role="status" hidden></p>
     </dialog>
 
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>

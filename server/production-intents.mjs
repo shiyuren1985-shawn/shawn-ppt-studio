@@ -9,6 +9,7 @@ import {
   verifyNativeRefs,
 } from "../integrations/shawn-single-page.mjs";
 import { HttpError } from "./errors.mjs";
+import { studioLibraryRoot } from "./studio-library.mjs";
 
 const CONTRACT_VERSION = 1;
 const LEDGER_TYPES = new Set([
@@ -192,7 +193,7 @@ export class ProductionIntentService {
     this.monitoringRoot = path.resolve(monitoringRoot);
     this.overviewPython = path.resolve(overviewPython);
     this.clock = clock;
-    this.ledgerPath = path.join(this.labRoot, "runtime", "production-intents.jsonl");
+    this.ledgerPath = path.join(studioLibraryRoot(this.labRoot), "production-intents.jsonl");
     this.records = [];
     this.sequence = 0;
     this.ready = false;

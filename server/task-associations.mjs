@@ -1,6 +1,8 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { studioLibraryRoot } from "./studio-library.mjs";
+
 const CONTRACT_VERSION = 1;
 
 function validRecord(value) {
@@ -12,12 +14,20 @@ function validRecord(value) {
     && typeof value.bound_at === "string";
 }
 
+function validImageRequest(value) {
+  return validRecord(value)
+    && typeof value.request_started_at === "string"
+    && typeof value.title === "string"
+    && typeof value.mode_hint === "string"
+    && (value.slide_uid === null || typeof value.slide_uid === "string");
+}
+
 export class TaskAssociationIndex {
   constructor({ dataRoot, clock = () => new Date().toISOString() }) {
-    this.runtimeRoot = path.join(path.resolve(dataRoot), "runtime");
+    this.runtimeRoot = studioLibraryRoot(dataRoot);
     this.path = path.join(this.runtimeRoot, "task-associations.json");
     this.clock = clock;
-    this.state = { contract_version: CONTRACT_VERSION, associations: {}, requests: {} };
+    this.state = { contract_version: CONTRACT_VERSION, associations: {}, requests: {}, image_requests: {} };
     this.ready = false;
     this.lastError = null;
     this.writeQueue = Promise.resolve();
@@ -32,8 +42,9 @@ export class TaskAssociationIndex {
       if (error?.code !== "ENOENT") throw new Error("task association index is not valid JSON");
     }
     if (parsed !== null && parsed.requests === undefined) parsed.requests = {};
+    if (parsed !== null && parsed.image_requests === undefined) parsed.image_requests = {};
     if (parsed !== null) this.#validate(parsed);
-    this.state = parsed || { contract_version: CONTRACT_VERSION, associations: {}, requests: {} };
+    this.state = parsed || { contract_version: CONTRACT_VERSION, associations: {}, requests: {}, image_requests: {} };
     this.ready = true;
     this.lastError = null;
   }
@@ -50,6 +61,14 @@ export class TaskAssociationIndex {
     const record = this.state.requests[this.#requestKey(deckUid, requestStartedAt)];
     if (!record || record.deck_uid !== deckUid) return null;
     return conversations.find((item) => item.conversation_id === record.conversation_id) || null;
+  }
+
+  imageRequests(deckUid) {
+    if (!this.ready || !deckUid) return [];
+    return Object.values(this.state.image_requests)
+      .filter((record) => record.deck_uid === deckUid)
+      .sort((left, right) => right.request_started_at.localeCompare(left.request_started_at))
+      .map((record) => ({ ...record }));
   }
 
   async remember(taskId, deckUid, conversationId) {
@@ -74,6 +93,28 @@ export class TaskAssociationIndex {
       next.requests[key] = {
         deck_uid: deckUid,
         conversation_id: conversationId,
+        bound_at: this.clock(),
+      };
+    });
+  }
+
+  async rememberImageRequest(deckUid, requestStartedAt, conversationId, {
+    title,
+    modeHint,
+    slideUid = null,
+  } = {}) {
+    if (!this.ready || !deckUid || !requestStartedAt || !conversationId || !title || !modeHint) return;
+    const key = this.#requestKey(deckUid, requestStartedAt);
+    const current = this.state.image_requests[key];
+    if (current) return;
+    return this.#mutate((next) => {
+      next.image_requests[key] = {
+        deck_uid: deckUid,
+        conversation_id: conversationId,
+        request_started_at: requestStartedAt,
+        title,
+        mode_hint: modeHint,
+        slide_uid: typeof slideUid === "string" && slideUid ? slideUid : null,
         bound_at: this.clock(),
       };
     });
@@ -118,8 +159,12 @@ export class TaskAssociationIndex {
       || !state.requests
       || typeof state.requests !== "object"
       || Array.isArray(state.requests)
+      || !state.image_requests
+      || typeof state.image_requests !== "object"
+      || Array.isArray(state.image_requests)
       || Object.entries(state.associations).some(([taskId, value]) => !taskId || !validRecord(value))
       || Object.entries(state.requests).some(([requestId, value]) => !requestId || !validRecord(value))
+      || Object.entries(state.image_requests).some(([requestId, value]) => !requestId || !validImageRequest(value))
     ) {
       throw new Error("task association index has an invalid shape");
     }

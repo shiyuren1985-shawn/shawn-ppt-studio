@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { studioLibraryRoot } from "./studio-library.mjs";
+
 const CONTRACT_VERSION = 1;
 
 function nowIso() {
@@ -19,7 +21,7 @@ function imageKey(record) {
 
 export class LabLedger {
   constructor({ labRoot, clock = nowIso }) {
-    this.runtimeRoot = path.join(path.resolve(labRoot), "runtime");
+    this.runtimeRoot = studioLibraryRoot(labRoot);
     this.path = path.join(this.runtimeRoot, "lab-ledger.jsonl");
     this.clock = clock;
     this.records = [];

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 
 import { parseOutlineText, splitTableCells } from "./discovery.mjs";
 import { HttpError } from "./errors.mjs";
+import { studioLibraryRoot } from "./studio-library.mjs";
 
 function expectedDigest(value) {
   if (typeof value !== "string") return null;
@@ -200,7 +201,7 @@ export class OutlineStore {
     if (liveDeck.outline.sha256 !== body.expectedSha256) {
       throw new HttpError(409, "outline revision changed", "outline_revision_conflict");
     }
-    const backupRoot = path.join(this.labRoot, "runtime", "outline-backups", safeName(body.deck_id));
+    const backupRoot = path.join(studioLibraryRoot(this.labRoot), "outline-backups", safeName(body.deck_id));
     await mkdir(backupRoot, { recursive: true });
     const backupPath = path.join(
       backupRoot,
@@ -310,8 +311,7 @@ export class OutlineStore {
     }
 
     const backupRoot = path.join(
-      this.labRoot,
-      "runtime",
+      studioLibraryRoot(this.labRoot),
       "outline-backups",
       safeName(body.deck_id),
     );

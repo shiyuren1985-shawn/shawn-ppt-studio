@@ -1,5 +1,14 @@
 import { constants as fsConstants } from "node:fs";
-import { copyFile, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
+import {
+  copyFile,
+  lstat,
+  mkdir,
+  open,
+  realpath,
+  rename,
+  rmdir,
+  unlink,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -188,6 +197,37 @@ async function restoreFromTrash(targetPath, sourcePath) {
   }
 }
 
+async function pruneEmptyAncestors(startPath, stopRoot) {
+  const removed = [];
+  let directory = startPath;
+  while (directory !== stopRoot && within(directory, stopRoot)) {
+    try {
+      await rmdir(directory);
+      removed.push(directory);
+    } catch (error) {
+      if (error?.code === "ENOTEMPTY") break;
+      if (error?.code !== "ENOENT") throw error;
+    }
+    directory = path.dirname(directory);
+  }
+  return removed;
+}
+
+function canonicalCleanupCatalog(catalogPath) {
+  return [
+    "handoff.json",
+    "style_run_state.json",
+    "selected_style_run_state.json",
+    "single_image_edit_state.json",
+  ].includes(path.basename(catalogPath || ""));
+}
+
+function coversPath(targetPath, targetKind, candidatePath) {
+  return targetPath === candidatePath || (
+    targetKind === "directory" && within(candidatePath, targetPath)
+  );
+}
+
 function publicCandidate(deckId, page, candidate) {
   const selectedIds = new Set(stringList(page.selected_candidate_ids));
   const candidateId = String(candidate.candidate_id || "");
@@ -292,6 +332,7 @@ export class SelectorWorkspace {
     fetchImpl = fetch,
     trashRoot = path.join(os.homedir(), ".Trash"),
     studioSelections = new StudioSelectionStore(),
+    artifactCleanupPlanner = null,
     eventLog = null,
   }) {
     this.discovery = discovery;
@@ -299,6 +340,7 @@ export class SelectorWorkspace {
     this.fetch = fetchImpl;
     this.trashRoot = path.resolve(trashRoot);
     this.studioSelections = studioSelections;
+    this.artifactCleanupPlanner = artifactCleanupPlanner;
     this.eventLog = eventLog;
     this.snapshots = new Map();
     this.candidateFiles = new Map();
@@ -524,6 +566,152 @@ export class SelectorWorkspace {
     return next;
   }
 
+  async #trashTargetsForStudio(source, verifiedSources) {
+    if (!this.artifactCleanupPlanner) {
+      return {
+        targets: verifiedSources.map((item) => ({
+          path: item.path,
+          kind: "file",
+          reason: "candidate_image",
+        })),
+        pruneChains: [],
+        strategies: [],
+      };
+    }
+    const groups = new Map();
+    for (const item of verifiedSources) {
+      const projectRoot = item.project_root || source.project_root;
+      const group = groups.get(projectRoot) || [];
+      group.push(item);
+      groups.set(projectRoot, group);
+    }
+    const targets = [];
+    const pruneChains = new Map();
+    const strategies = [];
+    for (const [projectRoot, items] of groups) {
+      const usesFormalState = items.some((item) => canonicalCleanupCatalog(
+        item.catalog_path || source.handoff_path,
+      ));
+      if (!usesFormalState) {
+        targets.push(...items.map((item) => ({
+          path: item.path,
+          kind: "file",
+          reason: "candidate_image",
+        })));
+        continue;
+      }
+      let plan;
+      try {
+        plan = await this.artifactCleanupPlanner({
+          projectRoot,
+          candidatePaths: items.map((item) => item.path),
+        });
+      } catch {
+        throw new HttpError(
+          409,
+          "无法确认这张图片的关联文件，未执行删除",
+          "candidate_cleanup_plan_failed",
+        );
+      }
+      const normalizedDeletePaths = new Set(
+        plan.delete_candidate_paths.map((item) => path.resolve(item)),
+      );
+      if (
+        !path.isAbsolute(plan.project_root || "") ||
+        path.resolve(plan.project_root) !== projectRoot ||
+        normalizedDeletePaths.size !== items.length ||
+        items.some((item) => !normalizedDeletePaths.has(item.path))
+      ) {
+        throw new HttpError(409, "关联文件清理计划不安全，未执行删除", "candidate_cleanup_plan_unsafe");
+      }
+      const plannedTargets = [];
+      for (const target of plan.targets) {
+        if (
+          !target ||
+          !["file", "directory"].includes(target.kind) ||
+          !path.isAbsolute(target.path || "")
+        ) {
+          throw new HttpError(409, "关联文件清理计划不安全，未执行删除", "candidate_cleanup_plan_unsafe");
+        }
+        const targetPath = path.resolve(target.path);
+        const targetReal = await realpath(targetPath).catch(() => null);
+        const info = targetReal ? await lstat(targetReal).catch(() => null) : null;
+        if (
+          !targetReal ||
+          targetReal !== targetPath ||
+          !within(targetReal, projectRoot) ||
+          info?.isSymbolicLink() ||
+          (target.kind === "file" && !info?.isFile()) ||
+          (target.kind === "directory" && !info?.isDirectory())
+        ) {
+          throw new HttpError(409, "关联文件清理计划不安全，未执行删除", "candidate_cleanup_plan_unsafe");
+        }
+        plannedTargets.push({
+          path: targetReal,
+          kind: target.kind,
+          reason: target.reason || "candidate_artifact",
+        });
+      }
+      if (
+        items.some((item) => !plannedTargets.some((target) => (
+          coversPath(target.path, target.kind, item.path)
+        ))) ||
+        (plan.strategy === "whole_run" && (
+          plan.retained_candidate_paths.length !== 0 ||
+          plannedTargets.length !== 1 ||
+          plannedTargets[0].kind !== "directory" ||
+          plannedTargets[0].path !== projectRoot
+        )) ||
+        (plan.strategy === "partial" && (
+          plan.retained_candidate_paths.length === 0 ||
+          plannedTargets.some((target) => target.path === projectRoot)
+        ))
+      ) {
+        throw new HttpError(409, "关联文件清理计划不安全，未执行删除", "candidate_cleanup_plan_unsafe");
+      }
+      for (const retained of plan.retained_candidate_paths) {
+        if (!path.isAbsolute(retained || "")) {
+          throw new HttpError(409, "关联文件清理计划不安全，未执行删除", "candidate_cleanup_plan_unsafe");
+        }
+        const retainedPath = path.resolve(retained);
+        const retainedReal = await realpath(retainedPath).catch(() => null);
+        if (
+          retainedReal !== retainedPath ||
+          !within(retainedPath, projectRoot) ||
+          plannedTargets.some((target) => coversPath(target.path, target.kind, retainedPath))
+        ) {
+          throw new HttpError(409, "关联文件清理计划不安全，未执行删除", "candidate_cleanup_plan_unsafe");
+        }
+      }
+      if (plan.strategy === "partial") {
+        for (const target of plannedTargets) {
+          if (target.kind !== "file") continue;
+          const start = path.dirname(target.path);
+          if (start !== projectRoot) {
+            pruneChains.set(`${start}\0${projectRoot}`, { start, stop: projectRoot });
+          }
+        }
+      }
+      targets.push(...plannedTargets);
+      strategies.push(plan.strategy);
+    }
+    const unique = new Map(targets.map((target) => [target.path, target]));
+    const deduplicated = [...unique.values()];
+    for (let left = 0; left < deduplicated.length; left += 1) {
+      for (let right = left + 1; right < deduplicated.length; right += 1) {
+        const first = deduplicated[left];
+        const second = deduplicated[right];
+        if (
+          (first.kind === "directory" && within(second.path, first.path)) ||
+          (second.kind === "directory" && within(first.path, second.path))
+        ) {
+          throw new HttpError(409, "关联文件清理计划不安全，未执行删除", "candidate_cleanup_plan_unsafe");
+        }
+      }
+    }
+    return { targets: deduplicated, pruneChains: [...pruneChains.values()], strategies };
+  }
+
   async trashCandidate(deckId, candidateId, options = {}) {
     const startedAt = Date.now();
     await this.#record("selector_trash_started", {
@@ -620,7 +808,13 @@ export class SelectorWorkspace {
         if (!allowed) {
           throw new HttpError(409, "这张图片无法移到废纸篓", "candidate_path_not_allowed");
         }
-        verifiedSources.push({ ...item, path: sourceReal });
+        verifiedSources.push({
+          ...item,
+          path: sourceReal,
+          project_root: projectReal,
+          origin_root: originReal,
+          catalog_path: catalogPath,
+        });
       }
     } else {
       const roots = allowedCandidateRoots(deck);
@@ -644,6 +838,17 @@ export class SelectorWorkspace {
         throw new HttpError(409, "这张图片无法移到废纸篓", "candidate_path_not_allowed");
       }
     }
+    const cleanup = deck.source_kind === "studio"
+      ? await this.#trashTargetsForStudio(source, verifiedSources)
+      : {
+          targets: verifiedSources.map((item) => ({
+            path: item.path,
+            kind: "file",
+            reason: "candidate_image",
+          })),
+          pruneChains: [],
+          strategies: [],
+        };
     let selectionRestoreCandidateId = candidateId;
     let studioSelectionRestore = [];
     if (current.selected) {
@@ -671,15 +876,22 @@ export class SelectorWorkspace {
         slide_uid: currentPage.slide_uid,
       });
     }
-    const orderedSources = verifiedSources.toSorted((left, right) => (
+    const orderedTargets = cleanup.targets.toSorted((left, right) => (
       Number(left.path === source.path) - Number(right.path === source.path)
     ));
     const moved = [];
+    const pruned = [];
     try {
-      for (const item of orderedSources) {
+      for (const item of orderedTargets) {
         moved.push({ source: item.path, target: await moveToTrash(item.path, this.trashRoot) });
       }
+      for (const chain of cleanup.pruneChains) {
+        pruned.push(...await pruneEmptyAncestors(chain.start, chain.stop));
+      }
     } catch {
+      for (const directory of pruned.toReversed()) {
+        await mkdir(directory, { recursive: true }).catch(() => {});
+      }
       for (const item of moved.toReversed()) {
         await restoreFromTrash(item.target, item.source).catch(() => {});
       }
@@ -712,7 +924,9 @@ export class SelectorWorkspace {
     return {
       contract_version: 1,
       deleted: true,
-      trashed_count: targets.length,
+      trashed_count: verifiedSources.length,
+      trashed_artifact_count: targets.length,
+      cleanup_strategies: cleanup.strategies,
       trashed_name: path.basename(targets[0]),
       trashed_names: targets.map((target) => path.basename(target)),
       catalog,

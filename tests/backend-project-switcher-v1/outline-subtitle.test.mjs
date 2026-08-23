@@ -75,3 +75,19 @@ identity_aliases:
   });
   assert.deepEqual(outline.identity_aliases, ["/tmp/previous-outline.md"]);
 });
+
+test("a unified multilingual outline accepts the explicit Chinese core thesis header", () => {
+  const outline = parse(`---
+deck_uid: STUDIO_MULTILINGUAL_CHINESE_HEADER_TEST
+slide_uids:
+  P1: slide-multilingual-chinese-header
+---
+
+| 页码 | 客户钩子／页面标题 | 中文核心命题 | 信息密度／上屏层级 | 页面必讲内容 | English Page Content | 双语交付策略 | 同页双语配对 | 视觉表达目标／用户硬约束 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P1 | 客户标题 | 中文命题 | 高｜一级 | 中文必讲内容 | **English Title:** Customer Title<br>**English Core Thesis:** Core thesis.<br>**English Display Content:** Required content. | **bilingual_strategy:** split_zh_en | — | 保持事实一致 |
+`);
+
+  assert.equal(outline.slides[0].multilingual.chinese.core_thesis, "中文命题");
+  assert.equal(outline.slides[0].multilingual.english_page_content.includes("<br>"), true);
+});

@@ -5,6 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { HttpError } from "./errors.mjs";
+import { studioLibraryRoot } from "./studio-library.mjs";
 
 function isInside(root, target) {
   const relative = path.relative(root, target);
@@ -13,7 +14,7 @@ function isInside(root, target) {
 
 export function createPathPolicy(labRoot) {
   const root = path.resolve(labRoot);
-  const imageRoot = path.join(root, "runtime", "images");
+  const imageRoot = path.join(studioLibraryRoot(root), "images");
   const codexGeneratedImageRoot = path.join(homedir(), ".codex", "generated_images");
   const allowedImageExtensions = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 
@@ -30,7 +31,7 @@ export function createPathPolicy(labRoot) {
     if (!isInside(imageRoot, resolved) || resolved === imageRoot) {
       throw new HttpError(
         403,
-        "image path must be below the lab runtime/images directory",
+        "image path must be below the Studio Library images directory",
         "image_path_outside_runtime",
       );
     }
@@ -49,11 +50,11 @@ export function createPathPolicy(labRoot) {
         stat(lexicalPath),
       ]);
     } catch {
-      throw new HttpError(404, "runtime image file was not found", "image_not_found");
+      throw new HttpError(404, "Studio Library image file was not found", "image_not_found");
     }
 
     if (!isInside(rootReal, targetReal) || !targetStat.isFile()) {
-      throw new HttpError(403, "runtime image must be a regular file below runtime/images", "invalid_image_file");
+      throw new HttpError(403, "Studio Library image must be a regular file", "invalid_image_file");
     }
     return targetReal;
   }

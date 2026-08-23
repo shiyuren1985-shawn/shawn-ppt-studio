@@ -125,6 +125,10 @@ export async function getConversations(deckId) {
   return readJson(await fetch(`/api/decks/${encodeURIComponent(deckId)}/conversations`, { cache: "no-store" }));
 }
 
+export async function getArchivedConversations(deckId) {
+  return readJson(await fetch(`/api/decks/${encodeURIComponent(deckId)}/conversations/archived`, { cache: "no-store" }));
+}
+
 export async function createConversation(deckId, body = {}) {
   return readJson(await fetch(`/api/decks/${encodeURIComponent(deckId)}/conversations`, {
     method: "POST",
@@ -135,6 +139,29 @@ export async function createConversation(deckId, body = {}) {
 
 export async function activateConversation(deckId, conversationId) {
   return readJson(await fetch(`/api/decks/${encodeURIComponent(deckId)}/conversations/${encodeURIComponent(conversationId)}/open`, {
+    method: "POST",
+    headers: MUTATION_HEADERS,
+    body: JSON.stringify({}),
+  }));
+}
+
+export async function renameConversation(deckId, conversationId, title) {
+  return readJson(await fetch(`/api/decks/${encodeURIComponent(deckId)}/conversations/${encodeURIComponent(conversationId)}`, {
+    method: "PATCH",
+    headers: MUTATION_HEADERS,
+    body: JSON.stringify({ title }),
+  }));
+}
+
+export async function deleteConversation(deckId, conversationId) {
+  return readJson(await fetch(`/api/decks/${encodeURIComponent(deckId)}/conversations/${encodeURIComponent(conversationId)}`, {
+    method: "DELETE",
+    headers: MUTATION_HEADERS,
+  }));
+}
+
+export async function restoreConversation(deckId, conversationId) {
+  return readJson(await fetch(`/api/decks/${encodeURIComponent(deckId)}/conversations/${encodeURIComponent(conversationId)}/restore`, {
     method: "POST",
     headers: MUTATION_HEADERS,
     body: JSON.stringify({}),

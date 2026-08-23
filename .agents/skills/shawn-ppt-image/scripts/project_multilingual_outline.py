@@ -23,7 +23,12 @@ import pipeline_control as pc
 
 HEADER_ALIASES = {
     "page_id": ("页码", "page id"),
-    "zh_title": ("客户钩子／页面标题", "中文标题", "中文页面标题"),
+    "zh_title": (
+        "客户钩子／页面标题",
+        "中文客户钩子／页面标题",
+        "中文标题",
+        "中文页面标题",
+    ),
     "zh_core": ("核心命题", "中文核心命题"),
     "density": ("信息密度／上屏层级", "信息密度"),
     "zh_content": ("页面必讲内容", "中文页面内容"),

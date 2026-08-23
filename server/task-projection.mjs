@@ -310,10 +310,20 @@ export class TaskProjection {
           internal.push(...await this.#scanRoot({ deck, root, conversations, byThread, active, codexInteraction, now }));
           internal.push(...await this.#scanPreflightRoot({ deck, root, conversations, active, codexInteraction, now }));
         }
+        internal.push(...this.#imageRequestTasks({ deck, conversations, codexInteraction, now }));
       }
       const deduped = [...new Map(internal.map((task) => [task.task_id, task])).values()];
-      const formalRequests = deduped.filter((task) => task.sourceKind === "state" && task.requestStartedMs);
-      const withoutSupersededPreflights = deduped.filter((task) => {
+      const formalImageTasks = deduped.filter((task) => task.sourceKind !== "request");
+      const withoutBoundRequests = deduped.filter((task) => {
+        if (task.sourceKind !== "request") return true;
+        return !formalImageTasks.some((formal) => {
+          if (formal.deck_id !== task.deck_id || formal.conversation_id !== task.conversation_id) return false;
+          const formalStartedMs = formal.requestStartedMs || formal.startedMs || formal.updatedMs;
+          return Math.abs(formalStartedMs - task.requestStartedMs) <= this.associationGraceMs;
+        });
+      });
+      const formalRequests = withoutBoundRequests.filter((task) => task.sourceKind === "state" && task.requestStartedMs);
+      const withoutSupersededPreflights = withoutBoundRequests.filter((task) => {
         if (task.sourceKind !== "preflight" || !task.requestStartedMs) return true;
         return !formalRequests.some((formal) => (
           formal.deck_id === task.deck_id
@@ -351,6 +361,7 @@ export class TaskProjection {
         turnId: _turnId,
         sourceKind: _sourceKind,
         requestStartedMs: _requestStartedMs,
+        startedMs: _startedMs,
         ...task
       }) => task);
       const payload = {
@@ -370,6 +381,61 @@ export class TaskProjection {
 
   interruptTarget(taskId) {
     return this.targets.get(taskId) || null;
+  }
+
+  #imageRequestTasks({ deck, conversations, codexInteraction, now }) {
+    const requests = this.associations?.imageRequests?.(deck.deck_uid) || [];
+    return requests.map((request) => {
+      const conversation = conversations.find(
+        (candidate) => candidate.conversation_id === request.conversation_id,
+      );
+      if (!conversation) return null;
+      const requestStartedMs = asTime(request.request_started_at);
+      if (!requestStartedMs) return null;
+      const turnId = codexInteraction?.activeTurn?.(conversation.thread_id) || null;
+      const latest = codexInteraction?.latestTurn?.(conversation.thread_id) || null;
+      const justSubmitted = now - requestStartedMs < 60_000;
+      let status = "preparing";
+      let statusLabel = "准备中";
+      if (!turnId && !justSubmitted) {
+        status = "attention";
+        statusLabel = latest?.status === "interrupted"
+          ? "任务已停止"
+          : latest?.status === "failed" ? "任务需要查看" : "尚未建立正式作图任务";
+      }
+      const slide = deck.slides.find((candidate) => candidate.slide_uid === request.slide_uid) || null;
+      const updatedMs = Math.max(
+        requestStartedMs,
+        latest?.completedAtMs || 0,
+        latest?.startedAtMs || 0,
+      );
+      return {
+        task_id: idFor(deck.deck_id, request.request_started_at, "image-request"),
+        deck_id: deck.deck_id,
+        deck_label: deck.label,
+        conversation_id: conversation.conversation_id,
+        slide_uid: slide?.slide_uid || request.slide_uid || null,
+        page_label: slide?.page_label || null,
+        title: request.title,
+        mode: request.mode_hint,
+        status,
+        status_label: statusLabel,
+        completed_units: 0,
+        total_units: null,
+        progress_percent: null,
+        pending_approval_count: 0,
+        elapsed_seconds: Math.max(0, Math.round((now - requestStartedMs) / 1000)),
+        updated_at: new Date(updatedMs).toISOString(),
+        can_stop: Boolean(turnId),
+        can_open_conversation: true,
+        updatedMs,
+        startedMs: requestStartedMs,
+        threadId: conversation.thread_id,
+        turnId,
+        sourceKind: "request",
+        requestStartedMs,
+      };
+    }).filter(Boolean);
   }
 
   async #scanPreflightRoot({ deck, root, conversations, active, codexInteraction, now }) {
@@ -656,6 +722,7 @@ export class TaskProjection {
           can_stop: Boolean(turnId),
           can_open_conversation: Boolean(conversation),
           updatedMs,
+          startedMs: startMs,
           threadId: conversation?.thread_id || null,
           turnId: turnId || null,
           sourceKind: "state",

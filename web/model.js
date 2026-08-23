@@ -38,6 +38,20 @@ export function normalizeDecks(payload) {
     }));
 }
 
+export function normalizeUnavailableProjects(payload) {
+  const projects = Array.isArray(payload?.unavailable_projects) ? payload.unavailable_projects : [];
+  return projects
+    .filter((project) => project && typeof project.deck_id === "string")
+    .map((project) => ({
+      deck_id: project.deck_id,
+      label: typeof project.label === "string" && project.label.trim()
+        ? project.label.trim()
+        : "未命名 PPT",
+      status: "outline_unavailable",
+      status_label: "原大纲文件已丢失",
+    }));
+}
+
 export function chooseScope(decks, preferred = {}, defaultDeckId = "") {
   if (!decks.length) return { deckId: "", slideUid: "" };
   const deck = decks.find((item) => item.deck_id === preferred.deckId)
@@ -278,11 +292,15 @@ export function shortRevision(value) {
   return String(value || "未记录").replace(/^sha256:/, "").slice(0, 12);
 }
 
-function outlineDisplayValue(value) {
+export function outlineDisplayValue(value) {
   return String(value || "")
     .replaceAll("**", "")
     .replace(/<br\s*\/?>/gi, "\n")
     .trim();
+}
+
+export function outlineInlineDisplayValue(value) {
+  return outlineDisplayValue(value).replace(/\s*\n+\s*/g, " · ");
 }
 
 function englishPageModel(value) {
@@ -312,7 +330,8 @@ export function outlineReadingModel(
   languageView = "bilingual",
 ) {
   const source = String(markdown || "").trim();
-  const subtitle = String(explicitSubtitle || "").trim();
+  const cleanFallbackTitle = outlineDisplayValue(fallbackTitle);
+  const subtitle = outlineDisplayValue(explicitSubtitle);
   if (multilingual?.english_page_content) {
     const view = ["bilingual", "zh", "en"].includes(languageView) ? languageView : "bilingual";
     const english = englishPageModel(multilingual.english_page_content);
@@ -329,7 +348,7 @@ export function outlineReadingModel(
     return {
       multilingual: true,
       languageView: view,
-      title: view === "en" ? english.title || fallbackTitle || "This slide" : fallbackTitle || "这一页的大纲",
+      title: view === "en" ? english.title || cleanFallbackTitle || "This slide" : cleanFallbackTitle || "这一页的大纲",
       subtitle: view === "en" ? "" : subtitle,
       sections: view === "zh"
         ? [...chineseSections, sharedSections.at(-1)].filter(Boolean)
@@ -345,14 +364,14 @@ export function outlineReadingModel(
   }
   if (!source.startsWith("|") || !source.endsWith("|")) {
     return {
-      title: fallbackTitle || "这一页的大纲",
+      title: cleanFallbackTitle || "这一页的大纲",
       subtitle,
-      sections: source ? [{ label: "内容", value: source }] : [],
+      sections: source ? [{ label: "内容", value: outlineDisplayValue(source) }] : [],
     };
   }
   const cells = source.slice(1, -1).split("|").map((cell) => cell.replaceAll("**", "").trim());
-  const values = cells.slice(1).filter(Boolean);
-  const title = values.shift() || fallbackTitle || "这一页的大纲";
+  const values = cells.slice(1).map(outlineDisplayValue).filter(Boolean);
+  const title = values.shift() || cleanFallbackTitle || "这一页的大纲";
   if (subtitle) {
     const subtitleIndex = values.indexOf(subtitle);
     if (subtitleIndex >= 0) values.splice(subtitleIndex, 1);
@@ -419,12 +438,25 @@ export function normalizeConversations(payload) {
       created_at: createdAt,
       updated_at: typeof item.updated_at === "string" ? item.updated_at : null,
       last_used_at: typeof item.last_used_at === "string" ? item.last_used_at : null,
+      archived_at: typeof item.archived_at === "string" ? item.archived_at : null,
     });
   }
   return {
     active_conversation_id: typeof payload?.active_conversation_id === "string" ? payload.active_conversation_id : null,
     conversations: items.sort((left, right) => String(right.last_used_at || "").localeCompare(String(left.last_used_at || ""))),
   };
+}
+
+export function conversationDisplayTurns(turns, activeTurnId) {
+  const items = Array.isArray(turns) ? turns : [];
+  const activeId = String(activeTurnId || "");
+  if (!activeId) return items;
+  const activeTurn = items.find((turn) => String(turn?.turn_id || "") === activeId) || null;
+  const userItems = activeTurn?.items?.filter((item) => item?.type === "userMessage") || [];
+  return [
+    ...items.filter((turn) => String(turn?.turn_id || "") !== activeId),
+    ...(userItems.length ? [{ ...activeTurn, items: userItems }] : []),
+  ];
 }
 
 export function displayConversationTitle(title, createdAt) {

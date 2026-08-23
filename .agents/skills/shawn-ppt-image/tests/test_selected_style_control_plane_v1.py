@@ -470,6 +470,17 @@ class SelectedStyleControlPlaneV1Test(unittest.TestCase):
         self.assertIn("creative_brief_projection", raster)
         self.assertIn("Exact main title", raster["imagegen_prompt"])
         self.assertEqual(raster["imagegen_prompt"].count("Value thesis"), 1)
+        self.assertEqual(
+            raster["imagegen_prompt"].count(
+                pipeline.PRE_RENDER_SUBTRACTION_CHECK
+            ),
+            1,
+        )
+        self.assertTrue(
+            raster["imagegen_prompt"].endswith(
+                pipeline.PRE_RENDER_SUBTRACTION_CHECK
+            )
+        )
         self.assertNotIn("global_chrome", raster)
         self.assertNotIn("global_chrome", text_family)
         self.assertEqual(

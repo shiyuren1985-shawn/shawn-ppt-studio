@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -14,6 +14,39 @@ function emptySelection(deck) {
     updated_at: null,
     pages: {},
   };
+}
+
+function selectionIdentityKey(deck) {
+  return createHash("sha256")
+    .update(JSON.stringify(["studio-selection", deck.outline.deck_uid]))
+    .digest("hex")
+    .slice(0, 24);
+}
+
+function validRoot(document) {
+  return Boolean(
+    document &&
+    typeof document === "object" &&
+    !Array.isArray(document) &&
+    document.selection_contract_version === CONTRACT_VERSION &&
+    typeof document.deck_uid === "string" &&
+    typeof document.outline_path === "string" &&
+    path.isAbsolute(document.outline_path) &&
+    document.pages &&
+    typeof document.pages === "object" &&
+    !Array.isArray(document.pages)
+  );
+}
+
+function matchesDeck(document, deck) {
+  const acceptedOutlinePaths = new Set([
+    deck.outline.path,
+    ...(Array.isArray(deck.outline.identity_aliases) ? deck.outline.identity_aliases : []),
+  ].map((value) => path.resolve(value)));
+  return (
+    document.deck_uid === deck.outline.deck_uid &&
+    acceptedOutlinePaths.has(path.resolve(document.outline_path))
+  );
 }
 
 function validRef(value) {
@@ -54,12 +87,8 @@ function validate(document, deck) {
     !document ||
     typeof document !== "object" ||
     Array.isArray(document) ||
-    document.selection_contract_version !== CONTRACT_VERSION ||
-    document.deck_uid !== deck.outline.deck_uid ||
-    document.outline_path !== deck.outline.path ||
-    !document.pages ||
-    typeof document.pages !== "object" ||
-    Array.isArray(document.pages)
+    !validRoot(document) ||
+    !matchesDeck(document, deck)
   ) {
     throw new HttpError(409, "这套 PPT 的选稿记录无法读取，请检查项目文件。", "studio_selection_invalid");
   }
@@ -74,6 +103,15 @@ function validate(document, deck) {
 }
 
 export function studioSelectionPath(deck) {
+  return path.join(
+    deck.project_root,
+    ".shawn-ppt-studio",
+    "selections",
+    `${selectionIdentityKey(deck)}.json`,
+  );
+}
+
+export function legacyStudioSelectionPath(deck) {
   return path.join(deck.project_root, ".shawn-ppt-studio", "selection.json");
 }
 
@@ -81,6 +119,19 @@ export async function readStudioSelection(deck) {
   const selectionPath = studioSelectionPath(deck);
   try {
     return validate(JSON.parse(await readFile(selectionPath, "utf8")), deck);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(409, "这套 PPT 的选稿记录无法读取，请检查项目文件。", "studio_selection_invalid");
+    }
+  }
+  try {
+    const legacy = JSON.parse(await readFile(legacyStudioSelectionPath(deck), "utf8"));
+    if (!validRoot(legacy)) {
+      throw new HttpError(409, "这套 PPT 的选稿记录无法读取，请检查项目文件。", "studio_selection_invalid");
+    }
+    if (!matchesDeck(legacy, deck)) return emptySelection(deck);
+    return validate(legacy, deck);
   } catch (error) {
     if (error?.code === "ENOENT") return emptySelection(deck);
     if (error instanceof HttpError) throw error;

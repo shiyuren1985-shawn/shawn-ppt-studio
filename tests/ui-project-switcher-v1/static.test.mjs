@@ -30,8 +30,15 @@ test("switching a task keeps the current workspace and reloads its conversations
 test("remove means hide from the list, never delete project files", () => {
   assert.match(html, /从列表移除这份 PPT/);
   assert.match(html, /大纲、图片、对话和导出文件都不会删除/);
+  assert.match(app, /class="project-remove-icon"/);
+  assert.match(app, /从列表移除（不会删除文件）/);
+  assert.doesNotMatch(app, /remove\.textContent = "⋯"/);
   assert.match(api, /\/api\/projects\/\$\{encodeURIComponent\(deckId\)\}\/hide/);
-  assert.doesNotMatch(api, /method:\s*"DELETE"/);
+  const hideProject = api.match(/export async function hideProject\(deckId\) \{([\s\S]*?)\n\}/)?.[1] || "";
+  assert.doesNotMatch(hideProject, /method:\s*"DELETE"/);
+  assert.match(app, /project-option-unavailable/);
+  assert.match(app, /meta\.textContent = deck\.status_label/);
+  assert.match(app, /已移除失效记录。其他项目未受影响。/);
 });
 
 test("the composer follows Codex keyboard behavior", () => {
@@ -40,6 +47,26 @@ test("the composer follows Codex keyboard behavior", () => {
   assert.match(app, /event\.isComposing \|\| event\.keyCode === 229/);
   assert.match(app, /event\.preventDefault\(\)/);
   assert.match(app, /conversation-form"\]\.requestSubmit\(\)/);
+});
+
+test("sent input is optimistic, deduplicated, and visually separate from final output", () => {
+  assert.match(app, /appendOptimisticUserMessage\(message\)/);
+  assert.match(app, /reconcileOptimisticUserMessage/);
+  assert.match(app, /conversationDisplayTurns\(turns, activeTurnId\)/);
+  assert.match(app, /Codex · 最终结果/);
+  assert.match(app, /createAgentMessageView/);
+  assert.match(css, /\.codex-process/);
+  assert.match(css, /\.final-answer/);
+});
+
+test("history conversations can be renamed, soft-deleted, and restored", () => {
+  assert.match(html, /id="conversation-context-rename"/);
+  assert.match(html, /id="conversation-context-delete"/);
+  assert.match(html, /id="conversation-archive-list"/);
+  assert.match(html, /项目文件未受影响|作图任务记录不会删除/);
+  assert.match(api, /export async function renameConversation/);
+  assert.match(api, /export async function deleteConversation/);
+  assert.match(api, /export async function restoreConversation/);
 });
 
 test("the selector keeps the requested page visible and the composer grows to a bounded height", async () => {

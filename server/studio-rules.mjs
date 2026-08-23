@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { HttpError } from "./errors.mjs";
+import { studioLibraryRoot } from "./studio-library.mjs";
 
 const CONTRACT_VERSION = 1;
 const MAX_RULES = 50;
@@ -69,7 +70,7 @@ async function atomicJson(filePath, value) {
 
 export class StudioRulesStore {
   constructor({ dataRoot, clock = nowIso }) {
-    this.runtimeRoot = path.join(path.resolve(dataRoot), "runtime");
+    this.runtimeRoot = studioLibraryRoot(dataRoot);
     this.path = path.join(this.runtimeRoot, "studio-rules.json");
     this.clock = clock;
     this.state = {

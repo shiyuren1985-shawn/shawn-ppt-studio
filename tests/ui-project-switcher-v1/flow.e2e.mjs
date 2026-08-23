@@ -87,6 +87,26 @@ async function startServer() {
   const hidden = new Set();
   const sentMessages = [];
   const stoppedTasks = [];
+  const conversationStores = new Map(projects.map((project, index) => {
+    const number = index + 1;
+    const primary = {
+      conversation_id: `chat-${number}`,
+      title: `项目 ${number} 最近对话`,
+      created_at: "2026-08-14T01:00:00Z",
+      updated_at: "2026-08-14T02:00:00Z",
+      last_used_at: "2026-08-14T02:00:00Z",
+      archived_at: null,
+    };
+    const conversations = number === 1 ? [primary, {
+      conversation_id: "chat-1-old",
+      title: "项目 1 早期对话",
+      created_at: "2026-08-13T01:00:00Z",
+      updated_at: "2026-08-13T02:00:00Z",
+      last_used_at: "2026-08-13T02:00:00Z",
+      archived_at: null,
+    }] : [primary];
+    return [project.deck_id, { active: primary.conversation_id, conversations }];
+  }));
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/api/tasks") {
@@ -139,28 +159,59 @@ async function startServer() {
     }
     const directory = url.pathname.match(/^\/api\/decks\/(project-\d+)\/conversations$/);
     if (request.method === "GET" && directory) {
-      const number = directory[1].split("-")[1];
+      const store = conversationStores.get(directory[1]);
       return json(response, {
-        active_conversation_id: `chat-${number}`,
-        conversations: [{
-          conversation_id: `chat-${number}`,
-          title: `项目 ${number} 最近对话`,
-          created_at: "2026-08-14T01:00:00Z",
-          last_used_at: "2026-08-14T02:00:00Z",
-        }],
+        active_conversation_id: store.active,
+        conversations: store.conversations.filter((item) => !item.archived_at),
       });
     }
-    if (request.method === "GET" && /^\/api\/decks\/project-\d+\/conversations\/chat-\d+$/.test(url.pathname)) {
+    const archivedDirectory = url.pathname.match(/^\/api\/decks\/(project-\d+)\/conversations\/archived$/);
+    if (request.method === "GET" && archivedDirectory) {
+      const store = conversationStores.get(archivedDirectory[1]);
+      return json(response, { conversations: store.conversations.filter((item) => item.archived_at) });
+    }
+    const restoreConversation = url.pathname.match(/^\/api\/decks\/(project-\d+)\/conversations\/([^/]+)\/restore$/);
+    if (request.method === "POST" && restoreConversation) {
+      await readBody(request);
+      const store = conversationStores.get(restoreConversation[1]);
+      const conversation = store.conversations.find((item) => item.conversation_id === restoreConversation[2]);
+      conversation.archived_at = null;
+      conversation.last_used_at = "2026-08-14T03:00:00Z";
+      store.active = conversation.conversation_id;
+      return json(response, { conversation });
+    }
+    const conversationRecord = url.pathname.match(/^\/api\/decks\/(project-\d+)\/conversations\/([^/]+)$/);
+    if (request.method === "PATCH" && conversationRecord) {
+      const body = await readBody(request);
+      const store = conversationStores.get(conversationRecord[1]);
+      const conversation = store.conversations.find((item) => item.conversation_id === conversationRecord[2]);
+      conversation.title = body.title;
+      conversation.updated_at = "2026-08-14T03:00:00Z";
+      return json(response, { conversation });
+    }
+    if (request.method === "DELETE" && conversationRecord) {
+      const store = conversationStores.get(conversationRecord[1]);
+      const conversation = store.conversations.find((item) => item.conversation_id === conversationRecord[2]);
+      conversation.archived_at = "2026-08-14T03:00:00Z";
+      const next = store.conversations.find((item) => !item.archived_at);
+      store.active = next?.conversation_id || null;
+      return json(response, { archived: true, conversation, active_conversation_id: store.active });
+    }
+    if (request.method === "GET" && conversationRecord) {
       return json(response, { active_turn: null, turns: [] });
     }
     if (request.method === "POST" && /^\/api\/decks\/project-\d+\/conversations\/chat-\d+\/messages$/.test(url.pathname)) {
       const body = await readBody(request);
       sentMessages.push(body.message);
       const turnId = `keyboard-turn-${sentMessages.length}`;
+      await new Promise((resolve) => setTimeout(resolve, 100));
       response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store" });
       const events = [
         { method: "turn/started", params: { turn: { id: turnId, status: "inProgress" } } },
         { method: "item/started", params: { turnId, item: { id: `${turnId}-user`, type: "userMessage", content: [{ type: "text", text: body.message }] } } },
+        { method: "item/started", params: { turnId, item: { id: `${turnId}-assistant`, type: "agentMessage", phase: "commentary", text: "" } } },
+        { method: "item/agentMessage/delta", params: { turnId, itemId: `${turnId}-assistant`, phase: "commentary", delta: "正在读取项目。" } },
+        { method: "item/completed", params: { turnId, item: { id: `${turnId}-assistant`, type: "agentMessage", phase: "final", text: "最终答复。" } } },
         { method: "turn/completed", params: { turn: { id: turnId, status: "completed" } } },
       ];
       for (const [index, event] of events.entries()) {
@@ -268,6 +319,33 @@ test("seven projects stay compact and switch the whole task context", async () =
       assert.equal(await page.locator("#task-list .task-card").count(), 3);
       await page.keyboard.press("Escape");
 
+      if (viewport.width === 1440) {
+        await page.locator("#conversation-menu-button").click();
+        const activeRow = page.locator("#conversation-list .conversation-row").filter({ hasText: "项目 1 最近对话" });
+        await activeRow.locator(".conversation-more").click();
+        await page.locator("#conversation-context-rename").click();
+        await page.locator("#conversation-rename-input").fill("项目 1 已重命名");
+        await page.locator("#conversation-rename-save").click();
+        await page.locator("#active-conversation-title").filter({ hasText: "项目 1 已重命名" }).waitFor();
+
+        const renamedRow = page.locator("#conversation-list .conversation-row").filter({ hasText: "项目 1 已重命名" });
+        await renamedRow.locator(".conversation-more").click();
+        await page.locator("#conversation-context-delete").click();
+        await page.locator("#conversation-delete-confirm").click();
+        await page.locator("#active-conversation-title").filter({ hasText: "项目 1 早期对话" }).waitFor();
+        await page.locator("#conversation-archive-toggle").click();
+        const archivedRow = page.locator("#conversation-archive-list .archived-conversation-row").filter({ hasText: "项目 1 已重命名" });
+        await archivedRow.getByRole("button", { name: "恢复" }).click();
+        await page.locator("#active-conversation-title").filter({ hasText: "项目 1 已重命名" }).waitFor();
+
+        const restoredRow = page.locator("#conversation-list .conversation-row").filter({ hasText: "项目 1 已重命名" });
+        await restoredRow.locator(".conversation-more").click();
+        await page.locator("#conversation-context-rename").click();
+        await page.locator("#conversation-rename-input").fill("项目 1 最近对话");
+        await page.locator("#conversation-rename-save").click();
+        await page.locator("#close-conversation-drawer").click();
+      }
+
       const composer = page.locator("#message-input");
       const sentBefore = sentMessages.length;
       await composer.fill("中文输入中");
@@ -281,8 +359,16 @@ test("seven projects stay compact and switch the whole task context", async () =
       await composer.fill("按回车发送");
       const sent = page.waitForResponse((candidate) => candidate.request().method() === "POST" && /\/conversations\/chat-\d+\/messages$/.test(new URL(candidate.url()).pathname));
       await composer.press("Enter");
+      assert.equal(await page.locator("#message-list .message.user", { hasText: "按回车发送" }).count(), 1, "user input appears before the server responds");
       await sent;
       assert.equal(sentMessages.at(-1), "按回车发送");
+      await page.locator("#message-list .final-answer", { hasText: "最终答复。" }).waitFor();
+      assert.equal(await page.locator("#message-list .message.user", { hasText: "按回车发送" }).count(), 1, "official history event reuses the optimistic bubble");
+      assert.equal(await page.locator("#message-list > .final-answer").count(), 1);
+      assert.equal(await page.locator("#message-list > .final-answer .message-meta").textContent(), "Codex · 最终结果");
+      assert.equal(await page.locator("#message-list .codex-process").count(), 1);
+      assert.match(await page.locator("#message-list .codex-process").textContent(), /正在读取项目/);
+      assert.equal(await page.locator("#message-list .codex-process details").getAttribute("open"), null);
 
       await composer.fill("短要求");
       const compactHeight = await composer.evaluate((node) => node.getBoundingClientRect().height);

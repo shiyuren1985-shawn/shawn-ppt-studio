@@ -25,10 +25,12 @@ import { TaskProjection } from "./task-projection.mjs";
 import { TaskAssociationIndex } from "./task-associations.mjs";
 import { StudioRulesStore } from "./studio-rules.mjs";
 import { RuntimeEventLog } from "./runtime-event-log.mjs";
+import { prepareStudioLibrary, studioLibraryRoot } from "./studio-library.mjs";
 import {
   DEFAULT_MONITORING_ROOT,
   DEFAULT_OVERVIEW_PYTHON,
 } from "../integrations/shawn-single-page.mjs";
+import { createCandidateArtifactCleanupPlanner } from "../integrations/candidate-artifact-cleanup.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -49,6 +51,8 @@ const dataRoot =
     ? path.resolve(process.env.PPT_AI_LAB_ROOT)
     : path.resolve(process.env.SHAWN_PPT_STUDIO_DATA_ROOT || projectRoot);
 const labRoot = dataRoot;
+await prepareStudioLibrary(dataRoot);
+const libraryRoot = studioLibraryRoot(dataRoot);
 const pathPolicy = createPathPolicy(dataRoot);
 await pathPolicy.ensureRuntime();
 const runtimeEvents = new RuntimeEventLog({ dataRoot });
@@ -83,6 +87,13 @@ const singleEditTurnFinalizer = new SingleEditTurnFinalizer();
 const selectorWorkspace = new SelectorWorkspace({
   discovery,
   selectorOrigin: process.env.SHAWN_PPT_SELECTOR_ORIGIN || "http://127.0.0.1:8765/",
+  artifactCleanupPlanner: createCandidateArtifactCleanupPlanner({
+    pythonPath: (
+      process.env.PPT_AI_LAB_TEST_MODE === "1" && process.env.PPT_AI_LAB_OVERVIEW_PYTHON
+        ? path.resolve(process.env.PPT_AI_LAB_OVERVIEW_PYTHON)
+        : DEFAULT_OVERVIEW_PYTHON
+    ),
+  }),
   eventLog: runtimeEvents,
 });
 const exports = new ExportService({
@@ -137,8 +148,8 @@ try {
 
 const productionRunRoot =
   process.env.PPT_AI_LAB_TEST_MODE === "1"
-    ? path.resolve(process.env.PPT_AI_LAB_RUN_ROOT || path.join(labRoot, "runtime", "shawn-runs"))
-    : path.join(labRoot, "runtime", "shawn-runs");
+    ? path.resolve(process.env.PPT_AI_LAB_RUN_ROOT || path.join(libraryRoot, "shawn-runs"))
+    : path.join(libraryRoot, "shawn-runs");
 const monitoringRoot =
   process.env.PPT_AI_LAB_TEST_MODE === "1"
     ? path.resolve(

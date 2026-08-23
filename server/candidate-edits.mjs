@@ -13,6 +13,7 @@ import {
 } from "../integrations/single-image-edit.mjs";
 import { HttpError } from "./errors.mjs";
 import { SelectedImageEditParentResolver } from "./selected-image-edit-parent.mjs";
+import { studioLibraryRoot } from "./studio-library.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -188,7 +189,7 @@ export class CandidateEditService {
     this.monitoringRoot = path.resolve(monitoringRoot);
     this.commandRunner = commandRunner;
     this.clock = clock;
-    this.ledgerPath = path.join(this.labRoot, "runtime", "candidate-edits.jsonl");
+    this.ledgerPath = path.join(studioLibraryRoot(this.labRoot), "candidate-edits.jsonl");
     this.records = [];
     this.sequence = 0;
     this.ready = false;

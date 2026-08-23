@@ -3,6 +3,7 @@ import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/
 import path from "node:path";
 
 import { HttpError } from "./errors.mjs";
+import { studioLibraryRoot } from "./studio-library.mjs";
 
 const CONTRACT_VERSION = 1;
 const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"]);
@@ -62,7 +63,7 @@ function blankOutline(deckUid, label) {
 
 export class StudioProjectRegistry {
   constructor({ dataRoot, clock = nowIso }) {
-    this.runtimeRoot = path.join(path.resolve(dataRoot), "runtime");
+    this.runtimeRoot = studioLibraryRoot(dataRoot);
     this.path = path.join(this.runtimeRoot, "projects.json");
     this.clock = clock;
     this.state = {

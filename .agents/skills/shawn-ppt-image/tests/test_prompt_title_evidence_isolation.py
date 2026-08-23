@@ -96,6 +96,21 @@ class PromptTitleEvidenceIsolationTest(unittest.TestCase):
                     prompt,
                 )
                 self.assertNotIn("附件1=source_page；按角色原样使用", prompt)
+                self.assertEqual(
+                    prompt.count(pipeline.PRE_RENDER_SUBTRACTION_CHECK), 1
+                )
+                self.assertTrue(prompt.endswith(pipeline.PRE_RENDER_SUBTRACTION_CHECK))
+                self.assertIn("Use exactly the language or languages present", prompt)
+                self.assertIn("浅色背景", prompt)
+                self.assertIn("Level 0–Level 2", prompt)
+
+    def test_pre_render_subtraction_check_is_not_in_upstream_prompts(self) -> None:
+        for path in (ROOT / "prompts").glob("*.md"):
+            with self.subTest(path=path.name):
+                self.assertNotIn(
+                    pipeline.PRE_RENDER_SUBTRACTION_CHECK,
+                    path.read_text(encoding="utf-8"),
+                )
 
     def test_required_global_chrome_title_fails_before_prompt_dispatch_when_missing(self) -> None:
         job = self.build_job(pipeline.FAST_4X3_MODE)

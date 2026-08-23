@@ -28,7 +28,18 @@ class FakeAppServer extends EventEmitter {
   async request(method, params) {
     this.calls.push({ method, params });
     if (method === "thread/resume") return { thread: this.thread };
-    if (method === "thread/unarchive") return { thread: this.thread };
+    if (method === "thread/unarchive") {
+      this.thread.archived = false;
+      return { thread: this.thread };
+    }
+    if (method === "thread/archive") {
+      this.thread.archived = true;
+      return {};
+    }
+    if (method === "thread/name/set") {
+      this.thread.name = params.name;
+      return {};
+    }
     if (method === "thread/read") return { thread: this.thread };
     if (method === "turn/start") {
       if (this.archivedTurnStartFailures > 0) {
@@ -114,6 +125,11 @@ function fixtureContext() {
   const client = new FakeAppServer();
   const studioRuleState = { rules: ["测试中的全局长期规则"] };
   const openedConversationFiles = [];
+  const conversationState = {
+    conversation_id: "conversation-1",
+    title: "Test",
+    archived_at: null,
+  };
   const deck = {
     deck_id: "fixture",
     label: "Fixture",
@@ -144,8 +160,25 @@ function fixtureContext() {
     conversations: {
       ready: true,
       threadIdFor: () => "thread-1",
-      get: () => ({ conversation_id: "conversation-1", title: "Test" }),
-      touch: async () => ({ conversation_id: "conversation-1", title: "Test" }),
+      get: () => ({ ...conversationState }),
+      touch: async () => ({ ...conversationState }),
+      listArchived: () => ({
+        contract_version: 1,
+        deck_uid: "TEST_DECK",
+        conversations: conversationState.archived_at ? [{ ...conversationState }] : [],
+      }),
+      rename: async (_deckUid, _conversationId, title) => {
+        conversationState.title = title;
+        return { ...conversationState };
+      },
+      archive: async () => {
+        conversationState.archived_at = "2026-08-23T01:00:00.000Z";
+        return { conversation: { ...conversationState }, active_conversation_id: null };
+      },
+      restore: async () => {
+        conversationState.archived_at = null;
+        return { ...conversationState };
+      },
       health: () => ({ ready: true }),
     },
     selectionProjection: {
@@ -196,6 +229,44 @@ function fixtureContext() {
   };
   return { client, context };
 }
+
+test("HTTP keeps rename, soft-delete and restore synchronized with the official thread", async () => {
+  const { client, context } = fixtureContext();
+  const server = createLabHttpServer(context);
+  const baseUrl = await listen(server);
+  try {
+    const renamed = await fetch(`${baseUrl}/api/decks/fixture/conversations/conversation-1`, {
+      method: "PATCH",
+      headers: writeHeaders(),
+      body: JSON.stringify({ title: "客户版本讨论" }),
+    });
+    assert.equal(renamed.status, 200);
+    assert.equal((await renamed.json()).conversation.title, "客户版本讨论");
+
+    const removed = await fetch(`${baseUrl}/api/decks/fixture/conversations/conversation-1`, {
+      method: "DELETE",
+      headers: writeHeaders(),
+    });
+    assert.equal(removed.status, 200);
+    assert.equal((await removed.json()).archived, true);
+    const archived = await fetch(`${baseUrl}/api/decks/fixture/conversations/archived`);
+    assert.equal((await archived.json()).conversations.length, 1);
+
+    const restored = await fetch(`${baseUrl}/api/decks/fixture/conversations/conversation-1/restore`, {
+      method: "POST",
+      headers: writeHeaders(),
+      body: JSON.stringify({}),
+    });
+    assert.equal(restored.status, 200);
+    assert.equal((await restored.json()).conversation.archived_at, null);
+    assert.deepEqual(
+      client.calls.map((call) => call.method),
+      ["thread/name/set", "thread/archive", "thread/unarchive"],
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
 
 test("HTTP uses start, steer and interrupt on one official turn", async () => {
   const { client, context } = fixtureContext();

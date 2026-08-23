@@ -82,9 +82,8 @@ test("migrating another outline with an existing canonical UID fails closed", as
 });
 
 test("a v1 registry without hidden_decks migrates without losing projects", async () => {
-  const { dataRoot, outlinePath } = await fixture();
-  const runtimeRoot = path.join(dataRoot, "runtime");
-  await writeFile(path.join(runtimeRoot, "projects.json"), `${JSON.stringify({
+  const { dataRoot, outlinePath, registry: initialized } = await fixture();
+  await writeFile(initialized.path, `${JSON.stringify({
     contract_version: 1,
     default_project_id: "p1",
     projects: [{

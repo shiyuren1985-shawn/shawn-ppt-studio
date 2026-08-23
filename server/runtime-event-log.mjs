@@ -1,6 +1,8 @@
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
+import { studioLibraryRoot } from "./studio-library.mjs";
+
 const CONTRACT_VERSION = 1;
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
 
@@ -15,7 +17,7 @@ export class RuntimeEventLog {
     clock = () => new Date().toISOString(),
     maxBytes = DEFAULT_MAX_BYTES,
   }) {
-    this.runtimeRoot = path.join(path.resolve(dataRoot), "runtime");
+    this.runtimeRoot = studioLibraryRoot(dataRoot);
     this.path = path.join(this.runtimeRoot, "studio-events.jsonl");
     this.rotatedPath = `${this.path}.1`;
     this.clock = clock;

@@ -327,7 +327,7 @@ def compile_selected_render_prompt(
             "\n\n本页采用正向声明的情境重建表达；页面必须清楚可见呈现："
             f"{disclosure['visible_text']}"
         )
-    return prompt, referenced
+    return pc.finalize_imagegen_prompt(prompt), referenced
 
 
 def compile_selected_bundle(
@@ -1424,6 +1424,7 @@ def prepare_repairs(state_path: Path, state: dict[str, Any], project_dir: Path, 
             + " Preserve: "
             + "; ".join(str(x) for x in item.get("invariants") or [])
         )
+        prompt = pc.finalize_imagegen_prompt(prompt)
         paths_value, manifest = pc.build_input_manifest(pc.extract_input_paths(deduped))
         repair = dict(original)
         repair.update({

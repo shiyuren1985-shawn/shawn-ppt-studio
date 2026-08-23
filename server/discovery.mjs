@@ -57,7 +57,7 @@ function tableColumn(headers, cells, names) {
 function multilingualOutlineFields(headers, cells) {
   const englishPageContent = tableColumn(headers, cells, ["English Page Content"]);
   if (!englishPageContent) return null;
-  const chineseCoreThesis = tableColumn(headers, cells, ["核心命题"]);
+  const chineseCoreThesis = tableColumn(headers, cells, ["核心命题", "中文核心命题"]);
   const chineseDensity = tableColumn(headers, cells, ["信息密度／上屏层级", "信息密度/上屏层级"]);
   const chineseRequiredContent = tableColumn(headers, cells, ["页面必讲内容"]);
   const bilingualStrategy = tableColumn(headers, cells, ["双语交付策略"]);

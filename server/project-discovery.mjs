@@ -35,6 +35,16 @@ function publicDeck(deck) {
   };
 }
 
+function unavailableProject(record) {
+  return {
+    deck_id: record.deck_id,
+    label: record.label,
+    outline_path: record.outline_path,
+    status: "outline_unavailable",
+    status_label: "原大纲文件已丢失",
+  };
+}
+
 export class ProjectDiscovery {
   constructor({ legacyDiscovery, projects }) {
     this.legacyDiscovery = legacyDiscovery;
@@ -82,15 +92,26 @@ export class ProjectDiscovery {
     }
     const records = this.projects.list();
     const studio = [];
-    for (const record of records.projects) studio.push(publicDeck(await this.#readStudio(record)));
+    const unavailableProjects = [];
+    for (const record of records.projects) {
+      try {
+        studio.push(publicDeck(await this.#readStudio(record)));
+      } catch (error) {
+        if (error?.code !== "outline_not_found") throw error;
+        unavailableProjects.push(unavailableProject(record));
+      }
+    }
     const defaultRecord = records.projects.find((item) => item.project_id === records.default_project_id);
+    const availableStudioIds = new Set(studio.map((deck) => deck.deck_id));
     const visibleLegacy = legacy.decks.filter((deck) => !this.projects.isHidden(deck.deck_id));
     const legacyDefault = visibleLegacy.some((deck) => deck.deck_id === legacy.default_deck)
       ? legacy.default_deck
       : visibleLegacy[0]?.deck_id || null;
     return {
       contract_version: 3,
-      default_deck: defaultRecord?.deck_id || legacyDefault || studio[0]?.deck_id || null,
+      default_deck: availableStudioIds.has(defaultRecord?.deck_id)
+        ? defaultRecord.deck_id
+        : legacyDefault || studio[0]?.deck_id || null,
       decks: [...studio, ...visibleLegacy.map((deck) => ({
         ...deck,
         project_root: path.dirname(deck.outline_path),
@@ -98,6 +119,7 @@ export class ProjectDiscovery {
         source_kind: "legacy",
         output_root: deck.candidate_root || null,
       }))],
+      unavailable_projects: unavailableProjects,
     };
   }
 
@@ -152,6 +174,11 @@ export class ProjectDiscovery {
   }
 
   async hideDeck(deckId) {
+    const record = this.projects.state.projects.find((item) => item.deck_id === deckId);
+    if (record) {
+      await this.projects.hideDeck({ deckId, outlinePath: record.outline_path });
+      return { hidden: true, deck_id: deckId };
+    }
     const deck = await this.readDeck(deckId);
     await this.projects.hideDeck({ deckId, outlinePath: deck.outline.path });
     return { hidden: true, deck_id: deckId };

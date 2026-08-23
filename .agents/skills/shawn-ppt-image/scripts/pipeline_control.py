@@ -177,6 +177,10 @@ UNIFIED_SPATIAL_PROMPT_CUES = {
         "equal-weight card wall; keep composition and visual form open."
     ),
 }
+PRE_RENDER_SUBTRACTION_CHECK = (
+    "Before rendering, remove boundaries whose absence leaves grouping, state and "
+    "reading order clear; keep necessary panels."
+)
 NARRATIVE_COMPRESSION_PROMPT_CUES = {
     "zh": (
         "叙事收束：让一个主导视觉动作或关系承担整页的第一层叙事，其余必要信息作为"
@@ -10385,6 +10389,20 @@ def slide_prompt_opening_v4(job: dict[str, Any], has_exact_copy: bool) -> str:
     )
 
 
+def finalize_imagegen_prompt(prompt: str) -> str:
+    """Place the shared pre-render subtraction check exactly once at prompt end."""
+
+    sections = [
+        section
+        for section in prompt.strip().split("\n\n")
+        if section.strip() != PRE_RENDER_SUBTRACTION_CHECK
+    ]
+    finalized = "\n\n".join([*sections, PRE_RENDER_SUBTRACTION_CHECK])
+    if finalized.count(PRE_RENDER_SUBTRACTION_CHECK) != 1:
+        raise SystemExit("最终 ImageGen prompt 的构图减法检查必须且只能出现一次")
+    return finalized
+
+
 def compile_minimal_prompt_v4(job: dict[str, Any]) -> str:
     """把 Quick8 v5 / Fast8 v7 / 4x3 v6 编译为最小开放图片提示。"""
 
@@ -11002,7 +11020,7 @@ def compile_minimal_prompt_v4(job: dict[str, Any]) -> str:
         if use_chinese_control
         else "Keep all other visual decisions open."
     )
-    prompt = "\n\n".join(sections)
+    prompt = finalize_imagegen_prompt("\n\n".join(sections))
     if required_main_title and required_main_title not in prompt:
         raise SystemExit("逐字主标题未进入最终 ImageGen prompt")
     if required_subtitle and required_subtitle not in prompt:
@@ -18376,6 +18394,7 @@ def create_fast8_replacement_jobs(
                 "brief into a fixed layout or component list, and do not copy the old candidate."
             )
         )
+        prompt = finalize_imagegen_prompt(prompt)
         replacement["imagegen_prompt"] = prompt
         prompt_fingerprint = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         if prompt_fingerprint in used_fingerprints:
@@ -19217,6 +19236,9 @@ def command_prepare_diversity_repairs(args: argparse.Namespace) -> None:
             + "。保留事实、文字、Logo、明暗 tone 和空间压力合同；"
             + f"改用“{direction[label_field]}”方向，不得复用上一版的主要几何骨架。"
         )
+        repair_job["imagegen_prompt"] = finalize_imagegen_prompt(
+            repair_job["imagegen_prompt"]
+        )
         manifest = repair_job.get("imagegen_input_manifest", [])
         repair_job["imagegen_input_fingerprint"] = hashlib.sha256(
             json.dumps(
@@ -19367,6 +19389,9 @@ def command_prepare_fast_anchor_repairs(args: argparse.Namespace) -> None:
                 + ". Preserve all required content, tone, overall visual character, and "
                 "the seat's exploratory freedom; do not redraw it as a different fixed style."
             )
+        repair_job["imagegen_prompt"] = finalize_imagegen_prompt(
+            repair_job["imagegen_prompt"]
+        )
         repair_assets = merge_attachment_items(original.get("required_assets") or [])
         repair_job["required_assets"] = repair_assets
         referenced_paths = extract_input_paths(

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { outlineReadingModel, scopeFromSlide } from "../../web/model.js";
+import { outlineInlineDisplayValue, outlineReadingModel, scopeFromSlide } from "../../web/model.js";
 
 const app = await readFile(new URL("../../web/app.js", import.meta.url), "utf8");
 
@@ -68,4 +68,16 @@ test("multilingual outlines default to a combined view with Chinese and English 
   const chinese = outlineReadingModel("", "海外交付", "", multilingual, "zh");
   assert.equal(chinese.sections.some((section) => section.label.startsWith("English")), false);
   assert.match(app, /data-outline-language/);
+});
+
+test("outline reading converts Markdown table break tags into readable line breaks", () => {
+  const model = outlineReadingModel(
+    "| P1 | **主标题**<br><br>客户钩子：增长 | **第一点**<br>第二点<br/>第三点 |",
+  );
+
+  assert.equal(model.title, "主标题\n\n客户钩子：增长");
+  assert.equal(model.sections[0].value, "第一点\n第二点\n第三点");
+  assert.equal(JSON.stringify(model).includes("<br"), false);
+  assert.equal(outlineInlineDisplayValue("主标题<br><br>客户钩子"), "主标题 · 客户钩子");
+  assert.match(app, /outlineInlineDisplayValue\(slide\.title\)/);
 });

@@ -7,7 +7,9 @@ Shawn PPT Studio is a local, conversation-first workspace for building visual Po
 ## What is included
 
 - A three-column outline workspace with resizable and collapsible panels.
-- A project-level Codex conversation with streamed items, steering, interrupt, history, and official approval prompts.
+- A project-level Codex conversation with immediate sent-message echo, streamed progress, a separate final result, steering, interrupt, and official approval prompts.
+- Recoverable conversation history with rename, soft-delete, and restore controls.
+- A focused `作图任务` catalog for active and recent image-generation or retouching work; outline-only chat is not added to it.
 - Editable long-term Studio rules that persist locally across every project and conversation; explicit `记住，…` and `…。记住这个要求` messages can add a rule directly.
 - A native candidate-selection workspace with three images per row, immediate selection, zoom, and Trash support.
 - New-project flows for an empty folder or an existing Markdown outline.
@@ -115,6 +117,8 @@ No real ImageGen call is made by these tests.
 
 ## Data and safety boundaries
 
+- Studio's persistent project index, conversation history, long-term rules, attachments, task records, and operational logs live in the clearly named `Studio Library` folder under the app's macOS Application Support directory. This is persistent user data, not a disposable cache. Existing installations migrate the former `runtime` folder into `Studio Library` on first launch after upgrade.
+- If a registered outline file is moved or deleted, Studio keeps the remaining projects available and marks only that entry as `原大纲文件已丢失`; removing that stale entry does not delete any other project.
 - Projects, conversations, selections, and generated artifacts remain local unless the user explicitly publishes them.
 - The repository does not contain company documents or generated slide images.
 - Codex approvals and sandbox decisions come from the official App Server protocol; the UI does not invent a second approval system.

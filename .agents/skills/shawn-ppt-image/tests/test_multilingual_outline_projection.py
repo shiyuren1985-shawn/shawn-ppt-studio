@@ -89,6 +89,40 @@ class MultilingualOutlineProjectionTest(unittest.TestCase):
             en_value = json.loads(en_output.read_text(encoding="utf-8"))
             self.assertNotIn("中文内容九", json.dumps(en_value, ensure_ascii=False))
 
+    def test_accepts_natural_prefixed_chinese_title_header(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="multilingual_projection_alias_") as temp:
+            root = Path(temp)
+            source = root / "outline.md"
+            source.write_text(
+                self.outline().replace(
+                    "客户钩子／页面标题", "中文客户钩子／页面标题", 1
+                ),
+                encoding="utf-8",
+            )
+            output = root / "projection_en.json"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PROJECTOR),
+                    "--source",
+                    str(source),
+                    "--page-ids",
+                    "P2,P9",
+                    "--output-mode",
+                    "en",
+                    "--output",
+                    str(output),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                json.loads(output.read_text(encoding="utf-8"))["page_order"],
+                ["02", "09"],
+            )
+
     def test_initializer_accepts_split_physical_page_ids(self) -> None:
         with tempfile.TemporaryDirectory(prefix="multilingual_split_init_") as temp:
             root = Path(temp)

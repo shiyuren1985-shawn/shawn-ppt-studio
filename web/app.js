@@ -1,6 +1,7 @@
 import * as api from "./api.js";
 import {
   chooseScope,
+  conversationDisplayTurns,
   agentMessageSegments,
   codexHistoryTurns,
   codexItemPresentation,
@@ -10,6 +11,8 @@ import {
   normalizeConversations,
   normalizeDecks,
   normalizeSelection,
+  normalizeUnavailableProjects,
+  outlineInlineDisplayValue,
   outlineReadingModel,
   safeAttachmentPaths,
   scopeFromSlide,
@@ -21,6 +24,7 @@ const STORAGE_KEY = "shawn-ppt-studio.ui.v5";
 const state = {
   workspace: "outline",
   decks: [],
+  unavailableDecks: [],
   defaultDeckId: "",
   deckId: "",
   slideUid: "",
@@ -31,6 +35,7 @@ const state = {
   selectorMounting: null,
   columns: { left: true, content: true, conversation: true },
   conversations: [],
+  archivedConversations: [],
   activeConversationId: "",
   messages: [],
   activeHistoryFallback: null,
@@ -42,12 +47,15 @@ const state = {
   itemViews: new Map(),
   turnProcessViews: new Map(),
   userMessageViews: new Map(),
+  pendingUserMessageViews: [],
   pendingApprovals: new Map(),
   resolvedApprovalIds: new Set(),
   resolvingApprovalIds: new Set(),
   submitting: false,
   interrupting: false,
   creatingConversation: false,
+  conversationActionTargetId: "",
+  conversationContextTargetId: "",
   removeTargetDeckId: "",
   tasks: [],
   taskCounts: { active: 0, attention: 0 },
@@ -67,7 +75,11 @@ const ids = [
   "attachment-input", "attach-button", "send-button", "conversation-menu-button", "conversation-drawer",
   "stop-button", "turn-status", "turn-status-copy",
   "close-conversation-drawer", "drawer-backdrop", "drawer-new-conversation",
-  "conversation-list", "refresh-button", "selector-workspace", "retouch-gallery",
+  "conversation-list", "conversation-archive-toggle", "conversation-archive-count", "conversation-archive-list",
+  "conversation-context-menu", "conversation-context-rename", "conversation-context-delete",
+  "conversation-rename-dialog", "conversation-rename-input", "conversation-rename-cancel", "conversation-rename-save", "conversation-rename-status",
+  "conversation-delete-dialog", "conversation-delete-name", "conversation-delete-cancel", "conversation-delete-confirm", "conversation-delete-status",
+  "refresh-button", "selector-workspace", "retouch-gallery",
   "conversation-panel", "outline-conversation-host", "retouch-conversation-host", "conversation-column-toggle",
   "outline-left-toggle", "retouch-left-toggle", "outline-content-toggle", "retouch-content-toggle", "retouch-stage",
   "image-dialog", "image-dialog-close", "image-dialog-toggle", "image-dialog-content", "page-comparison", "toast",
@@ -200,7 +212,9 @@ function renderDeckSwitcher() {
   el["project-picker-button"].title = active?.label || "选择一份 PPT";
   el["project-picker-meta"].textContent = active
     ? (active.slides.length ? `${active.slides.length} 页` : "大纲草稿")
-    : (state.decks.length ? `${state.decks.length} 个项目` : "还没有项目");
+    : state.decks.length || state.unavailableDecks.length
+      ? `${state.decks.length} 个可用${state.unavailableDecks.length ? ` · ${state.unavailableDecks.length} 个需处理` : ""}`
+      : "还没有项目";
   for (const deck of state.decks) {
     const row = document.createElement("div");
     row.className = "project-option-row";
@@ -229,11 +243,43 @@ function renderDeckSwitcher() {
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "project-remove-button";
-    remove.setAttribute("aria-label", `从列表移除 ${deck.label || deck.deck_id}`);
-    remove.title = "从列表移除";
-    remove.textContent = "⋯";
+    remove.setAttribute("aria-label", `从列表移除 ${deck.label || deck.deck_id}，不会删除文件`);
+    remove.title = "从列表移除（不会删除文件）";
+    remove.innerHTML = `
+      <svg class="project-remove-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none">
+        <path d="M4.75 7.25h14.5M9.25 7.25V5.5c0-.69.56-1.25 1.25-1.25h3c.69 0 1.25.56 1.25 1.25v1.75M7.25 7.25l.65 11.1c.04.79.7 1.4 1.49 1.4h5.22c.79 0 1.45-.61 1.49-1.4l.65-11.1M10 11v5M14 11v5"/>
+      </svg>`;
     remove.addEventListener("click", () => openRemoveProjectDialog(deck.deck_id));
     row.append(button, remove);
+    el["deck-switcher"].append(row);
+  }
+  for (const deck of state.unavailableDecks) {
+    const row = document.createElement("div");
+    row.className = "project-option-row project-option-unavailable";
+    row.dataset.searchValue = `${deck.label || ""} ${deck.deck_id}`.toLocaleLowerCase("zh-CN");
+    const summary = document.createElement("div");
+    summary.className = "deck-button unavailable-deck-summary";
+    const check = document.createElement("span");
+    check.className = "deck-option-check";
+    const copy = document.createElement("span");
+    copy.className = "deck-option-copy";
+    const label = document.createElement("strong");
+    label.textContent = deck.label;
+    const meta = document.createElement("small");
+    meta.textContent = deck.status_label;
+    copy.append(label, meta);
+    summary.append(check, copy);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "project-remove-button";
+    remove.setAttribute("aria-label", `从列表移除 ${deck.label} 的失效记录`);
+    remove.title = "移除失效记录";
+    remove.innerHTML = `
+      <svg class="project-remove-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none">
+        <path d="M4.75 7.25h14.5M9.25 7.25V5.5c0-.69.56-1.25 1.25-1.25h3c.69 0 1.25.56 1.25 1.25v1.75M7.25 7.25l.65 11.1c.04.79.7 1.4 1.49 1.4h5.22c.79 0 1.45-.61 1.49-1.4l.65-11.1M10 11v5M14 11v5"/>
+      </svg>`;
+    remove.addEventListener("click", () => openRemoveProjectDialog(deck.deck_id));
+    row.append(summary, remove);
     el["deck-switcher"].append(row);
   }
   filterProjectOptions();
@@ -275,7 +321,7 @@ function filterProjectOptions() {
 }
 
 function openRemoveProjectDialog(deckId) {
-  const deck = state.decks.find((item) => item.deck_id === deckId);
+  const deck = [...state.decks, ...state.unavailableDecks].find((item) => item.deck_id === deckId);
   if (!deck) return;
   state.removeTargetDeckId = deckId;
   closeProjectPicker();
@@ -294,6 +340,7 @@ function closeRemoveProjectDialog() {
 async function confirmRemoveProject() {
   const deckId = state.removeTargetDeckId;
   if (!deckId) return;
+  const unavailable = state.unavailableDecks.some((item) => item.deck_id === deckId);
   el["remove-project-confirm"].disabled = true;
   el["remove-project-cancel"].disabled = true;
   el["remove-project-status"].hidden = false;
@@ -313,7 +360,9 @@ async function confirmRemoveProject() {
     await refreshAll();
     await loadConversations();
     persist();
-    toast("已从列表移除。大纲、图片和输出文件都还在原文件夹里。");
+    toast(unavailable
+      ? "已移除失效记录。其他项目未受影响。"
+      : "已从列表移除。大纲、图片和输出文件都还在原文件夹里。");
   } catch (error) {
     el["remove-project-status"].textContent = `暂时无法移除：${error.message}`;
     el["remove-project-confirm"].disabled = false;
@@ -445,7 +494,7 @@ function slideButton(slide, target) {
   number.textContent = slide.page_label || `P${String(slide.order).padStart(2, "0")}`;
   const title = document.createElement("span");
   title.className = "slide-title";
-  title.textContent = slide.title || "未命名页面";
+  title.textContent = outlineInlineDisplayValue(slide.title) || "未命名页面";
   button.append(number, title);
   button.addEventListener("click", () => selectSlide(slide.slide_uid));
   target.append(button);
@@ -494,10 +543,10 @@ async function selectSlide(slideUid) {
 function renderOutline() {
   const slide = currentSlide();
   el["current-page-label"].textContent = state.scope?.page_label || slide?.page_label || "—";
-  el["current-page-title"].textContent = state.scope?.title || slide?.title || "请选择一页";
+  el["current-page-title"].textContent = outlineInlineDisplayValue(state.scope?.title || slide?.title) || "请选择一页";
   el["composer-page"].textContent = state.scope?.page_label || "未选择页面";
   el["retouch-page-label"].textContent = state.scope?.page_label || slide?.page_label || "—";
-  el["retouch-page-title"].textContent = state.scope?.title || slide?.title || "修图";
+  el["retouch-page-title"].textContent = outlineInlineDisplayValue(state.scope?.title || slide?.title) || "修图";
   updateComposerContext();
   el["current-page-context-copy"].textContent = state.scope?.page_label
     ? `你正在查看 ${state.scope.page_label}。AI 会把它作为参考，但仍会结合整套 PPT 理解你的要求。`
@@ -850,14 +899,194 @@ function openConversationDrawer() {
   el["conversation-drawer"].hidden = false;
   el["drawer-backdrop"].hidden = false;
   el["conversation-menu-button"].setAttribute("aria-expanded", "true");
+  void loadArchivedConversations();
   el["close-conversation-drawer"].focus();
 }
 
 function closeConversationDrawer() {
+  closeConversationContextMenu();
   el["conversation-drawer"].hidden = true;
   el["drawer-backdrop"].hidden = true;
   el["conversation-menu-button"].setAttribute("aria-expanded", "false");
   el["conversation-menu-button"].focus();
+}
+
+function conversationById(conversationId) {
+  return state.conversations.find((item) => item.conversation_id === conversationId) || null;
+}
+
+function closeConversationContextMenu() {
+  el["conversation-context-menu"].hidden = true;
+  state.conversationContextTargetId = "";
+  for (const button of el["conversation-list"].querySelectorAll(".conversation-more")) {
+    button.setAttribute("aria-expanded", "false");
+  }
+}
+
+function openConversationContextMenu(conversationId, { anchor = null, clientX = null, clientY = null } = {}) {
+  const conversation = conversationById(conversationId);
+  if (!conversation) return;
+  closeConversationContextMenu();
+  state.conversationContextTargetId = conversationId;
+  const menu = el["conversation-context-menu"];
+  menu.hidden = false;
+  const menuWidth = 150;
+  const menuHeight = 82;
+  let left = Number.isFinite(clientX) ? clientX : 0;
+  let top = Number.isFinite(clientY) ? clientY : 0;
+  if (anchor) {
+    const rect = anchor.getBoundingClientRect();
+    left = rect.right - menuWidth;
+    top = rect.bottom + 4;
+    anchor.setAttribute("aria-expanded", "true");
+  }
+  menu.style.left = `${Math.max(8, Math.min(left, window.innerWidth - menuWidth - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(top, window.innerHeight - menuHeight - 8))}px`;
+  el["conversation-context-rename"].focus();
+}
+
+function setConversationDialogStatus(kind, message = "") {
+  const status = el[`conversation-${kind}-status`];
+  status.hidden = !message;
+  status.textContent = message;
+}
+
+function openConversationRenameDialog(conversationId) {
+  const conversation = conversationById(conversationId);
+  if (!conversation) return;
+  closeConversationContextMenu();
+  state.conversationActionTargetId = conversationId;
+  el["conversation-rename-input"].value = conversation.title;
+  setConversationDialogStatus("rename");
+  el["conversation-rename-dialog"].showModal();
+  el["conversation-rename-input"].select();
+}
+
+function closeConversationRenameDialog() {
+  if (el["conversation-rename-dialog"].open) el["conversation-rename-dialog"].close();
+  state.conversationActionTargetId = "";
+  setConversationDialogStatus("rename");
+}
+
+async function saveConversationRename() {
+  const conversationId = state.conversationActionTargetId;
+  const title = el["conversation-rename-input"].value.replace(/\s+/g, " ").trim();
+  if (!conversationId || !title) {
+    setConversationDialogStatus("rename", "请输入对话名称。");
+    return;
+  }
+  el["conversation-rename-save"].disabled = true;
+  el["conversation-rename-cancel"].disabled = true;
+  setConversationDialogStatus("rename", "正在保存…");
+  try {
+    const payload = await api.renameConversation(state.deckId, conversationId, title);
+    const updated = payload?.conversation;
+    const index = state.conversations.findIndex((item) => item.conversation_id === conversationId);
+    if (index >= 0 && updated) state.conversations[index] = { ...state.conversations[index], ...updated };
+    renderConversationList();
+    closeConversationRenameDialog();
+    toast("对话已重命名");
+  } catch (error) {
+    setConversationDialogStatus("rename", `无法重命名：${error.message}`);
+  } finally {
+    el["conversation-rename-save"].disabled = false;
+    el["conversation-rename-cancel"].disabled = false;
+  }
+}
+
+function openConversationDeleteDialog(conversationId) {
+  const conversation = conversationById(conversationId);
+  if (!conversation) return;
+  closeConversationContextMenu();
+  state.conversationActionTargetId = conversationId;
+  el["conversation-delete-name"].textContent = conversation.title;
+  setConversationDialogStatus("delete");
+  el["conversation-delete-dialog"].showModal();
+}
+
+function closeConversationDeleteDialog() {
+  if (el["conversation-delete-dialog"].open) el["conversation-delete-dialog"].close();
+  state.conversationActionTargetId = "";
+  setConversationDialogStatus("delete");
+}
+
+async function confirmConversationDelete() {
+  const conversationId = state.conversationActionTargetId;
+  if (!conversationId) return;
+  el["conversation-delete-confirm"].disabled = true;
+  el["conversation-delete-cancel"].disabled = true;
+  setConversationDialogStatus("delete", "正在删除…");
+  try {
+    const deletingActive = conversationId === state.activeConversationId;
+    await api.deleteConversation(state.deckId, conversationId);
+    closeConversationDeleteDialog();
+    if (deletingActive) {
+      stopEventStream();
+      setActiveTurn(null);
+    }
+    await loadConversations();
+    await loadArchivedConversations();
+    toast("对话已移到“已删除对话”，项目文件未受影响");
+  } catch (error) {
+    const message = error.code === "conversation_active"
+      ? "这个对话仍在运行，请先停止作图或等待完成。"
+      : `无法删除：${error.message}`;
+    setConversationDialogStatus("delete", message);
+  } finally {
+    el["conversation-delete-confirm"].disabled = false;
+    el["conversation-delete-cancel"].disabled = false;
+  }
+}
+
+async function loadArchivedConversations() {
+  if (!state.deckId) return;
+  try {
+    const payload = await api.getArchivedConversations(state.deckId);
+    state.archivedConversations = normalizeConversations(payload).conversations;
+  } catch (error) {
+    state.archivedConversations = [];
+    console.warn("Unable to read deleted conversations", error);
+  }
+  renderArchivedConversations();
+}
+
+function renderArchivedConversations() {
+  el["conversation-archive-count"].textContent = String(state.archivedConversations.length);
+  el["conversation-archive-list"].replaceChildren();
+  if (!state.archivedConversations.length) {
+    const empty = document.createElement("p");
+    empty.className = "loading-copy";
+    empty.textContent = "没有已删除对话。";
+    el["conversation-archive-list"].append(empty);
+    return;
+  }
+  for (const conversation of state.archivedConversations) {
+    const row = document.createElement("div");
+    row.className = "archived-conversation-row";
+    const copy = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = conversation.title;
+    const time = document.createElement("span");
+    time.textContent = formatConversationTime(conversation.archived_at || conversation.updated_at);
+    copy.append(title, time);
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.textContent = "恢复";
+    restore.addEventListener("click", async () => {
+      restore.disabled = true;
+      try {
+        await api.restoreConversation(state.deckId, conversation.conversation_id);
+        await loadConversations();
+        await loadArchivedConversations();
+        toast("对话已恢复");
+      } catch (error) {
+        toast(`无法恢复：${error.message}`);
+        restore.disabled = false;
+      }
+    });
+    row.append(copy, restore);
+    el["conversation-archive-list"].append(row);
+  }
 }
 
 function renderConversationList() {
@@ -869,6 +1098,8 @@ function renderConversationList() {
     el["conversation-list"].append(empty);
   }
   for (const conversation of state.conversations) {
+    const row = document.createElement("div");
+    row.className = "conversation-row";
     const button = document.createElement("button");
     button.type = "button";
     button.className = "conversation-item";
@@ -879,7 +1110,33 @@ function renderConversationList() {
     time.textContent = formatConversationTime(conversation.last_used_at || conversation.created_at);
     button.append(title, time);
     button.addEventListener("click", () => activateConversation(conversation.conversation_id));
-    el["conversation-list"].append(button);
+    button.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      openConversationContextMenu(conversation.conversation_id, {
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+    });
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "conversation-more";
+    more.setAttribute("aria-label", `${conversation.title} 的更多操作`);
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
+    more.textContent = "⋯";
+    more.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openConversationContextMenu(conversation.conversation_id, { anchor: more });
+    });
+    more.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      openConversationContextMenu(conversation.conversation_id, {
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+    });
+    row.append(button, more);
+    el["conversation-list"].append(row);
   }
   const active = state.conversations.find((item) => item.conversation_id === state.activeConversationId);
   el["active-conversation-title"].textContent = active?.title || "和 AI 讨论这份 PPT";
@@ -891,6 +1148,7 @@ function renderMessages() {
   state.itemViews.clear();
   state.turnProcessViews.clear();
   state.userMessageViews.clear();
+  state.pendingUserMessageViews = [];
   state.pendingApprovals.clear();
   state.resolvedApprovalIds.clear();
   state.resolvingApprovalIds.clear();
@@ -927,6 +1185,58 @@ function appendMessage(role, text, { streaming = false, scroll = true } = {}) {
   el["message-list"].append(article);
   if (scroll) el["message-list"].scrollTop = el["message-list"].scrollHeight;
   return { article, body };
+}
+
+function appendOptimisticUserMessage(text) {
+  el["message-list"].querySelector(".welcome-message")?.remove();
+  const message = appendMessage("user", text);
+  const pendingId = `pending-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  message.article.dataset.itemId = pendingId;
+  const view = { ...message, type: "userMessage", pendingId };
+  state.pendingUserMessageViews.push({ text, view });
+  return view;
+}
+
+function reconcileOptimisticUserMessage(itemId, text, semanticKey, source) {
+  const index = state.pendingUserMessageViews.findIndex((entry) => entry.text === text);
+  if (index < 0) return null;
+  const [{ view }] = state.pendingUserMessageViews.splice(index, 1);
+  view.article.dataset.itemId = itemId;
+  view.article.classList.remove("send-failed");
+  state.itemViews.set(itemId, view);
+  if (semanticKey) {
+    const entries = state.userMessageViews.get(semanticKey) || [];
+    entries.push({ source: source || "", view });
+    state.userMessageViews.set(semanticKey, entries);
+  }
+  return view;
+}
+
+function createAgentMessageView(itemId, text, phase, { streaming = false, turnId = "" } = {}) {
+  if (phase === "commentary") {
+    const process = ensureTurnProcess(turnId);
+    const article = document.createElement("p");
+    article.className = `codex-process-commentary${streaming ? " streaming" : ""}`;
+    article.dataset.itemId = itemId;
+    const body = document.createElement("span");
+    body.className = "message-body";
+    renderAgentMessageBody(body, text);
+    article.append(body);
+    appendProcessCommentary(process, article);
+    return { article, body, meta: null, type: "agentMessage", phase: "commentary", turnId };
+  }
+  const article = document.createElement("article");
+  article.className = `codex-item agent-message final-answer${streaming ? " streaming" : ""}`;
+  article.dataset.itemId = itemId;
+  const meta = document.createElement("div");
+  meta.className = "message-meta";
+  meta.textContent = "Codex · 最终结果";
+  const body = document.createElement("div");
+  body.className = "message-body";
+  renderAgentMessageBody(body, text);
+  article.append(meta, body);
+  el["message-list"].append(article);
+  return { article, meta, body, type: "agentMessage", phase: "final", turnId };
 }
 
 function scrollTimeline() {
@@ -1059,10 +1369,24 @@ function renderCodexItem(item, { scroll = true, authoritative = false, streaming
   let view = state.itemViews.get(itemId);
   if (view) {
     if (view.type === "agentMessage") {
-      const commentary = item.phase === "commentary";
-      view.article.classList.toggle("commentary", commentary);
-      view.article.classList.toggle("final-answer", !commentary);
-      if (view.meta) view.meta.textContent = commentary ? "Codex · 进展" : "Codex";
+      const nextPhase = item.phase === "commentary"
+        ? "commentary"
+        : (item.phase || authoritative) ? "final" : view.phase;
+      if (nextPhase && nextPhase !== view.phase) {
+        // A streamed progress item may be finalized under the same App Server
+        // item ID. Keep that progress inside the collapsed process and create a
+        // separate final-result view instead of erasing the user's audit trail.
+        if (view.phase === "commentary" && nextPhase === "final") {
+          view.article.classList.remove("streaming");
+        } else {
+          view.article.remove();
+        }
+        view = createAgentMessageView(itemId, codexItemText(item), nextPhase, {
+          streaming: streaming && !authoritative,
+          turnId: item.__turnId || view.turnId,
+        });
+        state.itemViews.set(itemId, view);
+      }
       if (authoritative) renderAgentMessageBody(view.body, codexItemText(item));
     }
     if (view.type === "step") {
@@ -1092,6 +1416,11 @@ function renderCodexItem(item, { scroll = true, authoritative = false, streaming
   if (item.type === "userMessage") {
     const text = codexItemText(item);
     const semanticKey = item.__turnId && text ? `${item.__turnId}\u0000${text}` : "";
+    const optimistic = reconcileOptimisticUserMessage(itemId, text, semanticKey, item.__source);
+    if (optimistic) {
+      if (scroll) scrollTimeline();
+      return optimistic;
+    }
     const prior = semanticKey
       ? (state.userMessageViews.get(semanticKey) || []).find((entry) => (
           entry.source && item.__source && entry.source !== item.__source
@@ -1110,31 +1439,13 @@ function renderCodexItem(item, { scroll = true, authoritative = false, streaming
       state.userMessageViews.set(semanticKey, entries);
     }
   } else if (item.type === "agentMessage") {
-    if (item.phase === "commentary") {
-      const process = ensureTurnProcess(item.__turnId);
-      const article = document.createElement("p");
-      article.className = `codex-process-commentary${streaming ? " streaming" : ""}`;
-      article.dataset.itemId = itemId;
-      const body = document.createElement("span");
-      body.className = "message-body";
-      renderAgentMessageBody(body, codexItemText(item));
-      article.append(body);
-      appendProcessCommentary(process, article);
-      view = { article, body, meta: null, type: "agentMessage" };
-    } else {
-    const article = document.createElement("article");
-    article.className = `codex-item agent-message final-answer${streaming ? " streaming" : ""}`;
-    article.dataset.itemId = itemId;
-    const meta = document.createElement("div");
-    meta.className = "message-meta";
-    meta.textContent = "Codex";
-    const body = document.createElement("div");
-    body.className = "message-body";
-    renderAgentMessageBody(body, codexItemText(item));
-    article.append(meta, body);
-    el["message-list"].append(article);
-    view = { article, meta, body, type: "agentMessage" };
-    }
+    const phase = item.phase === "commentary"
+      ? "commentary"
+      : (item.phase || authoritative || !streaming) ? "final" : "commentary";
+    view = createAgentMessageView(itemId, codexItemText(item), phase, {
+      streaming,
+      turnId: item.__turnId,
+    });
   } else {
     const process = ensureTurnProcess(item.__turnId);
     view = processEventView(process, itemId, presentation);
@@ -1229,12 +1540,10 @@ async function loadConversationHistory(conversationId) {
     state.activeHistoryFallback = activeTurnId
       ? turns.find((turn) => turn.turn_id === activeTurnId) || null
       : null;
-    // An active turn has two representations: thread/read history and the
-    // relay replay. Render only the relay while it is available, otherwise the
-    // same user/commentary items appear twice with different App Server IDs.
-    state.messages = activeTurnId
-      ? turns.filter((turn) => turn.turn_id !== activeTurnId)
-      : turns;
+    // Keep the authoritative user request visible immediately after reopening
+    // an active conversation. Progress and results still come from relay replay,
+    // where semantic turn+text dedupe reconciles the duplicate user event.
+    state.messages = conversationDisplayTurns(turns, activeTurnId);
     setActiveTurn(payload?.active_turn || null);
     renderMessages();
     if (state.activeTurnId) attachToActiveTurn();
@@ -1299,7 +1608,7 @@ function renderTaskCenter() {
   el["task-count"].hidden = activeCount === 0;
   el["task-count"].textContent = String(activeCount);
   el["task-center-button"].title = state.taskCounts.attention > 0
-    ? `${state.taskCounts.attention} 个历史任务需要查看`
+    ? `${state.taskCounts.attention} 个历史作图任务需要查看`
     : "查看作图任务";
   el["task-center-button"].classList.toggle("has-active", state.taskCounts.active > 0);
   el["task-center-button"].classList.toggle("has-attention", state.taskCounts.active === 0 && state.taskCounts.attention > 0);
@@ -1376,7 +1685,7 @@ function renderTaskCenter() {
         stop.disabled = true;
         try {
           await api.interruptTask(task.task_id);
-          toast("已请求停止这个任务");
+          toast("已请求停止这个作图任务");
           await loadTasks({ force: true });
         } catch (error) {
           toast(`无法停止：${error.message}`);
@@ -1411,7 +1720,7 @@ async function openTask(task) {
   if (task.conversation_id && task.conversation_id !== state.activeConversationId) {
     await activateConversation(task.conversation_id);
   } else if (!task.conversation_id) {
-    toast("这个任务没有可恢复的来源对话，已打开对应页面");
+    toast("这个作图任务没有可恢复的来源对话，已打开对应页面");
   }
 }
 
@@ -1449,7 +1758,7 @@ async function loadTasks({ force = false } = {}) {
       console.warn("Unable to refresh selector catalog after task completion", error);
     }
   } catch (error) {
-    if (force) toast(`任务状态暂时无法读取：${error.message}`);
+    if (force) toast(`作图任务状态暂时无法读取：${error.message}`);
   } finally {
     state.taskLoading = false;
     clearTimeout(state.taskPollTimer);
@@ -1476,7 +1785,7 @@ function attachToActiveTurn() {
       if (error.name === "AbortError" || state.activeTurnId !== turnId) return;
       if (error.status === 404 && state.activeHistoryFallback?.turn_id === turnId) {
         for (const item of state.activeHistoryFallback.items || []) {
-          renderCodexItem(item, { authoritative: true });
+          renderCodexItem({ ...item, __turnId: turnId, __source: "history-fallback" }, { authoritative: true });
         }
         state.activeHistoryFallback = null;
         return;
@@ -1807,7 +2116,13 @@ function onConversationEvent(event) {
   if (method === "item/agentMessage/delta") {
     const itemId = String(params.itemId || "");
     if (!itemId || typeof params.delta !== "string") return;
-    const view = renderCodexItem({ id: itemId, type: "agentMessage", phase: params.phase || "commentary", __turnId: turnId }, { streaming: true });
+    const existing = state.itemViews.get(itemId);
+    const view = renderCodexItem({
+      id: itemId,
+      type: "agentMessage",
+      phase: params.phase || existing?.phase || "commentary",
+      __turnId: turnId,
+    }, { streaming: true });
     view.body.textContent += params.delta;
     scrollTimeline();
     return;
@@ -1865,6 +2180,7 @@ async function submitConversation(event) {
   const attachments = safeAttachmentPaths(state.attachments);
   const retouchContext = state.workspace === "retouch";
   const expectedTurnId = state.activeTurnId;
+  const optimisticUserMessage = appendOptimisticUserMessage(message);
   state.submitting = true;
   el["message-input"].value = "";
   resizeMessageInput();
@@ -1917,6 +2233,7 @@ async function submitConversation(event) {
       renderConversationList();
     }
   } catch (error) {
+    optimisticUserMessage.article.classList.add("send-failed");
     toast(`这次没有发送成功：${error.message}`);
   } finally {
     state.submitting = false;
@@ -2079,6 +2396,7 @@ async function refreshAll() {
     const payload = await api.getProjects();
     state.defaultDeckId = payload?.default_deck || "";
     state.decks = normalizeDecks(payload);
+    state.unavailableDecks = normalizeUnavailableProjects(payload);
     const chosen = chooseScope(state.decks, { deckId: state.deckId, slideUid: state.slideUid }, state.defaultDeckId);
     state.deckId = chosen.deckId;
     state.slideUid = chosen.slideUid;
@@ -2101,6 +2419,9 @@ function bindEvents() {
     if (event.target.closest("[data-open-selector]")) setWorkspace("selector");
     if (!event.target.closest(".project-picker")) closeProjectPicker();
     if (!event.target.closest(".task-center")) closeTaskCenter();
+    if (!event.target.closest(".conversation-context-menu") && !event.target.closest(".conversation-more")) {
+      closeConversationContextMenu();
+    }
   });
   el["conversation-menu-button"].addEventListener("click", openConversationDrawer);
   el["task-center-button"].addEventListener("click", toggleTaskCenter);
@@ -2167,6 +2488,40 @@ function bindEvents() {
   el["close-conversation-drawer"].addEventListener("click", closeConversationDrawer);
   el["drawer-backdrop"].addEventListener("click", closeConversationDrawer);
   el["drawer-new-conversation"].addEventListener("click", () => createConversation());
+  el["conversation-archive-toggle"].addEventListener("click", () => {
+    const open = el["conversation-archive-list"].hidden;
+    el["conversation-archive-list"].hidden = !open;
+    el["conversation-archive-toggle"].setAttribute("aria-expanded", String(open));
+  });
+  el["conversation-context-rename"].addEventListener("click", () => {
+    openConversationRenameDialog(state.conversationContextTargetId);
+  });
+  el["conversation-context-delete"].addEventListener("click", () => {
+    openConversationDeleteDialog(state.conversationContextTargetId);
+  });
+  el["conversation-rename-cancel"].addEventListener("click", closeConversationRenameDialog);
+  el["conversation-rename-save"].addEventListener("click", saveConversationRename);
+  el["conversation-rename-input"].addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void saveConversationRename();
+  });
+  el["conversation-rename-dialog"].addEventListener("click", (event) => {
+    if (event.target === el["conversation-rename-dialog"]) closeConversationRenameDialog();
+  });
+  el["conversation-rename-dialog"].addEventListener("close", () => {
+    state.conversationActionTargetId = "";
+    setConversationDialogStatus("rename");
+  });
+  el["conversation-delete-cancel"].addEventListener("click", closeConversationDeleteDialog);
+  el["conversation-delete-confirm"].addEventListener("click", confirmConversationDelete);
+  el["conversation-delete-dialog"].addEventListener("click", (event) => {
+    if (event.target === el["conversation-delete-dialog"]) closeConversationDeleteDialog();
+  });
+  el["conversation-delete-dialog"].addEventListener("close", () => {
+    state.conversationActionTargetId = "";
+    setConversationDialogStatus("delete");
+  });
   el["outline-language-switch"].addEventListener("click", (event) => {
     const button = event.target.closest("[data-outline-language]");
     if (!button) return;
@@ -2216,6 +2571,7 @@ function bindEvents() {
   el["image-dialog"].addEventListener("close", () => el["image-dialog-content"].removeAttribute("src"));
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    closeConversationContextMenu();
     if (!el["conversation-drawer"].hidden) closeConversationDrawer();
     if (!el["task-center-popover"].hidden) closeTaskCenter({ focusButton: true });
     if (!el["project-popover"].hidden) closeProjectPicker({ focusButton: true });

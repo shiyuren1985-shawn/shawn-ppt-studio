@@ -7,6 +7,64 @@ import test from "node:test";
 import { TaskProjection } from "../../server/task-projection.mjs";
 import { TaskAssociationIndex } from "../../server/task-associations.mjs";
 
+test("an explicit image request appears immediately and is replaced by its formal run", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "studio-task-request-bridge-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const output = path.join(root, "output");
+  await mkdir(output, { recursive: true });
+  const requestStartedAt = "2026-08-23T01:00:00.000Z";
+  const now = Date.parse("2026-08-23T01:00:20.000Z");
+  const associations = new TaskAssociationIndex({ dataRoot: root });
+  await associations.initialize();
+  await associations.rememberImageRequest("DECK_REQUEST", requestStartedAt, "conversation-1", {
+    title: "P06 · 8×1",
+    modeHint: "fast_8x1",
+    slideUid: "SLIDE_06",
+  });
+  await associations.rememberRequest("DECK_REQUEST", requestStartedAt, "conversation-1");
+  const discovery = { async listDecks() { return { decks: [{
+    deck_id: "deck-request", deck_uid: "DECK_REQUEST", label: "测试项目",
+    output_root: output, candidate_roots_paths: [output],
+    slides: [{ page_id: "P06", slide_uid: "SLIDE_06", page_label: "P06" }],
+  }] }; } };
+  const conversations = { ready: true, records() { return [{
+    conversation_id: "conversation-1", thread_id: "thread-1", last_used_at: requestStartedAt,
+  }]; } };
+  const relay = {
+    activeTurn: () => "turn-1",
+    latestTurn: () => ({ turnId: "turn-1", status: "inProgress", startedAtMs: Date.parse(requestStartedAt) }),
+  };
+  const projection = new TaskProjection({ discovery, conversations, associations, clock: () => now, cacheMs: 0 });
+  let result = await projection.list({ codexInteraction: relay, force: true });
+  assert.equal(result.active_count, 1);
+  assert.equal(result.tasks.length, 1);
+  assert.equal(result.tasks[0].title, "P06 · 8×1");
+  assert.equal(result.tasks[0].status, "preparing");
+  assert.equal(result.tasks[0].can_open_conversation, true);
+
+  const stateDir = path.join(output, "formal-fast8", "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "source_snapshot.json"), JSON.stringify({
+    page_ids: ["P06"],
+    slide_identity: { deck_uid: "DECK_REQUEST", slide_uids: { P06: "SLIDE_06" } },
+  }));
+  await writeFile(path.join(stateDir, "preflight_manifest.json"), JSON.stringify({
+    request_started_at: requestStartedAt,
+    page_ids: ["P06"],
+  }));
+  await writeFile(path.join(stateDir, "style_run_state.json"), JSON.stringify({
+    run_id: "formal-fast8",
+    run_mode: "fast_8x1_diverse",
+    status: "running",
+    scheduler: { active_actions: [], ready_queue: [{ page_id: "P06" }] },
+    styles: {},
+  }));
+  result = await projection.list({ codexInteraction: relay, force: true });
+  assert.equal(result.active_count, 1);
+  assert.equal(result.tasks.length, 1, "the provisional request is not duplicated after formal state exists");
+  assert.equal(result.tasks[0].mode, "fast_8x1_diverse");
+});
+
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "studio-task-center-"));
   const output = path.join(root, "output");

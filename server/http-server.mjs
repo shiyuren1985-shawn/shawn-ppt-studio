@@ -14,6 +14,8 @@ import { sanitizeForBrowser } from "./path-policy.mjs";
 import { resolveConversationImage } from "./conversation-image.mjs";
 import { openConversationFile } from "./conversation-file.mjs";
 import { rememberedStudioRule } from "./studio-rules.mjs";
+import { studioLibraryRoot } from "./studio-library.mjs";
+import { classifyImageTaskRequest } from "./image-task-intent.mjs";
 import { handleSelectorProjectionRequest } from "./selector-http.mjs";
 import { handleSelectorWorkspaceRequest } from "./selector-workspace-http.mjs";
 import {
@@ -477,6 +479,23 @@ async function streamWorkspaceTurn(req, res, context, route) {
       requestStartedAt,
       route.conversationId,
     )?.catch(() => {});
+    const imageTask = classifyImageTaskRequest({
+      message: body?.message,
+      retouchContext: body?.retouch_context === true,
+      referenceImages: body?.reference_images,
+    });
+    if (imageTask) {
+      await context.taskProjection?.associations?.rememberImageRequest?.(
+        deck.outline.deck_uid,
+        requestStartedAt,
+        route.conversationId,
+        {
+          title: imageTask.title,
+          modeHint: imageTask.mode_hint,
+          slideUid: body?.current_slide_uid,
+        },
+      )?.catch(() => {});
+    }
   } catch (error) {
     relay.clearStarting(threadId);
     context.singleEditTurnFinalizer?.clearStarting?.(threadId);
@@ -615,6 +634,7 @@ export function createLabHttpServer(context) {
           account: sanitizeAccount(context.client.account),
           runtime: {
             data_root: context.dataRoot || context.labRoot,
+            studio_library_root: studioLibraryRoot(context.dataRoot || context.labRoot),
             image_root: context.pathPolicy.imageRoot,
           },
           services: {
@@ -914,9 +934,108 @@ export function createLabHttpServer(context) {
         return;
       }
 
+      const archivedConversationCollectionMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/conversations\/archived$/,
+      );
+      if (req.method === "GET" && archivedConversationCollectionMatch) {
+        if (!context.conversations?.ready) {
+          throw new HttpError(503, "conversation history is unavailable", "conversation_index_unavailable");
+        }
+        const deck = await context.discovery.readDeck(
+          decodeURIComponent(archivedConversationCollectionMatch[1]),
+        );
+        json(res, 200, context.conversations.listArchived(deck.outline.deck_uid));
+        return;
+      }
+
+      const conversationRestoreMatch = requestUrl.pathname.match(
+        /^\/api\/decks\/([^/]+)\/conversations\/([^/]+)\/restore$/,
+      );
+      if (req.method === "POST" && conversationRestoreMatch) {
+        await readJson(req);
+        if (!context.client.ready || !context.conversations?.ready) {
+          throw new HttpError(503, "conversation service is unavailable", "conversation_unavailable");
+        }
+        const deck = await context.discovery.readDeck(decodeURIComponent(conversationRestoreMatch[1]));
+        const conversationId = decodeURIComponent(conversationRestoreMatch[2]);
+        const localConversation = context.conversations.get(deck.outline.deck_uid, conversationId);
+        if (!localConversation.archived_at) {
+          throw new HttpError(404, "archived conversation was not found", "conversation_not_found");
+        }
+        const threadId = context.conversations.threadIdFor(deck.outline.deck_uid, conversationId);
+        await context.client.request("thread/unarchive", { threadId });
+        let conversation;
+        try {
+          conversation = await context.conversations.restore(deck.outline.deck_uid, conversationId);
+        } catch (error) {
+          await context.client.request("thread/archive", { threadId }).catch(() => {});
+          throw error;
+        }
+        json(res, 200, { contract_version: 1, conversation });
+        return;
+      }
+
       const conversationMatch = requestUrl.pathname.match(
         /^\/api\/decks\/([^/]+)\/conversations\/([^/]+)$/,
       );
+      if (req.method === "PATCH" && conversationMatch) {
+        const body = await readJson(req);
+        if (!context.client.ready || !context.conversations?.ready) {
+          throw new HttpError(503, "conversation service is unavailable", "conversation_unavailable");
+        }
+        const deck = await context.discovery.readDeck(decodeURIComponent(conversationMatch[1]));
+        const conversationId = decodeURIComponent(conversationMatch[2]);
+        const localConversation = context.conversations.get(deck.outline.deck_uid, conversationId);
+        if (localConversation.archived_at) {
+          throw new HttpError(404, "conversation was not found", "conversation_not_found");
+        }
+        const threadId = context.conversations.threadIdFor(deck.outline.deck_uid, conversationId);
+        const title = typeof body?.title === "string" ? body.title.trim() : "";
+        if (!title) throw new HttpError(400, "title is required", "invalid_conversation_request");
+        await context.client.request("thread/name/set", {
+          threadId,
+          name: `${deck.label} · ${title.slice(0, 80)}`,
+        });
+        const conversation = await context.conversations.rename(
+          deck.outline.deck_uid,
+          conversationId,
+          title,
+        );
+        json(res, 200, { contract_version: 1, conversation });
+        return;
+      }
+
+      if (req.method === "DELETE" && conversationMatch) {
+        if (!context.client.ready || !context.conversations?.ready) {
+          throw new HttpError(503, "conversation service is unavailable", "conversation_unavailable");
+        }
+        const deck = await context.discovery.readDeck(decodeURIComponent(conversationMatch[1]));
+        const conversationId = decodeURIComponent(conversationMatch[2]);
+        const localConversation = context.conversations.get(deck.outline.deck_uid, conversationId);
+        if (localConversation.archived_at) {
+          throw new HttpError(404, "conversation was not found", "conversation_not_found");
+        }
+        const threadId = context.conversations.threadIdFor(deck.outline.deck_uid, conversationId);
+        if (context.codexInteraction.activeTurn(threadId)) {
+          throw new HttpError(409, "running conversations cannot be deleted", "conversation_active");
+        }
+        await context.client.request("thread/archive", { threadId });
+        let archived;
+        try {
+          archived = await context.conversations.archive(deck.outline.deck_uid, conversationId);
+        } catch (error) {
+          await context.client.request("thread/unarchive", { threadId }).catch(() => {});
+          throw error;
+        }
+        json(res, 200, {
+          contract_version: 1,
+          archived: true,
+          conversation: archived.conversation,
+          active_conversation_id: archived.active_conversation_id,
+        });
+        return;
+      }
+
       if (req.method === "GET" && conversationMatch) {
         if (!context.client.ready || !context.conversations?.ready) {
           throw new HttpError(503, "conversation service is unavailable", "conversation_unavailable");
@@ -1224,7 +1343,7 @@ export function createLabHttpServer(context) {
           throw new HttpError(415, "attachment must be PNG, JPEG, or WebP", "unsupported_attachment");
         }
         const bytes = await readBytes(req);
-        const root = path.join(context.dataRoot || context.labRoot, "runtime", "attachments");
+        const root = path.join(studioLibraryRoot(context.dataRoot || context.labRoot), "attachments");
         await mkdir(root, { recursive: true });
         const attachmentPath = path.join(root, `${randomUUID()}${extension}`);
         await writeFile(attachmentPath, bytes, { flag: "wx", mode: 0o600 });
