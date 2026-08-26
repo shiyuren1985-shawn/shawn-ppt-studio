@@ -19,7 +19,6 @@ import { classifyImageTaskRequest } from "./image-task-intent.mjs";
 import { handleSelectorProjectionRequest } from "./selector-http.mjs";
 import { handleSelectorWorkspaceRequest } from "./selector-workspace-http.mjs";
 import {
-  buildTurn,
   buildWorkspaceTurn,
   buildWorkspaceSteerInput,
   extractWorkspaceUserMessage,
@@ -31,6 +30,8 @@ import {
 const BODY_LIMIT = 1024 * 1024;
 const ATTACHMENT_LIMIT = 20 * 1024 * 1024;
 const APP_ID = "shawn-ppt-studio";
+const APP_VERSION = process.env.SHAWN_PPT_STUDIO_VERSION || "development";
+const BUILD_KIND = process.env.SHAWN_PPT_STUDIO_BUILD_KIND || "source";
 const WRITE_HEADER = "x-shawn-ppt-studio";
 
 const CONTENT_TYPES = new Map([
@@ -131,35 +132,6 @@ function sseRecord(res, record) {
   res.write(`data: ${JSON.stringify(sanitizeForBrowser(record))}\n\n`);
 }
 
-function threadIdOf(params) {
-  return params?.threadId || params?.thread?.id || null;
-}
-
-function turnIdOf(params) {
-  return params?.turnId || params?.turn?.id || null;
-}
-
-function completionPayload(params, fallbackThreadId) {
-  const turn = params?.turn || {};
-  return {
-    thread_id: threadIdOf(params) || fallbackThreadId,
-    turn_id: turn.id || params?.turnId || null,
-    status: turn.status || params?.status || "completed",
-    error: turn.error || params?.error || null,
-  };
-}
-
-function publicItem(item) {
-  if (item?.type !== "imageGeneration") return item;
-  return {
-    id: item.id || null,
-    type: "imageGeneration",
-    status: item.status || null,
-    savedPath: item.savedPath || null,
-    revisedPrompt: item.revisedPrompt || null,
-  };
-}
-
 function historyContent(item) {
   if (!item || typeof item !== "object") return null;
   if (item.type === "userMessage") {
@@ -230,153 +202,6 @@ function enforceLoopbackRequest(req) {
     req.headers[WRITE_HEADER] !== "1"
   ) {
     throw new HttpError(403, `missing ${WRITE_HEADER} request header`, "missing_write_header");
-  }
-}
-
-async function handleTurn(req, res, context) {
-  const body = await readJson(req);
-  if (!context.client.ready) {
-    throw new HttpError(503, "Codex App Server is not ready", "app_server_unavailable");
-  }
-
-  const { params } = await buildTurn(body, context);
-  const requestedThreadId = params.threadId;
-  let activeTurnId = null;
-  let finished = false;
-
-  res.writeHead(200, {
-    "content-type": "text/event-stream; charset=utf-8",
-    "cache-control": "no-store",
-    connection: "keep-alive",
-    "x-accel-buffering": "no",
-    "x-content-type-options": "nosniff",
-  });
-  res.flushHeaders?.();
-
-  async function routeNotification(notification) {
-    const eventParams = notification.params || {};
-    const eventThreadId = threadIdOf(eventParams);
-    if (eventThreadId && eventThreadId !== requestedThreadId) return;
-    const eventTurnId = turnIdOf(eventParams);
-    if (activeTurnId && eventTurnId && eventTurnId !== activeTurnId) return;
-
-    if (notification.method === "turn/started") {
-      activeTurnId = eventTurnId || activeTurnId;
-      sse(res, "turn", {
-        thread_id: requestedThreadId,
-        turn_id: activeTurnId,
-        status: eventParams.turn?.status || "inProgress",
-      });
-      return;
-    }
-
-    if (notification.method === "item/agentMessage/delta") {
-      sse(res, "message_delta", {
-        thread_id: requestedThreadId,
-        turn_id: eventParams.turnId || activeTurnId,
-        item_id: eventParams.itemId || null,
-        delta: eventParams.delta || "",
-      });
-      return;
-    }
-
-    if (notification.method === "item/started" || notification.method === "item/completed") {
-      const phase = notification.method === "item/started" ? "started" : "completed";
-      const item = eventParams.item || {};
-      sse(res, "item", {
-        phase,
-        thread_id: requestedThreadId,
-        turn_id: eventParams.turnId || activeTurnId,
-        item: publicItem(item),
-      });
-
-      if (item.type === "imageGeneration") {
-        let savedPath = null;
-        try {
-          if (item.savedPath) savedPath = await context.pathPolicy.validateGeneratedImage(item.savedPath);
-        } catch (error) {
-          sse(res, "error", { message: error.message, code: error.code || "invalid_image_output" });
-          return;
-        }
-        if (
-          context.ledger &&
-          savedPath &&
-          (phase === "completed" || item.status === "completed")
-        ) {
-          try {
-            await context.ledger.recordImageImport({
-              threadId: requestedThreadId,
-              turnId: eventParams.turnId || activeTurnId,
-              itemId: item.id || null,
-              mode: body.mode,
-              sourcePath: item.savedPath,
-              importedPath: savedPath,
-              inputImagePath: body.mode === "image_edit" ? body.image_path : null,
-              revisedPrompt: item.revisedPrompt || null,
-            });
-          } catch (error) {
-            sse(res, "error", {
-              message: error.message,
-              code: error.code || "image_ledger_failed",
-            });
-          }
-        }
-        sse(res, "image", {
-          path: savedPath,
-          status: item.status || phase,
-          revised_prompt: item.revisedPrompt || null,
-        });
-      }
-      return;
-    }
-
-    if (notification.method === "turn/completed") {
-      finished = true;
-      sse(res, "completed", completionPayload(eventParams, requestedThreadId));
-      unsubscribe();
-      res.end();
-      return;
-    }
-
-    if (notification.method === "error") {
-      sse(res, "error", {
-        message: eventParams.error?.message || eventParams.message || "Codex App Server error",
-        code: eventParams.error?.code || eventParams.code || "codex_error",
-      });
-    }
-  }
-
-  // EventEmitter does not await async listeners. Serialize notifications so a
-  // savedPath validation from item/completed always finishes before the
-  // following turn/completed closes the SSE stream.
-  let notificationQueue = Promise.resolve();
-  const unsubscribe = context.client.subscribe((notification) => {
-    notificationQueue = notificationQueue
-      .then(() => routeNotification(notification))
-      .catch((error) => {
-        sse(res, "error", {
-          message: error.message || "Failed to route Codex notification",
-          code: error.code || "notification_routing_failed",
-        });
-      });
-  });
-
-  res.once("close", () => {
-    if (!finished) unsubscribe();
-  });
-
-  try {
-    const result = await context.client.request("turn/start", params);
-    activeTurnId = result?.turn?.id || activeTurnId;
-    sse(res, "turn", {
-      thread_id: requestedThreadId,
-      turn_id: activeTurnId,
-      status: result?.turn?.status || "inProgress",
-    });
-  } catch (error) {
-    unsubscribe();
-    sse(res, "error", { message: error.message, code: error.code || "turn_start_failed" });
-    res.end();
   }
 }
 
@@ -555,19 +380,6 @@ async function streamWorkspaceTurn(req, res, context, route) {
   }
 }
 
-async function serveRuntimeFile(res, requestUrl, context) {
-  const requested = requestUrl.searchParams.get("path");
-  const filePath = await context.pathPolicy.requireImageFile(requested);
-  const info = await stat(filePath);
-  res.writeHead(200, {
-    "content-type": CONTENT_TYPES.get(path.extname(filePath).toLowerCase()) || "application/octet-stream",
-    "content-length": info.size,
-    "cache-control": "no-store",
-    "x-content-type-options": "nosniff",
-  });
-  createReadStream(filePath).pipe(res);
-}
-
 async function serveConversationImage(res, requestUrl, context, deckId) {
   const deck = await context.discovery.readDeck(deckId);
   const resolved = await resolveConversationImage(deck, requestUrl.searchParams.get("path"));
@@ -624,6 +436,8 @@ export function createLabHttpServer(context) {
       if (req.method === "GET" && requestUrl.pathname === "/api/health") {
         json(res, 200, {
           app_id: context.appId || APP_ID,
+          app_version: APP_VERSION,
+          build_kind: BUILD_KIND,
           contract_version: 1,
           ok: context.client.ready,
           app_server: {
@@ -635,18 +449,12 @@ export function createLabHttpServer(context) {
           runtime: {
             data_root: context.dataRoot || context.labRoot,
             studio_library_root: studioLibraryRoot(context.dataRoot || context.labRoot),
-            image_root: context.pathPolicy.imageRoot,
           },
           services: {
             projects: context.projects?.health?.() || {
               ready: false,
               project_count: 0,
               error: "project registry is not configured",
-            },
-            ledger: context.ledger?.health?.() || {
-              ready: false,
-              record_count: 0,
-              error: "ledger adapter is not configured",
             },
             conversations: context.conversations?.health?.() || {
               ready: false,
@@ -657,18 +465,6 @@ export function createLabHttpServer(context) {
               ready: false,
               deck_count: null,
               error: "discovery adapter is not configured",
-            },
-            production: context.production?.health?.() || {
-              ready: false,
-              intent_count: 0,
-              active_count: 0,
-              error: "production intent service is not configured",
-            },
-            candidate_edits: context.candidateEdits?.health?.() || {
-              ready: false,
-              edit_count: 0,
-              active_count: 0,
-              error: "candidate edit service is not configured",
             },
             selector_workspace: context.selectorWorkspace?.health?.() || {
               ready: false,
@@ -756,31 +552,6 @@ export function createLabHttpServer(context) {
         context.client.respondToServerRequest(requestId, result);
         context.codexInteraction.resolveApproval(request, body.decision);
         json(res, 200, { resolved: true, decision: body.decision });
-        return;
-      }
-
-      if (req.method === "POST" && requestUrl.pathname === "/api/threads") {
-        if (!context.client.ready) {
-          throw new HttpError(503, "Codex App Server is not ready", "app_server_unavailable");
-        }
-        const body = await readJson(req);
-        const existing = typeof body.thread_id === "string" && body.thread_id.trim() !== "";
-        const studioRules = context.studioRules?.ready ? context.studioRules.list().rules : undefined;
-        const result = existing
-          ? await context.client.request("thread/resume", threadResumeParams(context.labRoot, body.thread_id, studioRules))
-          : await context.client.request("thread/start", threadStartParams(context.labRoot, studioRules));
-        const thread = result?.thread;
-        if (!thread?.id) throw new Error("Codex App Server did not return a thread id");
-        await context.ledger?.recordThread?.({
-          threadId: thread.id,
-          action: existing ? "resumed" : "started",
-        });
-        json(res, 200, {
-          thread_id: thread.id,
-          resumed: existing,
-          thread,
-          imported_images: context.ledger?.importedImages?.(thread.id) || [],
-        });
         return;
       }
 
@@ -1213,28 +984,6 @@ export function createLabHttpServer(context) {
         return;
       }
 
-      const threadMatch = requestUrl.pathname.match(/^\/api\/threads\/([^/]+)$/);
-      if (req.method === "GET" && threadMatch) {
-        if (!context.client.ready) {
-          throw new HttpError(503, "Codex App Server is not ready", "app_server_unavailable");
-        }
-        const threadId = decodeURIComponent(threadMatch[1]);
-        const result = await context.client.request("thread/read", { threadId, includeTurns: true });
-        json(res, 200, {
-          ...result,
-          imported_images: context.ledger?.importedImages?.(threadId) || [],
-        });
-        return;
-      }
-
-      if (req.method === "GET" && requestUrl.pathname === "/api/decks") {
-        if (!context.discovery) {
-          throw new HttpError(503, "deck discovery is unavailable", "deck_discovery_unavailable");
-        }
-        json(res, 200, await context.discovery.listDecks());
-        return;
-      }
-
       const exportReadinessMatch = requestUrl.pathname.match(
         /^\/api\/decks\/([^/]+)\/export-readiness$/,
       );
@@ -1301,34 +1050,12 @@ export function createLabHttpServer(context) {
         return;
       }
 
-      if (req.method === "GET" && requestUrl.pathname === "/api/selector") {
-        if (!context.discovery) {
-          throw new HttpError(503, "deck discovery is unavailable", "deck_discovery_unavailable");
-        }
-        const deckId = requestUrl.searchParams.get("deck");
-        json(res, 200, await context.discovery.getSelectorMetadata(deckId));
-        return;
-      }
-
       const outlineMatch = requestUrl.pathname.match(/^\/api\/decks\/([^/]+)\/outline$/);
       if (req.method === "GET" && outlineMatch) {
         if (!context.discovery) {
           throw new HttpError(503, "deck discovery is unavailable", "deck_discovery_unavailable");
         }
         json(res, 200, await context.discovery.getOutline(decodeURIComponent(outlineMatch[1])));
-        return;
-      }
-
-      if (req.method === "PATCH" && outlineMatch) {
-        if (!context.outlineStore) {
-          throw new HttpError(503, "outline store is unavailable", "outline_store_unavailable");
-        }
-        const body = await readJson(req);
-        const deckId = decodeURIComponent(outlineMatch[1]);
-        if (body.deck_id !== undefined && body.deck_id !== deckId) {
-          throw new HttpError(400, "deck_id does not match route", "outline_scope_mismatch");
-        }
-        json(res, 200, await context.outlineStore.applyRows({ ...body, deck_id: deckId }));
         return;
       }
 
@@ -1375,176 +1102,6 @@ export function createLabHttpServer(context) {
             decodeURIComponent(slideMatch[2]),
           ),
         );
-        return;
-      }
-
-      const slideOutlineMatch = requestUrl.pathname.match(
-        /^\/api\/decks\/([^/]+)\/slides\/([^/]+)\/outline$/,
-      );
-      if (req.method === "PATCH" && slideOutlineMatch) {
-        if (!context.outlineStore) {
-          throw new HttpError(503, "outline store is unavailable", "outline_store_unavailable");
-        }
-        const body = await readJson(req);
-        const deckId = decodeURIComponent(slideOutlineMatch[1]);
-        const slideUid = decodeURIComponent(slideOutlineMatch[2]);
-        if (body.deck_id !== undefined && body.deck_id !== deckId) {
-          throw new HttpError(400, "deck_id does not match route", "outline_scope_mismatch");
-        }
-        if (body.slide_uid !== slideUid) {
-          throw new HttpError(400, "slide_uid does not match route", "outline_scope_mismatch");
-        }
-        json(res, 200, await context.outlineStore.applyRow({ ...body, deck_id: deckId }));
-        return;
-      }
-
-      if (req.method === "POST" && requestUrl.pathname === "/api/outlines/apply") {
-        if (!context.outlineStore) {
-          throw new HttpError(503, "outline store is unavailable", "outline_store_unavailable");
-        }
-        json(res, 200, await context.outlineStore.applyRow(await readJson(req)));
-        return;
-      }
-
-      if (req.method === "POST" && requestUrl.pathname === "/api/production/intents") {
-        if (!context.production) {
-          throw new HttpError(503, "production intent service is unavailable", "production_unavailable");
-        }
-        json(res, 201, await context.production.create(await readJson(req)));
-        return;
-      }
-
-      const productionIntentMatch = requestUrl.pathname.match(
-        /^\/api\/production\/intents\/([^/]+)$/,
-      );
-      if (req.method === "GET" && productionIntentMatch) {
-        if (!context.production) {
-          throw new HttpError(503, "production intent service is unavailable", "production_unavailable");
-        }
-        json(
-          res,
-          200,
-          await context.production.get(decodeURIComponent(productionIntentMatch[1])),
-        );
-        return;
-      }
-
-      const productionExecuteMatch = requestUrl.pathname.match(
-        /^\/api\/production\/intents\/([^/]+)\/execute$/,
-      );
-      if (req.method === "POST" && productionExecuteMatch) {
-        if (!context.production) {
-          throw new HttpError(503, "production intent service is unavailable", "production_unavailable");
-        }
-        json(
-          res,
-          202,
-          await context.production.execute(
-            decodeURIComponent(productionExecuteMatch[1]),
-            await readJson(req),
-          ),
-        );
-        return;
-      }
-
-      const productionEventsMatch = requestUrl.pathname.match(
-        /^\/api\/production\/intents\/([^/]+)\/events$/,
-      );
-      if (req.method === "GET" && productionEventsMatch) {
-        if (!context.production) {
-          throw new HttpError(503, "production intent service is unavailable", "production_unavailable");
-        }
-        const rawAfter = requestUrl.searchParams.get("after") || "0";
-        if (!/^\d+$/.test(rawAfter)) {
-          throw new HttpError(400, "after must be a non-negative integer", "invalid_event_cursor");
-        }
-        json(
-          res,
-          200,
-          context.production.events(
-            decodeURIComponent(productionEventsMatch[1]),
-            Number(rawAfter),
-          ),
-        );
-        return;
-      }
-
-      const productionCandidatesMatch = requestUrl.pathname.match(
-        /^\/api\/production\/intents\/([^/]+)\/candidates$/,
-      );
-      if (req.method === "GET" && productionCandidatesMatch) {
-        if (!context.production) {
-          throw new HttpError(503, "production intent service is unavailable", "production_unavailable");
-        }
-        json(
-          res,
-          200,
-          await context.production.candidates(decodeURIComponent(productionCandidatesMatch[1])),
-        );
-        return;
-      }
-
-      if (req.method === "POST" && requestUrl.pathname === "/api/production/candidate-edits") {
-        if (!context.candidateEdits) {
-          throw new HttpError(503, "candidate edit service is unavailable", "candidate_edit_unavailable");
-        }
-        json(res, 201, await context.candidateEdits.create(await readJson(req)));
-        return;
-      }
-
-      const candidateEditMatch = requestUrl.pathname.match(
-        /^\/api\/production\/candidate-edits\/([^/]+)$/,
-      );
-      if (req.method === "GET" && candidateEditMatch) {
-        if (!context.candidateEdits) {
-          throw new HttpError(503, "candidate edit service is unavailable", "candidate_edit_unavailable");
-        }
-        json(res, 200, await context.candidateEdits.get(decodeURIComponent(candidateEditMatch[1])));
-        return;
-      }
-
-      const candidateEditExecuteMatch = requestUrl.pathname.match(
-        /^\/api\/production\/candidate-edits\/([^/]+)\/execute$/,
-      );
-      if (req.method === "POST" && candidateEditExecuteMatch) {
-        if (!context.candidateEdits) {
-          throw new HttpError(503, "candidate edit service is unavailable", "candidate_edit_unavailable");
-        }
-        json(
-          res,
-          202,
-          await context.candidateEdits.execute(
-            decodeURIComponent(candidateEditExecuteMatch[1]),
-            await readJson(req),
-          ),
-        );
-        return;
-      }
-
-      const candidateEditCandidatesMatch = requestUrl.pathname.match(
-        /^\/api\/production\/candidate-edits\/([^/]+)\/candidates$/,
-      );
-      if (req.method === "GET" && candidateEditCandidatesMatch) {
-        if (!context.candidateEdits) {
-          throw new HttpError(503, "candidate edit service is unavailable", "candidate_edit_unavailable");
-        }
-        json(
-          res,
-          200,
-          await context.candidateEdits.candidates(
-            decodeURIComponent(candidateEditCandidatesMatch[1]),
-          ),
-        );
-        return;
-      }
-
-      if (req.method === "POST" && requestUrl.pathname === "/api/turns") {
-        await handleTurn(req, res, context);
-        return;
-      }
-
-      if (req.method === "GET" && requestUrl.pathname === "/api/runtime-file") {
-        await serveRuntimeFile(res, requestUrl, context);
         return;
       }
 

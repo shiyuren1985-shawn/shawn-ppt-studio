@@ -194,15 +194,34 @@ function collectThreadIds(value, result = new Set()) {
   return result;
 }
 
-function modeTitle(mode, pageLabel, total, pageLabels) {
+function selectedStyleTitle(pageLabels, total, wholeDeck) {
+  const count = total || pageLabels.length || 0;
+  if (wholeDeck) return `整套作图 · ${count} 页`;
+  const uniqueLabels = [...new Set(pageLabels)];
+  if (uniqueLabels.length > 0 && uniqueLabels.length <= 4) {
+    const scope = uniqueLabels.join("、");
+    return count > uniqueLabels.length ? `${scope} · ${count} 张作图` : `${scope} · 作图`;
+  }
+  if (uniqueLabels.length > 0) return `${uniqueLabels[0]} 等 ${count} 页 · 作图`;
+  return `${count} 页作图`;
+}
+
+function modeTitle(mode, pageLabel, total, pageLabels, { wholeDeck = false } = {}) {
   if (mode === "single_image_edit") return `${pageLabel || "当前页"} · 修图`;
-  if (mode === "selected_style_expansion") return `整套作图 · ${total || pageLabels.length || 0} 页`;
+  if (mode === "selected_style_expansion") return selectedStyleTitle(pageLabels, total, wholeDeck);
   if (["fast_4x3_anchored", "full_4x3_anchored"].includes(mode)) {
     const scope = pageLabels.length > 1 ? `${pageLabels[0]}–${pageLabels.at(-1)}` : pageLabel || "当前页";
     return `${scope} · 4×3`;
   }
   if (["fast_8x1_diverse", "quick_8x1"].includes(mode)) return `${pageLabel || "当前页"} · 8×1`;
   return `${pageLabel || "PPT"} · 作图`;
+}
+
+function compatibleRequestMode(requestMode, formalMode) {
+  if (requestMode === "retouch") return formalMode === "single_image_edit";
+  if (requestMode === "fast_8x1") return ["fast_8x1_diverse", "quick_8x1"].includes(formalMode);
+  if (requestMode === "fast_4x3") return ["fast_4x3_anchored", "full_4x3_anchored"].includes(formalMode);
+  return formalMode !== "single_image_edit";
 }
 
 function stageOf({ state, kind, completed, total, started, updatedAt, now, staleMs, hasLiveTurn, pendingApprovals, terminalTurnStatus }) {
@@ -247,7 +266,11 @@ function stageOf({ state, kind, completed, total, started, updatedAt, now, stale
   if (entries(state.scheduler?.ready_queue).length > 0) {
     return { status: "queued", label: "等待生成", percent: 0 };
   }
-  return { status: "preparing", label: "准备中", percent: null };
+  return {
+    status: "preparing",
+    label: kind === "selected" ? "正在准备页面任务" : "准备中",
+    percent: null,
+  };
 }
 
 function startedTime(state, kind, fileMtime) {
@@ -273,7 +296,7 @@ async function readJson(filePath) {
 }
 
 export class TaskProjection {
-  constructor({ discovery, conversations, associations = null, clock = () => Date.now(), cacheMs = 1500, recentMs = 36 * 60 * 60 * 1000, staleMs = 30 * 60 * 1000, associationGraceMs = 15 * 60 * 1000 }) {
+  constructor({ discovery, conversations, associations = null, clock = () => Date.now(), cacheMs = 1500, recentMs = 36 * 60 * 60 * 1000, staleMs = 30 * 60 * 1000, associationGraceMs = 15 * 60 * 1000, requestBridgeMs = 60 * 60 * 1000 }) {
     this.discovery = discovery;
     this.conversations = conversations;
     this.associations = associations;
@@ -282,6 +305,7 @@ export class TaskProjection {
     this.recentMs = recentMs;
     this.staleMs = staleMs;
     this.associationGraceMs = associationGraceMs;
+    this.requestBridgeMs = requestBridgeMs;
     this.cache = null;
     this.targets = new Map();
     this.lastError = null;
@@ -318,8 +342,10 @@ export class TaskProjection {
         if (task.sourceKind !== "request") return true;
         return !formalImageTasks.some((formal) => {
           if (formal.deck_id !== task.deck_id || formal.conversation_id !== task.conversation_id) return false;
+          if (!compatibleRequestMode(task.mode, formal.mode)) return false;
           const formalStartedMs = formal.requestStartedMs || formal.startedMs || formal.updatedMs;
-          return Math.abs(formalStartedMs - task.requestStartedMs) <= this.associationGraceMs;
+          const delay = formalStartedMs - task.requestStartedMs;
+          return delay >= -1000 && delay <= this.requestBridgeMs;
         });
       });
       const formalRequests = withoutBoundRequests.filter((task) => task.sourceKind === "state" && task.requestStartedMs);
@@ -396,7 +422,7 @@ export class TaskProjection {
       const latest = codexInteraction?.latestTurn?.(conversation.thread_id) || null;
       const justSubmitted = now - requestStartedMs < 60_000;
       let status = "preparing";
-      let statusLabel = "准备中";
+      let statusLabel = "正在准备作图";
       if (!turnId && !justSubmitted) {
         status = "attention";
         statusLabel = latest?.status === "interrupted"
@@ -590,6 +616,10 @@ export class TaskProjection {
         const slides = slideUids.map((uid) => deck.slides.find((slide) => slide.slide_uid === uid)).filter(Boolean);
         const pageLabels = slides.map((slide) => slide.page_label).filter(Boolean);
         const pageLabel = pageLabels[0] || firstString(identity.page_id, pageIds[0]);
+        const deckSlideUids = new Set(deck.slides.map((slide) => slide.slide_uid).filter(Boolean));
+        const scopedSlideUids = new Set(slideUids);
+        const wholeDeck = deckSlideUids.size > 0
+          && [...deckSlideUids].every((slideUid) => scopedSlideUids.has(slideUid));
         const units = pageEntries(state, kind);
         const total = units.length || (
           kind === "single"
@@ -709,7 +739,7 @@ export class TaskProjection {
           conversation_id: conversation?.conversation_id || null,
           slide_uid: slides[0]?.slide_uid || slideUids[0] || null,
           page_label: pageLabel,
-          title: modeTitle(state.run_mode, pageLabel, total, pageLabels),
+          title: modeTitle(state.run_mode, pageLabel, total, pageLabels, { wholeDeck }),
           mode: state.run_mode || kind,
           status: stage.status,
           status_label: stage.label,

@@ -17,6 +17,8 @@ Shawn PPT Studio is a local, conversation-first workspace for building visual Po
 - PDF and ordered page-image ZIP export. PPTX export remains unavailable until a real Microsoft Office sensitivity label can be verified.
 - A Tauri desktop shell for macOS.
 
+Studio has one execution path: a project conversation invokes the canonical `shawn-ppt-image` Skill directly, while `作图任务` and the selector read that Skill's formal state and handoff records. Superseded production-intent, candidate-edit, prototype-turn, and external selector services are not started or exposed.
+
 Company decks, private assets, production selection state, generated images, runtime logs, and internal QA evidence are intentionally excluded.
 
 ## Requirements
@@ -118,6 +120,8 @@ No real ImageGen call is made by these tests.
 ## Data and safety boundaries
 
 - Studio's persistent project index, conversation history, long-term rules, attachments, task records, and operational logs live in the clearly named `Studio Library` folder under the app's macOS Application Support directory. This is persistent user data, not a disposable cache. Existing installations migrate the former `runtime` folder into `Studio Library` on first launch after upgrade.
+- A project may optionally provide an authorized `全稿标题系统合同.json` or `global_chrome_contract.json` beside its outline. Studio registers that file as a deck-scoped generation source for every image route; projects without one keep their existing title behavior.
+- Historical `production-intents.jsonl`, `candidate-edits.jsonl`, and `lab-ledger.jsonl` files from preview builds are retained as inert local archives. Current Studio versions neither load nor append to them.
 - If a registered outline file is moved or deleted, Studio keeps the remaining projects available and marks only that entry as `原大纲文件已丢失`; removing that stale entry does not delete any other project.
 - Projects, conversations, selections, and generated artifacts remain local unless the user explicitly publishes them.
 - The repository does not contain company documents or generated slide images.

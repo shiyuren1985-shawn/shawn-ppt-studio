@@ -6,17 +6,14 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { AppServerClient, resolveCodexExecutable } from "./app-server-client.mjs";
-import { CandidateEditService } from "./candidate-edits.mjs";
 import { ConversationIndex } from "./conversations.mjs";
 import { DeckDiscovery, DEFAULT_DECKS_FILE } from "./discovery.mjs";
 import { ProjectDiscovery } from "./project-discovery.mjs";
 import { StudioProjectRegistry } from "./projects.mjs";
 import { MacProjectPicker } from "./project-picker.mjs";
 import { createLabHttpServer } from "./http-server.mjs";
-import { LabLedger } from "./ledger.mjs";
-import { OutlineStore } from "./outline-store.mjs";
+import { StudioInstanceLock } from "./instance-lock.mjs";
 import { createPathPolicy } from "./path-policy.mjs";
-import { ProductionIntentService } from "./production-intents.mjs";
 import { SelectionProjection } from "./selection-projection.mjs";
 import { SelectorWorkspace } from "./selector-workspace.mjs";
 import { ExportService } from "./export-service.mjs";
@@ -25,7 +22,7 @@ import { TaskProjection } from "./task-projection.mjs";
 import { TaskAssociationIndex } from "./task-associations.mjs";
 import { StudioRulesStore } from "./studio-rules.mjs";
 import { RuntimeEventLog } from "./runtime-event-log.mjs";
-import { prepareStudioLibrary, studioLibraryRoot } from "./studio-library.mjs";
+import { prepareStudioLibrary } from "./studio-library.mjs";
 import {
   DEFAULT_MONITORING_ROOT,
   DEFAULT_OVERVIEW_PYTHON,
@@ -52,17 +49,11 @@ const dataRoot =
     : path.resolve(process.env.SHAWN_PPT_STUDIO_DATA_ROOT || projectRoot);
 const labRoot = dataRoot;
 await prepareStudioLibrary(dataRoot);
-const libraryRoot = studioLibraryRoot(dataRoot);
+const instanceLock = new StudioInstanceLock({ dataRoot });
+await instanceLock.acquire();
 const pathPolicy = createPathPolicy(dataRoot);
-await pathPolicy.ensureRuntime();
 const runtimeEvents = new RuntimeEventLog({ dataRoot });
 await runtimeEvents.initialize();
-const ledger = new LabLedger({ labRoot: dataRoot });
-try {
-  await ledger.initialize();
-} catch (error) {
-  process.stderr.write(`PPT AI Lab: ledger unavailable: ${error.message}\n`);
-}
 const decksFile =
   process.env.PPT_AI_LAB_TEST_MODE === "1"
     ? path.resolve(process.env.PPT_AI_LAB_DECKS_FILE || path.join(labRoot, "fixtures", "decks.json"))
@@ -81,12 +72,10 @@ const legacyDiscovery = new DeckDiscovery({
 const discovery = new ProjectDiscovery({ legacyDiscovery, projects });
 const projectPicker = new MacProjectPicker();
 await discovery.probe();
-const outlineStore = new OutlineStore({ labRoot, discovery });
 const selectionProjection = new SelectionProjection({ discovery });
 const singleEditTurnFinalizer = new SingleEditTurnFinalizer();
 const selectorWorkspace = new SelectorWorkspace({
   discovery,
-  selectorOrigin: process.env.SHAWN_PPT_SELECTOR_ORIGIN || "http://127.0.0.1:8765/",
   artifactCleanupPlanner: createCandidateArtifactCleanupPlanner({
     pythonPath: (
       process.env.PPT_AI_LAB_TEST_MODE === "1" && process.env.PPT_AI_LAB_OVERVIEW_PYTHON
@@ -146,10 +135,6 @@ try {
   process.stderr.write(`PPT AI Lab: Codex App Server unavailable: ${error.message}\n`);
 }
 
-const productionRunRoot =
-  process.env.PPT_AI_LAB_TEST_MODE === "1"
-    ? path.resolve(process.env.PPT_AI_LAB_RUN_ROOT || path.join(libraryRoot, "shawn-runs"))
-    : path.join(libraryRoot, "shawn-runs");
 const monitoringRoot =
   process.env.PPT_AI_LAB_TEST_MODE === "1"
     ? path.resolve(
@@ -170,49 +155,15 @@ try {
 } catch (error) {
   process.stderr.write(`Shawn PPT Studio: overview runtime unavailable: ${error.message}\n`);
 }
-const production = new ProductionIntentService({
-  labRoot,
-  discovery,
-  client,
-  runRoot: productionRunRoot,
-  monitoringRoot,
-  overviewPython: configuredOverviewPython,
-});
-try {
-  await production.initialize();
-} catch (error) {
-  production.lastError = error;
-  process.stderr.write(`PPT AI Lab: production intent service unavailable: ${error.message}\n`);
-}
-const candidateEdits = new CandidateEditService({
-  labRoot,
-  discovery,
-  production,
-  selectionProjection,
-  client,
-  monitoringRoot,
-});
-try {
-  await candidateEdits.initialize();
-} catch (error) {
-  candidateEdits.lastError = error;
-  process.stderr.write(`PPT AI Lab: candidate edit service unavailable: ${error.message}\n`);
-}
-
 const server = createLabHttpServer({
   client,
   appId: "shawn-ppt-studio",
   codeRoot: projectRoot,
   dataRoot,
   labRoot,
-  imageRoot: pathPolicy.imageRoot,
   pathPolicy,
-  ledger,
   conversations,
   discovery,
-  outlineStore,
-  production,
-  candidateEdits,
   selectionProjection,
   selectorWorkspace,
   monitoringRoot,
@@ -258,10 +209,12 @@ async function close(reason = "unknown") {
     }, 1_500);
     forceTimer.unref();
   });
-  production.stop();
-  candidateEdits.stop();
-  await client.stop();
-  await runtimeEvents.record("server_shutdown_completed", { reason });
+  try {
+    await client.stop();
+    await runtimeEvents.record("server_shutdown_completed", { reason });
+  } finally {
+    await instanceLock.release();
+  }
 }
 
 for (const signal of ["SIGINT", "SIGTERM"]) {

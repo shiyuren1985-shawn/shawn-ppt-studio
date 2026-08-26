@@ -39,7 +39,8 @@ h3 { margin: 0; font-size: 16px; }
 .topbar { display: grid; grid-template-columns: 220px minmax(230px, 320px) 1px auto minmax(220px, 1fr); align-items: center; gap: 16px; padding: 0 18px; color: white; background: var(--forest); border-bottom: 2px solid var(--lime); }
 .brand { min-width: 0; display: flex; align-items: center; gap: 11px; }
 .brand-mark { width: 36px; height: 36px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 11px; color: var(--forest); background: var(--lime); font-weight: 900; }
-.brand p { overflow: hidden; margin: 0; color: rgba(255,255,255,.7); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.brand p { display: flex; align-items: center; gap: 6px; overflow: hidden; margin: 0; color: rgba(255,255,255,.7); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.app-version { padding-left: 6px; border-left: 1px solid rgba(255,255,255,.28); color: var(--lime); font-size: 11px; font-weight: 800; }
 .topbar-project-context { min-width: 0; display: flex; align-items: center; gap: 7px; }
 .topbar-project-context .project-picker { min-width: 0; flex: 1; padding: 0; }
 .topbar-project-context .project-picker-button { min-height: 46px; border-color: rgba(255,255,255,.22); background: rgba(255,255,255,.1); box-shadow: none; color: white; }

@@ -91,3 +91,26 @@ slide_uids:
   assert.equal(outline.slides[0].multilingual.chinese.core_thesis, "中文命题");
   assert.equal(outline.slides[0].multilingual.english_page_content.includes("<br>"), true);
 });
+
+test("escaped pipes inside bilingual copy remain content instead of shifting table columns", () => {
+  const outline = parse(`---
+deck_uid: STUDIO_MULTILINGUAL_ESCAPED_PIPE_TEST
+slide_uids:
+  P11: slide-multilingual-escaped-pipe
+---
+
+| 页码 | 客户钩子／页面标题 | 核心命题 | 信息密度／上屏层级 | 页面必讲内容 | English Page Content | 双语交付策略 | 同页双语配对 | 视觉表达目标／用户硬约束 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P11 | 海外项目方案 | 中文命题 | 高｜一级 | 中文必讲内容 | **English Title:** Proposal<br>**English Display Content:** **Risk Pattern \\| Clarify Early.** and **Joint Response \\| Build Together.** | **bilingual_strategy:** same_page | 风险规律 ⇄ Risk Pattern \\| Clarify Early. | 第一视觉重点是风险规律；第二视觉重点是共同回应。 |
+`);
+
+  const slide = outline.slides[0];
+  assert.equal(slide.column_count, 9);
+  assert.equal(slide.multilingual.bilingual_strategy, "bilingual_strategy: same_page");
+  assert.equal(slide.multilingual.same_page_pairing, "风险规律 ⇄ Risk Pattern | Clarify Early.");
+  assert.equal(
+    slide.multilingual.visual_constraints,
+    "第一视觉重点是风险规律；第二视觉重点是共同回应。",
+  );
+  assert.match(slide.multilingual.english_page_content, /Risk Pattern \| Clarify Early/);
+});

@@ -522,6 +522,8 @@ fn studio_command(config: &DesktopConfig) -> Result<Command, String> {
         .env("SHAWN_PPT_IMAGE_MONITORING_ROOT", &config.monitoring_root)
         .env("SHAWN_PPT_MONITORING_ROOT", &config.monitoring_root)
         .env("SHAWN_PPT_STUDIO_DESKTOP", "1")
+        .env("SHAWN_PPT_STUDIO_VERSION", env!("CARGO_PKG_VERSION"))
+        .env("SHAWN_PPT_STUDIO_BUILD_KIND", "local-development")
         .env(
             "SHAWN_PPT_STUDIO_PARENT_PID",
             std::process::id().to_string(),

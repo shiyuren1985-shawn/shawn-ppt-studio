@@ -8,14 +8,6 @@ import {
 import { HttpError } from "./errors.mjs";
 import { DEFAULT_STUDIO_RULES } from "./studio-rules.mjs";
 
-export const MODES = new Set([
-  "chat",
-  "outline",
-  "image_generate",
-  "image_edit",
-  "shawn_skill_dry_run",
-]);
-
 export { IMAGEGEN_SKILL_PATH, SHAWN_SKILL_PATH } from "../integrations/skill-paths.mjs";
 
 const USER_MESSAGE_START = "[SHAWN_PPT_STUDIO_USER_MESSAGE]";
@@ -39,31 +31,6 @@ export function studioUserRuleLines(rules = []) {
     "The following editable Studio long-term rules apply to every project and every conversation. Treat them as persistent user requirements:",
     ...normalized.map((rule, index) => `${index + 1}. ${rule}`),
   ];
-}
-
-function outlineSchema(deckUid, slideUid) {
-  return {
-    type: "object",
-    properties: {
-      action: { type: "string", const: "outline_patch" },
-      deck_uid: { type: "string", const: deckUid },
-      slide_uid: { type: "string", const: slideUid },
-      summary: { type: "string" },
-      before_markdown: { type: "string" },
-      replacement_markdown: { type: "string" },
-      rationale: { type: "array", items: { type: "string" }, minItems: 1 },
-    },
-    required: [
-      "action",
-      "deck_uid",
-      "slide_uid",
-      "summary",
-      "before_markdown",
-      "replacement_markdown",
-      "rationale",
-    ],
-    additionalProperties: false,
-  };
 }
 
 function requireString(value, name) {
@@ -198,6 +165,19 @@ export async function buildWorkspaceTurn(
     ...(monitoringRoot ? [path.resolve(monitoringRoot)] : []),
   ].filter((value, index, values) => values.indexOf(value) === index);
   const outlineContext = compactOutlineContext(deck, currentSlideUid);
+  const projectGenerationSources = Array.isArray(deck.generation_sources)
+    ? deck.generation_sources
+        .filter((source) =>
+          source?.role === "global_chrome_contract" &&
+          source?.scope === "deck" &&
+          typeof source?.path === "string" &&
+          path.isAbsolute(source.path))
+        .map((source) => ({
+          role: source.role,
+          scope: source.scope,
+          path: path.resolve(source.path),
+        }))
+    : [];
 
   const prompt = [
     USER_MESSAGE_START,
@@ -213,6 +193,7 @@ export async function buildWorkspaceTurn(
     "For outline edits, modify the authoritative outline in place, preserve deck_uid and slide_uid identities, and do not create a second authoritative outline.",
     "If the outline is a zero-page draft, use the exact deck_uid supplied below when converting it to canonical front matter and create stable slide_uids for real pages; never replace the project deck_uid with a new one.",
     "For PPT image generation or image editing, use the supplied shawn-ppt-image skill and its canonical control planes, run state, source snapshot, ImageGen path, and existing sole Judge. Do not create another reviewer, state machine, or image concurrency layer.",
+    "The Studio host has already resolved the optional project_generation_sources below. For every formal image-generation route, including Fast8, 4x3, and selected-style expansion, register each supplied deck-scoped source before the run is frozen. A global_chrome_contract must be passed as the exact deck supporting source, equivalent to --supporting-source \"<path>::deck\"; do not replace it with a user style reference or rediscover another contract. If project_generation_sources is empty, do not infer or impose a global title system.",
     "The supplied skill is already attached by the Studio host. For a formal Fast8 request, do not search memory or reopen the entire skill before preflight. After one short acknowledgement, perform one bounded read-only input enumeration: inspect only the target page hard requirements and, only when a mandatory image path is missing, the directly referenced page-level asset index. Register every mandatory ImageGen logo, product image, or photo together with user style references in the initial preflight; do not scan unrelated pages, collect optional/planning assets, or start a Director or Reviewer for this enumeration. The first state-mutating command must then build the preflight manifest and initialize the one formal run; read only the stage-gated references when their stage begins.",
     "For a formal Fast8 run, create its preflight manifest below one supplied candidate_output_root (normally <output_root>/.fast8_preflight), never in /tmp or another unlisted root. In asset_items, the first user-designated style image uses role=primary_style_reference and any additional style images use role=supporting_style_reference. style_anchor_only is an approval scope, never an asset role. Never patch a frozen preflight manifest or canonical state by hand to recover a role mismatch; stop with the exact error instead.",
     "For a new Fast8 run, never use a distinct slide identity sidecar. When building the preflight manifest, the authoritative page source may also be registered as --slide-identity-file only when it is the exact same canonical outline. When calling init_task_dir.py with that frozen preflight manifest, never pass --slide-identity-file again; init reads the optional identity binding from the manifest. This prevents one request from producing a rejected initialization and a second suffixed preflight.",
@@ -234,6 +215,7 @@ export async function buildWorkspaceTurn(
     `studio_request_started_at: ${requestStartedAt}`,
     `currently_viewed_slide_uid: ${currentSlideUid || "none"}`,
     `reference_image_paths: ${JSON.stringify(validatedReferences)}`,
+    `project_generation_sources: ${JSON.stringify(projectGenerationSources)}`,
     `confirmed_selected_image_refs: ${JSON.stringify(confirmedSelections)}`,
     `outline_page_index: ${JSON.stringify(outlineContext.page_index)}`,
     `currently_viewed_slide: ${JSON.stringify(outlineContext.current_slide)}`,
@@ -295,131 +277,6 @@ export async function buildWorkspaceSteerInput(body, { pathPolicy, studioRules =
       },
       ...validatedReferences.map((referencePath) => ({ type: "localImage", path: referencePath })),
     ],
-  };
-}
-
-export async function buildTurn(body, { labRoot, imageRoot, pathPolicy }) {
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw new HttpError(400, "JSON body must be an object", "invalid_turn_request");
-  }
-
-  const threadId = requireString(body.thread_id, "thread_id");
-  const message = requireString(body.message, "message");
-  if (!MODES.has(body.mode)) {
-    throw new HttpError(400, "mode is invalid", "invalid_turn_mode");
-  }
-
-  const scope = body.scope && typeof body.scope === "object" ? body.scope : {};
-  const common = {
-    threadId,
-    cwd: labRoot,
-    approvalPolicy: "never",
-    sandboxPolicy: {
-      type: "workspaceWrite",
-      writableRoots: [labRoot],
-      networkAccess: body.mode === "image_generate" || body.mode === "image_edit",
-    },
-  };
-
-  if (body.mode === "chat") {
-    return { params: { ...common, input: [{ type: "text", text: message }] } };
-  }
-
-  if (body.mode === "outline") {
-    const outline = typeof scope.outline_markdown === "string" ? scope.outline_markdown : "";
-    const deckUid =
-      typeof scope.deck_uid === "string" && scope.deck_uid.trim() ? scope.deck_uid.trim() : "LAB_DECK";
-    const slideUid =
-      typeof scope.slide_uid === "string" && scope.slide_uid.trim()
-        ? scope.slide_uid.trim()
-        : "LAB_SLIDE_001";
-    const prompt = [
-      "This is a Shawn PPT Studio outline proposal exercise.",
-      "Propose a patch only. Do not read or write any file and do not edit an authoritative outline.",
-      "The final response must be only the JSON object required by the supplied output schema.",
-      `deck_uid: ${deckUid}`,
-      `slide_uid: ${slideUid}`,
-      `revision_id: ${scope.revision_id || "unrecorded"}`,
-      "Current complete page table row begins:",
-      outline,
-      "Current complete page table row ends.",
-      `User request: ${message}`,
-      "Copy the supplied row exactly into before_markdown.",
-      "replacement_markdown must be one complete single-line Markdown table row with the same page id and column count.",
-      "A later explicit CAS endpoint, not this AI turn, is the only component allowed to apply the proposal.",
-    ].join("\n");
-
-    return {
-      params: {
-        ...common,
-        input: [{ type: "text", text: prompt }],
-        outputSchema: outlineSchema(deckUid, slideUid),
-      },
-    };
-  }
-
-  if (body.mode === "image_generate") {
-    const prompt = [
-      "$imagegen Create exactly one prototype PPT slide image for this isolated lab.",
-      "Required canvas: 16:9 landscape.",
-      "Use ImageGen once and wait for its completed imageGeneration item with savedPath.",
-      `The bridge will safely import that savedPath into ${imageRoot}. Do not run shell commands, resize, copy, move, or rename the generated image yourself.`,
-      "Do not access or modify EPC, SI, monitoring, selections, production run state, or any production image directory.",
-      `Creative request: ${message}`,
-    ].join("\n");
-    return {
-      params: {
-        ...common,
-        input: [
-          { type: "text", text: prompt },
-          { type: "skill", name: "imagegen", path: IMAGEGEN_SKILL_PATH },
-        ],
-      },
-    };
-  }
-
-  if (body.mode === "image_edit") {
-    const sourcePath = await pathPolicy.requireImageFile(body.image_path);
-    const prompt = [
-      "$imagegen Edit the supplied local prototype image exactly once.",
-      "Preserve a 16:9 landscape canvas and never overwrite the source image.",
-      "Use ImageGen once and wait for its completed imageGeneration item with savedPath.",
-      `The bridge will safely import that savedPath into ${imageRoot}. Do not run shell commands, resize, copy, move, or rename the edited image yourself.`,
-      "Do not access or modify EPC, SI, monitoring, selections, production run state, or any production image directory.",
-      `Requested visible change: ${message}`,
-    ].join("\n");
-    return {
-      params: {
-        ...common,
-        input: [
-          { type: "text", text: prompt },
-          { type: "localImage", path: sourcePath },
-          { type: "skill", name: "imagegen", path: IMAGEGEN_SKILL_PATH },
-        ],
-      },
-    };
-  }
-
-  const prompt = [
-    "$shawn-ppt-image Perform a read-only routing dry run for the isolated PPT AI Lab.",
-    "Read the supplied skill instructions and explain which existing route and canonical control-plane entrypoints would apply to the request.",
-    "Absolutely do not call ImageGen, do not spawn subagents, do not create a project or run directory, and do not write or modify any file.",
-    "Do not inspect or modify EPC, SI, monitoring, selections, production run state, or production images.",
-    "Return only a concise routing report including route, inputs that would be required, control-plane commands that would be used, and explicit no-write/no-image confirmation.",
-    `Hypothetical request: ${message}`,
-  ].join("\n");
-  return {
-    params: {
-      ...common,
-      sandboxPolicy: {
-        type: "readOnly",
-        networkAccess: false,
-      },
-      input: [
-        { type: "text", text: prompt },
-        { type: "skill", name: "shawn-ppt-image", path: SHAWN_SKILL_PATH },
-      ],
-    },
   };
 }
 

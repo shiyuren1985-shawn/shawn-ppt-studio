@@ -11,7 +11,6 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
 
 import { HttpError } from "./errors.mjs";
 import {
@@ -21,24 +20,6 @@ import {
 } from "./selection-image-metadata.mjs";
 import { buildStudioCatalog } from "./studio-selection-catalog.mjs";
 import { StudioSelectionStore } from "./studio-selection-store.mjs";
-
-const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
-
-function loopbackOrigin(value) {
-  let parsed;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error("selector origin is invalid");
-  }
-  if (
-    parsed.protocol !== "http:" ||
-    !["127.0.0.1", "localhost", "::1", "[::1]"].includes(parsed.hostname)
-  ) {
-    throw new Error("selector origin must be loopback HTTP");
-  }
-  return parsed;
-}
 
 function stringList(value) {
   if (!Array.isArray(value)) return [];
@@ -53,13 +34,6 @@ function candidatePreviewUrl(deckId, candidate) {
 function within(candidate, root) {
   const relative = path.relative(root, candidate);
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`));
-}
-
-function allowedCandidateRoots(deck) {
-  return (deck.candidate_roots || [])
-    .map((root) => root?.path)
-    .filter((value) => typeof value === "string" && path.isAbsolute(value))
-    .map((value) => path.resolve(value));
 }
 
 function privateCandidateFiles(rawCatalog) {
@@ -309,35 +283,15 @@ function normalizeCatalog(deckId, expectedDeckUid, catalog, sourceKind = "legacy
   };
 }
 
-async function upstreamFailure(response) {
-  // The legacy service may include absolute paths or indexing details in its
-  // error text. Keep those on its stderr and return only product language.
-  try {
-    await response.body?.cancel();
-  } catch {
-    // A consumed or already closed error body needs no further handling.
-  }
-  const clientFailure = response.status >= 400 && response.status < 500;
-  return new HttpError(
-    clientFailure ? 409 : 502,
-    clientFailure ? "这项选择没有保存，请刷新后再试" : "选稿服务暂时无法完成请求",
-    "selector_request_failed",
-  );
-}
-
 export class SelectorWorkspace {
   constructor({
     discovery,
-    selectorOrigin = "http://127.0.0.1:8765/",
-    fetchImpl = fetch,
     trashRoot = path.join(os.homedir(), ".Trash"),
     studioSelections = new StudioSelectionStore(),
     artifactCleanupPlanner = null,
     eventLog = null,
   }) {
     this.discovery = discovery;
-    this.selectorOrigin = loopbackOrigin(selectorOrigin);
-    this.fetch = fetchImpl;
     this.trashRoot = path.resolve(trashRoot);
     this.studioSelections = studioSelections;
     this.artifactCleanupPlanner = artifactCleanupPlanner;
@@ -362,26 +316,15 @@ export class SelectorWorkspace {
     if (!this.discovery) {
       throw new HttpError(503, "PPT 列表暂时不可用", "deck_discovery_unavailable");
     }
-    return this.discovery.readDeck(deckId);
-  }
-
-  async #requestJson(pathname, init = {}) {
-    const target = new URL(pathname, this.selectorOrigin);
-    let response;
-    try {
-      response = await this.fetch(target, {
-        ...init,
-        signal: AbortSignal.timeout(120_000),
-      });
-    } catch {
-      throw new HttpError(503, "选稿服务暂时没有启动", "selector_unavailable");
+    const deck = await this.discovery.readDeck(deckId);
+    if (deck.source_kind !== "studio") {
+      throw new HttpError(
+        409,
+        "请重新打开这份大纲，将它迁移为 Studio 项目后再进入选稿台。",
+        "legacy_project_migration_required",
+      );
     }
-    if (!response.ok) throw await upstreamFailure(response);
-    try {
-      return await response.json();
-    } catch {
-      throw new HttpError(502, "选稿服务返回的数据无法读取", "selector_invalid_response");
-    }
+    return deck;
   }
 
   async #acceptCatalog(deckId, rawCatalog) {
@@ -418,17 +361,13 @@ export class SelectorWorkspace {
     if (running) return running;
     const refresh = (async () => {
       const deck = await this.#deck(deckId);
-      if (deck.source_kind === "studio") {
-        const diagnostics = {};
-        const catalog = await buildStudioCatalog(deck, { diagnostics });
-        await this.#record("selector_catalog_scan_completed", {
-          deck_id: deckId,
-          ...diagnostics,
-        });
-        return this.#acceptCatalog(deckId, catalog);
-      }
-      const query = new URLSearchParams({ deck: deckId });
-      return this.#acceptCatalog(deckId, await this.#requestJson(`/api/catalog?${query}`));
+      const diagnostics = {};
+      const catalog = await buildStudioCatalog(deck, { diagnostics });
+      await this.#record("selector_catalog_scan_completed", {
+        deck_id: deckId,
+        ...diagnostics,
+      });
+      return this.#acceptCatalog(deckId, catalog);
     })();
     this.refreshes.set(deckId, refresh);
     try {
@@ -436,16 +375,6 @@ export class SelectorWorkspace {
     } finally {
       if (this.refreshes.get(deckId) === refresh) this.refreshes.delete(deckId);
     }
-  }
-
-  async #mutate(deckId, pathname, body) {
-    await this.#deck(deckId);
-    const catalog = await this.#requestJson(pathname, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ deck_id: deckId, ...body }),
-    });
-    return this.#acceptCatalog(deckId, catalog);
   }
 
   async select(deckId, slideUid, { candidate_id: candidateId, selected }) {
@@ -457,60 +386,41 @@ export class SelectorWorkspace {
       throw new HttpError(409, "这张图片已不在当前候选中，请刷新后再试", "candidate_not_current");
     }
     const deck = await this.#deck(deckId);
-    if (deck.source_kind === "studio") {
-      const source = this.candidateFiles.get(deckId)?.get(candidateId);
-      if (!source?.run_id || !source?.handoff_path || !source?.native_candidate_id) {
-        throw new HttpError(409, "这张图片已不在当前候选中，请刷新后再试", "candidate_not_current");
-      }
-      await this.studioSelections.setCandidate(
-        deck,
-        slideUid,
-        {
-          run_id: source.run_id,
-          handoff_path: source.handoff_path,
-          native_candidate_id: source.native_candidate_id,
-        },
-        selected,
-      );
-      return this.#acceptCatalog(deckId, await buildStudioCatalog(deck));
+    const source = this.candidateFiles.get(deckId)?.get(candidateId);
+    if (!source?.run_id || !source?.handoff_path || !source?.native_candidate_id) {
+      throw new HttpError(409, "这张图片已不在当前候选中，请刷新后再试", "candidate_not_current");
     }
-    return this.#mutate(deckId, "/api/select", {
-      slide_uid: slideUid,
-      candidate_id: candidateId,
+    await this.studioSelections.setCandidate(
+      deck,
+      slideUid,
+      {
+        run_id: source.run_id,
+        handoff_path: source.handoff_path,
+        native_candidate_id: source.native_candidate_id,
+      },
       selected,
-    });
+    );
+    return this.#acceptCatalog(deckId, await buildStudioCatalog(deck));
   }
 
   async useBaseline(deckId, slideUid) {
-    const deck = await this.#deck(deckId);
-    if (deck.source_kind === "studio") {
-      throw new HttpError(409, "新项目没有上一版图片，请直接选择当前候选。", "baseline_unavailable");
-    }
-    const page = this.slide(deckId, slideUid).page;
-    if (!page.baseline_available) {
-      throw new HttpError(409, "这一页没有可沿用的上一版图片", "baseline_unavailable");
-    }
-    return this.#mutate(deckId, "/api/use-baseline", { slide_uid: slideUid });
+    await this.#deck(deckId);
+    this.slide(deckId, slideUid);
+    throw new HttpError(409, "新项目没有上一版图片，请直接选择当前候选。", "baseline_unavailable");
   }
 
   async include(deckId, slideUid, included) {
-    const deck = await this.#deck(deckId);
-    if (deck.source_kind === "studio") {
-      throw new HttpError(409, "新项目暂不支持排除页面。", "studio_include_unavailable");
-    }
+    await this.#deck(deckId);
     this.slide(deckId, slideUid);
     if (typeof included !== "boolean") {
       throw new HttpError(400, "included must be a boolean", "invalid_include_value");
     }
-    return this.#mutate(deckId, "/api/include-page", { slide_uid: slideUid, included });
+    throw new HttpError(409, "新项目暂不支持排除页面。", "studio_include_unavailable");
   }
 
   async confirmDefaults(deckId) {
-    const deck = await this.#deck(deckId);
-    if (deck.source_kind === "studio") {
-      throw new HttpError(409, "新项目没有上一版图片，请逐页选择当前候选。", "baseline_unavailable");
-    }
-    return this.#mutate(deckId, "/api/confirm-defaults", {});
+    await this.#deck(deckId);
+    throw new HttpError(409, "新项目没有上一版图片，请逐页选择当前候选。", "baseline_unavailable");
   }
 
   #removeCandidateFromSnapshot(deckId, slideUid, candidateId, fileSha256) {
@@ -766,10 +676,9 @@ export class SelectorWorkspace {
       ? source.sources
       : [source];
     const verifiedSources = [];
-    if (deck.source_kind === "studio") {
-      const handoffPath = source.handoff_path ? path.resolve(source.handoff_path) : null;
-      const outputReal = await realpath(deck.output_root).catch(() => null);
-      for (const item of sourceFiles) {
+    const handoffPath = source.handoff_path ? path.resolve(source.handoff_path) : null;
+    const outputReal = await realpath(deck.output_root).catch(() => null);
+    for (const item of sourceFiles) {
         const projectRoot = item.project_root || source.project_root;
         const originRoot = item.origin_root || source.origin_root;
         const [sourceReal, projectReal, originReal] = await Promise.all([
@@ -815,22 +724,6 @@ export class SelectorWorkspace {
           origin_root: originReal,
           catalog_path: catalogPath,
         });
-      }
-    } else {
-      const roots = allowedCandidateRoots(deck);
-      for (const item of sourceFiles) {
-        const sourceReal = await realpath(item.path).catch(() => null);
-        const allowed = Boolean(
-          sourceReal &&
-          sourceReal === item.path &&
-          roots.some((root) => within(sourceReal, root)) &&
-          await sha256File(sourceReal) === sha256
-        );
-        if (!allowed) {
-          throw new HttpError(409, "这张图片无法移到废纸篓", "candidate_path_not_allowed");
-        }
-        verifiedSources.push({ ...item, path: sourceReal });
-      }
     }
     for (const item of verifiedSources) {
       const info = await lstat(item.path);
@@ -838,22 +731,11 @@ export class SelectorWorkspace {
         throw new HttpError(409, "这张图片无法移到废纸篓", "candidate_path_not_allowed");
       }
     }
-    const cleanup = deck.source_kind === "studio"
-      ? await this.#trashTargetsForStudio(source, verifiedSources)
-      : {
-          targets: verifiedSources.map((item) => ({
-            path: item.path,
-            kind: "file",
-            reason: "candidate_image",
-          })),
-          pruneChains: [],
-          strategies: [],
-        };
+    const cleanup = await this.#trashTargetsForStudio(source, verifiedSources);
     let selectionRestoreCandidateId = candidateId;
     let studioSelectionRestore = [];
     if (current.selected) {
       if (
-        deck.source_kind === "studio" &&
         source.selected_source_refs.length
       ) {
         studioSelectionRestore = source.selected_source_refs;
@@ -945,14 +827,13 @@ export class SelectorWorkspace {
       throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
     }
     const deck = await this.#deck(deckId);
-    if (deck.source_kind === "studio") {
-      const source = this.candidateFiles.get(deckId)?.get(candidateId);
-      const sourceReal = source ? await realpath(source.path).catch(() => null) : null;
-      const outputReal = await realpath(deck.output_root).catch(() => null);
-      const contentType = sourceReal
-        ? IMAGE_CONTENT_TYPES.get(path.extname(sourceReal).toLowerCase())
-        : null;
-      if (
+    const source = this.candidateFiles.get(deckId)?.get(candidateId);
+    const sourceReal = source ? await realpath(source.path).catch(() => null) : null;
+    const outputReal = await realpath(deck.output_root).catch(() => null);
+    const contentType = sourceReal
+      ? IMAGE_CONTENT_TYPES.get(path.extname(sourceReal).toLowerCase())
+      : null;
+    if (
         !source ||
         source.file_sha256 !== sha256 ||
         !sourceReal ||
@@ -960,69 +841,37 @@ export class SelectorWorkspace {
         !outputReal ||
         !within(sourceReal, outputReal) ||
         !contentType
-      ) {
-        throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
-      }
-      const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0);
-      const handle = await open(sourceReal, flags).catch(() => null);
-      if (!handle) {
-        throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
-      }
-      let handedOff = false;
-      try {
-        const info = await handle.stat();
-        if (!info.isFile() || await sha256FileHandle(handle) !== sha256) {
-          throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
-        }
-        res.writeHead(200, {
-          "content-type": contentType,
-          "content-length": info.size,
-          "cache-control": "no-store",
-          "x-content-type-options": "nosniff",
-          "content-security-policy": "default-src 'none'",
-        });
-        const stream = handle.createReadStream({ autoClose: true });
-        stream.on("error", () => {
-          if (!res.destroyed) res.destroy();
-        });
-        res.once("error", () => stream.destroy());
-        res.once("close", () => stream.destroy());
-        handedOff = true;
-        stream.pipe(res);
-        return;
-      } finally {
-        if (!handedOff) await handle.close().catch(() => {});
-      }
+    ) {
+      throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
     }
-    const query = new URLSearchParams({ deck: deckId, candidate: candidateId });
-    let response;
+    const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0);
+    const handle = await open(sourceReal, flags).catch(() => null);
+    if (!handle) {
+      throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
+    }
+    let handedOff = false;
     try {
-      response = await this.fetch(new URL(`/api/image?${query}`, this.selectorOrigin), {
-        signal: AbortSignal.timeout(120_000),
+      const info = await handle.stat();
+      if (!info.isFile() || await sha256FileHandle(handle) !== sha256) {
+        throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
+      }
+      res.writeHead(200, {
+        "content-type": contentType,
+        "content-length": info.size,
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'",
       });
-    } catch {
-      throw new HttpError(503, "图片暂时无法读取", "selector_unavailable");
+      const stream = handle.createReadStream({ autoClose: true });
+      stream.on("error", () => {
+        if (!res.destroyed) res.destroy();
+      });
+      res.once("error", () => stream.destroy());
+      res.once("close", () => stream.destroy());
+      handedOff = true;
+      stream.pipe(res);
+    } finally {
+      if (!handedOff) await handle.close().catch(() => {});
     }
-    if (!response.ok) throw await upstreamFailure(response);
-    const contentType = String(response.headers.get("content-type") || "").split(";", 1)[0];
-    if (!IMAGE_TYPES.has(contentType) || !response.body) {
-      throw new HttpError(502, "选稿服务返回的不是可用图片", "selector_invalid_image");
-    }
-    const length = response.headers.get("content-length");
-    const headers = {
-      "content-type": contentType,
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'",
-    };
-    if (/^\d+$/.test(length || "")) headers["content-length"] = length;
-    res.writeHead(200, headers);
-    const stream = Readable.fromWeb(response.body);
-    stream.on("error", () => {
-      if (!res.destroyed) res.destroy();
-    });
-    res.once("error", () => stream.destroy());
-    res.once("close", () => stream.destroy());
-    stream.pipe(res);
   }
 }

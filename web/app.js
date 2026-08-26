@@ -19,6 +19,13 @@ import {
   retouchDisplayLabel,
 } from "./model.js";
 import { createTaskCatalogRefreshTracker } from "./task-catalog-refresh.js";
+import {
+  beginConversationSubmission,
+  captureConversationRoute,
+  finishConversationSubmission,
+  isConversationSubmitting,
+  isCurrentConversationRoute,
+} from "./conversation-routing.js";
 
 const STORAGE_KEY = "shawn-ppt-studio.ui.v5";
 const state = {
@@ -37,6 +44,7 @@ const state = {
   conversations: [],
   archivedConversations: [],
   activeConversationId: "",
+  conversationViewEpoch: 0,
   messages: [],
   activeHistoryFallback: null,
   attachments: [],
@@ -51,7 +59,7 @@ const state = {
   pendingApprovals: new Map(),
   resolvedApprovalIds: new Set(),
   resolvingApprovalIds: new Set(),
-  submitting: false,
+  pendingConversationSubmissions: new Map(),
   interrupting: false,
   creatingConversation: false,
   conversationActionTargetId: "",
@@ -67,7 +75,7 @@ const state = {
 };
 
 const ids = [
-  "main-content", "deck-switcher", "outline-slide-count", "outline-slide-list", "retouch-slide-count",
+  "main-content", "app-version", "deck-switcher", "outline-slide-count", "outline-slide-list", "retouch-slide-count",
   "retouch-slide-list", "current-page-label", "current-page-title", "composer-page", "composer-scope-copy", "selection-count",
   "current-page-context-copy", "retouch-page-label", "retouch-page-title",
   "selected-preview", "outline-version", "outline-language-switch", "outline-reading-view", "active-conversation-title",
@@ -119,6 +127,22 @@ function persist() {
     columns: state.columns,
     outlineLanguageView: state.outlineLanguageView,
   }));
+}
+
+async function loadAppVersion() {
+  try {
+    const health = await api.getHealth();
+    const version = typeof health?.app_version === "string" && health.app_version.trim()
+      ? health.app_version.trim()
+      : "未知";
+    el["app-version"].textContent = `v${version}`;
+    el["app-version"].title = health?.build_kind === "local-development"
+      ? "当前安装的本地开发版"
+      : "当前 Studio 版本";
+    document.title = `Shawn PPT Studio · v${version}`;
+  } catch {
+    el["app-version"].textContent = "版本未知";
+  }
 }
 
 function toast(message) {
@@ -1459,19 +1483,24 @@ function renderCodexItem(item, { scroll = true, authoritative = false, streaming
 async function loadConversations() {
   const deck = currentDeck();
   if (!deck) return;
+  const deckId = deck.deck_id;
   try {
     let directory = normalizeConversations(await api.getConversations(deck.deck_id));
+    if (state.deckId !== deckId) return;
     state.conversations = directory.conversations;
     state.activeConversationId = directory.active_conversation_id || state.conversations[0]?.conversation_id || "";
+    const route = advanceConversationView();
     if (!state.activeConversationId) {
       await createConversation({ silent: true });
       return;
     }
     renderConversationList();
-    await loadConversationHistory(state.activeConversationId);
+    await loadConversationHistory(state.activeConversationId, route);
   } catch (error) {
+    if (state.deckId !== deckId) return;
     state.conversations = [];
     state.activeConversationId = "";
+    advanceConversationView();
     state.messages = [];
     renderConversationList();
     renderMessages();
@@ -1493,6 +1522,7 @@ async function createConversation({ silent = false } = {}) {
     const directory = normalizeConversations(await api.getConversations(deck.deck_id));
     state.conversations = directory.conversations;
     state.activeConversationId = created.conversation_id;
+    advanceConversationView();
     state.messages = [];
     stopEventStream();
     setActiveTurn(null);
@@ -1513,28 +1543,54 @@ function closeConversationDrawerIfOpen() {
   if (!el["conversation-drawer"].hidden) closeConversationDrawer();
 }
 
+function advanceConversationView() {
+  state.conversationViewEpoch += 1;
+  return captureConversationRoute(state);
+}
+
+function currentConversationRoute() {
+  return captureConversationRoute(state);
+}
+
+function conversationRouteIsCurrent(route) {
+  return isCurrentConversationRoute(state, route);
+}
+
 async function activateConversation(conversationId) {
   if (!conversationId || conversationId === state.activeConversationId) return;
   const deck = currentDeck();
   if (!deck) return;
+  const previousConversationId = state.activeConversationId;
+  state.activeConversationId = conversationId;
+  const route = advanceConversationView();
+  stopEventStream();
+  setActiveTurn(null);
+  state.messages = [];
+  renderConversationList();
+  renderMessages();
   try {
-    stopEventStream();
-    setActiveTurn(null);
     await api.activateConversation(deck.deck_id, conversationId);
-    state.activeConversationId = conversationId;
+    if (!conversationRouteIsCurrent(route)) return;
     renderConversationList();
-    await loadConversationHistory(conversationId);
+    await loadConversationHistory(conversationId, route);
+    if (!conversationRouteIsCurrent(route)) return;
     closeConversationDrawerIfOpen();
   } catch (error) {
+    if (!conversationRouteIsCurrent(route)) return;
+    state.activeConversationId = previousConversationId;
+    const fallbackRoute = advanceConversationView();
     toast(`无法打开这个对话：${error.message}`);
+    renderConversationList();
+    if (previousConversationId) await loadConversationHistory(previousConversationId, fallbackRoute);
   }
 }
 
-async function loadConversationHistory(conversationId) {
+async function loadConversationHistory(conversationId, requestedRoute = currentConversationRoute()) {
   const deck = currentDeck();
   if (!deck || !conversationId) return;
   try {
     const payload = await api.getConversationHistory(deck.deck_id, conversationId);
+    if (!conversationRouteIsCurrent(requestedRoute)) return;
     const turns = codexHistoryTurns(payload);
     const activeTurnId = String(payload?.active_turn?.turn_id || "");
     state.activeHistoryFallback = activeTurnId
@@ -1548,6 +1604,7 @@ async function loadConversationHistory(conversationId) {
     renderMessages();
     if (state.activeTurnId) attachToActiveTurn();
   } catch (error) {
+    if (!conversationRouteIsCurrent(requestedRoute)) return;
     state.messages = [];
     setActiveTurn(null);
     renderMessages();
@@ -1778,11 +1835,19 @@ function attachToActiveTurn() {
   const deckId = state.deckId;
   const conversationId = state.activeConversationId;
   const turnId = state.activeTurnId;
+  const route = currentConversationRoute();
   const controller = new AbortController();
   state.eventController = controller;
-  void api.streamConversationEvents(deckId, conversationId, turnId, state.eventSequence, onConversationEvent, controller.signal)
+  void api.streamConversationEvents(
+    deckId,
+    conversationId,
+    turnId,
+    state.eventSequence,
+    (event) => onConversationEvent(event, route),
+    controller.signal,
+  )
     .catch((error) => {
-      if (error.name === "AbortError" || state.activeTurnId !== turnId) return;
+      if (error.name === "AbortError" || !conversationRouteIsCurrent(route) || state.activeTurnId !== turnId) return;
       if (error.status === 404 && state.activeHistoryFallback?.turn_id === turnId) {
         for (const item of state.activeHistoryFallback.items || []) {
           renderCodexItem({ ...item, __turnId: turnId, __source: "history-fallback" }, { authoritative: true });
@@ -1851,7 +1916,12 @@ function resizeMessageInput() {
 }
 
 function updateSendState() {
-  el["send-button"].disabled = state.submitting || !state.activeConversationId || !state.scope || !el["message-input"].value.trim();
+  const submitting = isConversationSubmitting(
+    state.pendingConversationSubmissions,
+    state.deckId,
+    state.activeConversationId,
+  );
+  el["send-button"].disabled = submitting || !state.activeConversationId || !state.scope || !el["message-input"].value.trim();
   el["send-button"].textContent = "发送";
 }
 
@@ -2074,8 +2144,13 @@ function appendTurnOutcome(status) {
   scrollTimeline();
 }
 
-function onConversationEvent(event) {
+function onConversationEvent(event, route = currentConversationRoute()) {
   const data = event.data;
+  if (event.event === "codex" && data?.method === "turn/started") {
+    finishConversationSubmission(state.pendingConversationSubmissions, route);
+    updateSendState();
+  }
+  if (!conversationRouteIsCurrent(route)) return;
   if (Number.isFinite(data?.sequence)) state.eventSequence = Math.max(state.eventSequence, data.sequence);
   if (event.event === "approval_resolution") {
     if (data?.resolved !== false) markApprovalResolved(data);
@@ -2099,7 +2174,6 @@ function onConversationEvent(event) {
   const method = data.method;
   const turnId = String(data.turn_id || params.turnId || params.turn?.id || state.activeTurnId || "");
   if (method === "turn/started") {
-    state.submitting = false;
     setActiveTurn({ turn_id: turnId, status: params.turn?.status || "inProgress" });
     void loadTasks();
     return;
@@ -2174,14 +2248,20 @@ function onConversationEvent(event) {
 
 async function submitConversation(event) {
   event.preventDefault();
-  if (state.submitting || !state.activeConversationId || !state.scope) return;
+  if (!state.activeConversationId || !state.scope) return;
+  const route = beginConversationSubmission(state.pendingConversationSubmissions, currentConversationRoute());
+  if (!route) return;
   const message = el["message-input"].value.trim();
-  if (!message) return;
+  if (!message) {
+    finishConversationSubmission(state.pendingConversationSubmissions, route);
+    return;
+  }
+  const deckId = route.deckId;
+  const conversationId = route.conversationId;
   const attachments = safeAttachmentPaths(state.attachments);
   const retouchContext = state.workspace === "retouch";
   const expectedTurnId = state.activeTurnId;
   const optimisticUserMessage = appendOptimisticUserMessage(message);
-  state.submitting = true;
   el["message-input"].value = "";
   resizeMessageInput();
   state.attachments = [];
@@ -2196,7 +2276,7 @@ async function submitConversation(event) {
   try {
     if (expectedTurnId) {
       try {
-        const result = await api.steerConversationTurn(state.deckId, state.activeConversationId, {
+        const result = await api.steerConversationTurn(deckId, conversationId, {
           message,
           expected_turn_id: expectedTurnId,
           reference_images: requestBody.reference_images,
@@ -2206,39 +2286,54 @@ async function submitConversation(event) {
         }
       } catch (error) {
         if (error.status !== 409 || error.code !== "turn_not_active") throw error;
-        setActiveTurn(null);
-        await api.streamConversationTurn(state.deckId, state.activeConversationId, requestBody, onConversationEvent);
+        if (conversationRouteIsCurrent(route)) setActiveTurn(null);
+        await api.streamConversationTurn(
+          deckId,
+          conversationId,
+          requestBody,
+          (next) => onConversationEvent(next, route),
+        );
       }
     } else {
       try {
-        await api.streamConversationTurn(state.deckId, state.activeConversationId, requestBody, onConversationEvent);
+        await api.streamConversationTurn(
+          deckId,
+          conversationId,
+          requestBody,
+          (next) => onConversationEvent(next, route),
+        );
       } catch (error) {
         if (error.status !== 409 || error.code !== "turn_already_active") throw error;
-        const current = await api.getConversationHistory(state.deckId, state.activeConversationId);
+        const current = await api.getConversationHistory(deckId, conversationId);
         const recoveredTurnId = String(current?.active_turn?.turn_id || "");
         if (!recoveredTurnId) throw error;
-        setActiveTurn(current.active_turn);
-        attachToActiveTurn();
-        await api.steerConversationTurn(state.deckId, state.activeConversationId, {
+        if (conversationRouteIsCurrent(route)) {
+          setActiveTurn(current.active_turn);
+          attachToActiveTurn();
+        }
+        await api.steerConversationTurn(deckId, conversationId, {
           message,
           expected_turn_id: recoveredTurnId,
           reference_images: requestBody.reference_images,
         });
       }
     }
-    const deck = currentDeck();
-    if (deck) {
-      const directory = normalizeConversations(await api.getConversations(deck.deck_id));
+    const deck = state.decks.find((item) => item.deck_id === deckId);
+    if (deck && conversationRouteIsCurrent(route)) {
+      const directory = normalizeConversations(await api.getConversations(deckId));
+      if (!conversationRouteIsCurrent(route)) return;
       state.conversations = directory.conversations;
       renderConversationList();
     }
   } catch (error) {
-    optimisticUserMessage.article.classList.add("send-failed");
-    toast(`这次没有发送成功：${error.message}`);
+    if (conversationRouteIsCurrent(route)) {
+      optimisticUserMessage.article.classList.add("send-failed");
+      toast(`这次没有发送成功：${error.message}`);
+    }
   } finally {
-    state.submitting = false;
+    finishConversationSubmission(state.pendingConversationSubmissions, route);
     updateSendState();
-    el["message-input"].focus();
+    if (conversationRouteIsCurrent(route)) el["message-input"].focus();
   }
 }
 
@@ -2595,6 +2690,7 @@ async function initialize() {
   }
   if (!state.columns.content && !state.columns.conversation) state.columns.conversation = true;
   bindEvents();
+  await loadAppVersion();
   resizeMessageInput();
   initializeResizers();
   applyColumnState({ save: false });

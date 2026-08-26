@@ -13,6 +13,18 @@ function pageLabels(message) {
   return labels;
 }
 
+function requestedPageCount(message) {
+  const match = message.match(/(?:这|那|共|做|重做|再做|生成|制作)?\s*(\d{1,3})\s*页/u);
+  const count = Number(match?.[1]);
+  return Number.isInteger(count) && count > 0 ? count : null;
+}
+
+function deckWideScope(message) {
+  return /(?:整个|整份|整套|全套|全稿|全部|所有).{0,12}(?:大纲|PPT|幻灯片|页面|页)/iu.test(message)
+    || /(?:大纲|PPT|幻灯片).{0,12}(?:每一页|每页|逐页)/iu.test(message)
+    || /(?:selected[_ -]?style|选定风格扩页|整稿扩页)/iu.test(message);
+}
+
 function taskTitle(message, modeHint) {
   const pages = pageLabels(message);
   if (modeHint === "retouch") return `${pages[0] || "当前页"} · 修图`;
@@ -23,6 +35,9 @@ function taskTitle(message, modeHint) {
   }
   if (pages.length > 1) return `${pages[0]} 等 ${pages.length} 页 · 作图`;
   if (pages.length === 1) return `${pages[0]} · 作图`;
+  const pageCount = requestedPageCount(message);
+  if (pageCount) return `${pageCount} 页作图`;
+  if (deckWideScope(message)) return "整套作图";
   return "图片生成";
 }
 
@@ -39,17 +54,25 @@ export function classifyImageTaskRequest({
   else if (/(?:fast\s*4|4\s*[×xX]\s*3)/i.test(text)) modeHint = "fast_4x3";
 
   const explicitPipeline = Boolean(modeHint) || /(?:selected[_ -]?style|选定风格扩页|整稿扩页)/i.test(text);
-  const directChinese = /(?:请|帮我|给我|为|开始|执行|走|进行|我要|我想|需要|重新|继续|按|用).{0,24}(?:作图|生图|修图|改图|扩页)/u.test(text)
-    || /(?:作图|生图|修图|改图|扩页).{0,18}(?:一下|一轮|一版|候选|图片|页面|管线|流程)/u.test(text)
+  const directChinese = /(?:请|帮我|给我|开始|执行|走|进行|我要|需要|重新|继续|按|用|把).{0,24}(?:作图|生图|修图|改图|扩页)/u.test(text)
+    || /(?:作图|生图|修图|改图|扩页).{0,8}(?:一下|一轮|一版|候选|管线|流程)/u.test(text)
     || /(?:请|帮我|给我|我要|我想|需要|重新|继续).{0,16}(?:做|画|出).{0,10}(?:\d+\s*张)?(?:图片|候选图|页面图)/u.test(text)
-    || /(?:生成|制作|重做|修改|调整|优化|替换).{0,18}(?:图片|图像|候选图|页面图|PPT\s*页)/iu.test(text)
-    || /(?:图片|图像|候选图|页面图|PPT\s*页).{0,18}(?:生成|制作|重做|修改|调整|优化|替换)/iu.test(text);
+    || /(?:生成|制作|重做|重新生成|替换).{0,18}(?:图片|图像|候选图|页面图|PPT\s*页)/iu.test(text)
+    || /把.{0,10}(?:图片|图像|候选图|页面图|PPT\s*页).{0,10}(?:生成|制作|重做|重新生成|替换|修改|调整|优化)/iu.test(text)
+    || /(?:修改|调整|优化).{0,8}(?:这张|该张|当前|选中)?(?:图片|图像|候选图|页面图)/iu.test(text);
   const directEnglish = /\b(?:generate|create|redraw|edit|revise)\b.{0,28}\b(?:image|visual|slide|candidate)\b/i.test(text);
-  const anchoredRedraw = Array.isArray(referenceImages)
-    && referenceImages.length > 0
-    && /(?:重做|重新做|照着|参考|沿用|按这个风格)/u.test(text)
-    && pageLabels(text).length > 0;
-  if (!explicitPipeline && !directChinese && !directEnglish && !anchoredRedraw) return null;
+  const hasVisualAnchor = (Array.isArray(referenceImages) && referenceImages.length > 0)
+    || /(?:风格定位图|视觉参考图|参考图)/u.test(text);
+  const anchoredRedraw = hasVisualAnchor
+    && /(?:重做|重新做|再做(?:一次|一遍)?|照着|参考|沿用|按这个风格)/u.test(text)
+    && (pageLabels(text).length > 0 || requestedPageCount(text));
+  const deckWideRedraw = deckWideScope(text)
+    && /(?:做一遍|重新做|重做|生成|制作|出图|作图|生图)/u.test(text)
+    && (
+      (Array.isArray(referenceImages) && referenceImages.length > 0)
+      || /(?:风格定位图|参考图|图片|配图|视觉|页面图|候选图)/u.test(text)
+    );
+  if (!explicitPipeline && !directChinese && !directEnglish && !anchoredRedraw && !deckWideRedraw) return null;
   return {
     kind: "image",
     mode_hint: modeHint || "image_generation",

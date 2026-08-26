@@ -31,11 +31,19 @@ grep -q 'id="task-center-popover"' "$RESOURCES/web/index.html"
 test -f "$RESOURCES/server/task-projection.mjs"
 test -f "$RESOURCES/server/task-associations.mjs"
 test -f "$RESOURCES/server/studio-rules.mjs"
+test ! -e "$RESOURCES/server/production-intents.mjs"
+test ! -e "$RESOURCES/server/candidate-edits.mjs"
+test ! -e "$RESOURCES/server/ledger.mjs"
+test ! -e "$RESOURCES/server/outline-store.mjs"
+test ! -e "$RESOURCES/server/selected-image-edit-parent.mjs"
 grep -q 'requestUrl.pathname === "/api/tasks"' "$RESOURCES/server/http-server.mjs"
 grep -q 'requestUrl.pathname === "/api/studio-rules"' "$RESOURCES/server/http-server.mjs"
 grep -q 'id="studio-rules-button"' "$RESOURCES/web/index.html"
 grep -q 'progress_percent' "$RESOURCES/web/app.js"
 grep -q 'conversation-file-link' "$RESOURCES/web/app.js"
+test -f "$RESOURCES/web/conversation-routing.js"
+grep -q 'onConversationEvent(event, route)' "$RESOURCES/web/app.js"
+grep -q 'conversationViewEpoch' "$RESOURCES/web/app.js"
 grep -q 'conversation-file/open' "$RESOURCES/web/api.js"
 grep -q 'codex-process' "$RESOURCES/web/app.js"
 grep -q 'id="project-dialog-title">新建 PPT<' "$RESOURCES/web/index.html"
@@ -46,6 +54,13 @@ grep -q 'id="outline-slide-count">0<' "$RESOURCES/web/index.html"
 grep -q '还没有页面' "$RESOURCES/web/app.js"
 grep -q '先在右侧告诉 AI 这份 PPT 要讲什么' "$RESOURCES/web/app.js"
 grep -q '先完成至少一页大纲' "$RESOURCES/web/app.js"
+if grep -Eq '127\.0\.0\.1:8765|/api/production/|/api/turns|/api/runtime-file' \
+  "$RESOURCES/server/http-server.mjs" \
+  "$RESOURCES/server/selector-workspace.mjs" \
+  "$RESOURCES/web/api.js"; then
+  echo "legacy execution surface unexpectedly bundled" >&2
+  exit 1
+fi
 
 # The loopback bridge owns the macOS picker. The external loopback WebView
 # remains deliberately unable to call Tauri IPC.

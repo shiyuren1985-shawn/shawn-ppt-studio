@@ -193,5 +193,8 @@ test("workspace turn explicitly carries the Studio transport marker for the root
     result.params.additionalContext.shawn_ppt_studio_transport.value,
     "transport=studio_app_server_v1",
   );
+  const prompt = result.params.input.find((item) => item.type === "text")?.text || "";
+  assert.match(prompt, /project_generation_sources: \[\]/);
+  assert.doesNotMatch(prompt, /project_generation_sources: \[\{.*global_chrome_contract/s);
   await rm(root, { recursive: true, force: true });
 });

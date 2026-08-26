@@ -3,6 +3,10 @@ import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/
 import path from "node:path";
 
 import { HttpError } from "./errors.mjs";
+import {
+  discoverProjectGenerationSources,
+  sameProjectGenerationSources,
+} from "./project-generation-sources.mjs";
 import { studioLibraryRoot } from "./studio-library.mjs";
 
 const CONTRACT_VERSION = 1;
@@ -26,6 +30,9 @@ function publicRecord(record) {
     project_root: record.project_root,
     outline_path: record.outline_path,
     output_root: record.output_root,
+    generation_sources: Array.isArray(record.generation_sources)
+      ? structuredClone(record.generation_sources)
+      : [],
     source_kind: "studio",
     created_at: record.created_at,
     updated_at: record.updated_at,
@@ -90,6 +97,11 @@ export class StudioProjectRegistry {
       }
     }
     if (parsed && !Array.isArray(parsed.hidden_decks)) parsed.hidden_decks = [];
+    if (parsed?.projects) {
+      for (const record of parsed.projects) {
+        if (!Array.isArray(record.generation_sources)) record.generation_sources = [];
+      }
+    }
     if (parsed) this.#validate(parsed);
     this.state = parsed || this.state;
     this.ready = true;
@@ -207,8 +219,9 @@ export class StudioProjectRegistry {
     if (!info.isFile()) throw new HttpError(400, "outline must be a file", "invalid_outline_path");
     const duplicate = this.state.projects.find((item) => item.outline_path === outlineReal);
     if (duplicate) {
+      await this.refreshGenerationSources(duplicate.deck_id);
       const restored = await this.restoreDeck(duplicate.deck_id);
-      return { ...publicRecord(duplicate), already_registered: true, restored };
+      return { ...publicRecord(this.get(duplicate.deck_id)), already_registered: true, restored };
     }
     const text = await readFile(outlineReal, "utf8");
     const canonicalUid = text.match(/^deck_uid:\s*(.+?)\s*$/m)?.[1]?.trim() || null;
@@ -216,12 +229,17 @@ export class StudioProjectRegistry {
     const resolvedOutputRoot = outputRoot === null || outputRoot === undefined
       ? path.join(path.dirname(outlineReal), "output")
       : await this.#directory(outputRoot);
+    const generationSources = await discoverProjectGenerationSources({
+      projectRoot: path.dirname(outlineReal),
+      outlinePath: outlineReal,
+    });
     const registered = await this.#register({
       label: safeLabel(label, path.basename(outlineReal, path.extname(outlineReal))),
       projectRoot: path.dirname(outlineReal),
       outlinePath: outlineReal,
       outputRoot: resolvedOutputRoot,
       deckUid,
+      generationSources,
     });
     return { ...registered, already_registered: false };
   }
@@ -239,7 +257,34 @@ export class StudioProjectRegistry {
     }
   }
 
-  async #register({ label, projectRoot, outlinePath, outputRoot, deckUid }) {
+  async refreshGenerationSources(deckId) {
+    const record = this.get(deckId);
+    const generationSources = await discoverProjectGenerationSources({
+      projectRoot: record.project_root,
+      outlinePath: record.outline_path,
+      registeredSources: record.generation_sources,
+    });
+    if (sameProjectGenerationSources(record.generation_sources, generationSources)) {
+      return generationSources;
+    }
+    await this.#mutate((state) => {
+      const target = state.projects.find((item) => item.deck_id === deckId);
+      if (target) {
+        target.generation_sources = generationSources;
+        target.updated_at = this.clock();
+      }
+    });
+    return generationSources;
+  }
+
+  async #register({
+    label,
+    projectRoot,
+    outlinePath,
+    outputRoot,
+    deckUid,
+    generationSources = [],
+  }) {
     if (this.state.projects.some((item) => item.outline_path === outlinePath)) {
       throw new HttpError(409, "outline is already registered", "project_already_registered");
     }
@@ -256,6 +301,7 @@ export class StudioProjectRegistry {
       project_root: projectRoot,
       outline_path: outlinePath,
       output_root: outputRoot,
+      generation_sources: generationSources,
       created_at: timestamp,
       updated_at: timestamp,
     };
@@ -304,6 +350,13 @@ export class StudioProjectRegistry {
         !path.isAbsolute(record.project_root) ||
         !path.isAbsolute(record.outline_path) ||
         !path.isAbsolute(record.output_root) ||
+        !Array.isArray(record.generation_sources) ||
+        record.generation_sources.some((source) =>
+          !source ||
+          source.role !== "global_chrome_contract" ||
+          source.scope !== "deck" ||
+          typeof source.path !== "string" ||
+          !path.isAbsolute(source.path)) ||
         ids.has(record.project_id) ||
         outlines.has(record.outline_path) ||
         deckUids.has(record.deck_uid)

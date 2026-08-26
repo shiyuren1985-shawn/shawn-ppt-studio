@@ -40,12 +40,6 @@ async function readJson(filePath, label) {
   return value;
 }
 
-function selectorUrl(deckId, selectorOrigin) {
-  const url = new URL(selectorOrigin);
-  url.searchParams.set("deck", deckId);
-  return url.toString();
-}
-
 function previewUrl({ deckId, slideUid, id, sha256 }) {
   const params = new URLSearchParams({
     deck_id: deckId,
@@ -57,9 +51,8 @@ function previewUrl({ deckId, slideUid, id, sha256 }) {
 }
 
 export class SelectionProjection {
-  constructor({ discovery, selectorOrigin = "http://127.0.0.1:8765/" }) {
+  constructor({ discovery }) {
     this.discovery = discovery;
-    this.selectorOrigin = selectorOrigin;
   }
 
   async #readSources(deck) {
@@ -129,7 +122,6 @@ export class SelectionProjection {
       page_id: slide.page_id,
       page_label: slide.page_label,
       title: slide.title,
-      selector_url: selectorUrl(deckId, this.selectorOrigin),
     };
 
     if (deck.source_kind === "studio") {

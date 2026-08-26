@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Shawn PPT Studio",
-  "version": "0.1.0",
+  "version": "0.2.3",
   "identifier": "com.shawn.ppt-studio",
   "build": {
     "frontendDist": "../frontend"
@@ -29,7 +29,6 @@
     "icon": ["icons/icon.icns"],
     "resources": {
       "../../server/app-server-client.mjs": "studio/server/app-server-client.mjs",
-      "../../server/candidate-edits.mjs": "studio/server/candidate-edits.mjs",
       "../../server/codex-interaction.mjs": "studio/server/codex-interaction.mjs",
       "../../server/conversation-file.mjs": "studio/server/conversation-file.mjs",
       "../../server/conversation-image.mjs": "studio/server/conversation-image.mjs",
@@ -41,16 +40,13 @@
       "../../server/export-service.mjs": "studio/server/export-service.mjs",
       "../../server/http-server.mjs": "studio/server/http-server.mjs",
       "../../server/image-task-intent.mjs": "studio/server/image-task-intent.mjs",
-      "../../server/ledger.mjs": "studio/server/ledger.mjs",
-      "../../server/outline-store.mjs": "studio/server/outline-store.mjs",
+      "../../server/instance-lock.mjs": "studio/server/instance-lock.mjs",
       "../../server/path-policy.mjs": "studio/server/path-policy.mjs",
-      "../../server/production-intents.mjs": "studio/server/production-intents.mjs",
+      "../../server/project-generation-sources.mjs": "studio/server/project-generation-sources.mjs",
       "../../server/runtime-event-log.mjs": "studio/server/runtime-event-log.mjs",
       "../../server/project-discovery.mjs": "studio/server/project-discovery.mjs",
       "../../server/project-picker.mjs": "studio/server/project-picker.mjs",
       "../../server/projects.mjs": "studio/server/projects.mjs",
-      "../../server/retouch-context.mjs": "studio/server/retouch-context.mjs",
-      "../../server/selected-image-edit-parent.mjs": "studio/server/selected-image-edit-parent.mjs",
       "../../server/selection-image-metadata.mjs": "studio/server/selection-image-metadata.mjs",
       "../../server/selection-projection.mjs": "studio/server/selection-projection.mjs",
       "../../server/selector-http.mjs": "studio/server/selector-http.mjs",
@@ -74,6 +70,7 @@
       "../../integrations/skill-paths.mjs": "studio/integrations/skill-paths.mjs",
       "../../web/api.js": "studio/web/api.js",
       "../../web/app.js": "studio/web/app.js",
+      "../../web/conversation-routing.js": "studio/web/conversation-routing.js",
       "../../web/index.html": "studio/web/index.html",
       "../../web/model.js": "studio/web/model.js",
       "../../web/styles.css": "studio/web/styles.css",

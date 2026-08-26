@@ -33,7 +33,28 @@ function normalizedPageId(value) {
 export function splitTableCells(line) {
   const stripped = line.trim();
   if (!stripped.startsWith("|") || !stripped.endsWith("|")) return [];
-  return stripped.slice(1, -1).split("|").map((cell) => cell.trim());
+  const cells = [];
+  let cell = "";
+  const body = stripped.slice(1, -1);
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index];
+    if (character !== "|") {
+      cell += character;
+      continue;
+    }
+    let precedingBackslashes = 0;
+    for (let cursor = index - 1; cursor >= 0 && body[cursor] === "\\"; cursor -= 1) {
+      precedingBackslashes += 1;
+    }
+    if (precedingBackslashes % 2 === 1) {
+      cell = `${cell.slice(0, -1)}|`;
+      continue;
+    }
+    cells.push(cell.trim());
+    cell = "";
+  }
+  cells.push(cell.trim());
+  return cells;
 }
 
 function cleanTableCell(value) {
@@ -429,29 +450,4 @@ export class DeckDiscovery {
     };
   }
 
-  async getSelectorMetadata(deckId = null) {
-    let resolvedDeckId = deckId;
-    if (!resolvedDeckId) {
-      const { registry, decks } = await this.#load();
-      resolvedDeckId = registry.default_deck || decks[0]?.deck_id;
-    }
-    const deck = await this.readDeck(resolvedDeckId);
-    const candidateRoot = deck.candidate_roots[0]?.path;
-    if (!candidateRoot) {
-      throw new HttpError(
-        409,
-        `deck has no registered candidate root: ${resolvedDeckId}`,
-        "candidate_root_missing",
-      );
-    }
-    const selector = new URL("http://127.0.0.1:8765/");
-    selector.searchParams.set("deck", resolvedDeckId);
-    return {
-      contract_version: 1,
-      deck_id: resolvedDeckId,
-      deck_uid: deck.outline.deck_uid,
-      selector_url: selector.toString(),
-      candidate_root: candidateRoot,
-    };
-  }
 }

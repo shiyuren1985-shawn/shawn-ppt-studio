@@ -17,6 +17,8 @@ tests/real-e2e/
 tests/ux-evidence/
 tests/**/artifacts/
 tests/*
+!tests/architecture/
+!tests/architecture/**
 !tests/backend-codex-interaction-v1/
 !tests/backend-codex-interaction-v1/**
 !tests/backend-codex-interaction-v2/

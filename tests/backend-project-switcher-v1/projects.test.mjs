@@ -81,6 +81,40 @@ test("migrating another outline with an existing canonical UID fails closed", as
   );
 });
 
+test("an authorized standard title contract is registered as an optional deck source", async () => {
+  const { projectRoot, outlinePath, registry } = await fixture();
+  const contractPath = path.join(projectRoot, "全稿标题系统合同.json");
+  await writeFile(contractPath, `${JSON.stringify({
+    global_chrome_contract_version: 1,
+    authorization: { status: "authorized" },
+    deck_title_system: { enabled: true },
+  })}\n`);
+
+  const opened = await registry.openExisting({ outlinePath });
+  assert.deepEqual(opened.generation_sources, [{
+    role: "global_chrome_contract",
+    scope: "deck",
+    path: await realpath(contractPath),
+  }]);
+
+  const restarted = new StudioProjectRegistry({ dataRoot: path.dirname(registry.runtimeRoot) });
+  await restarted.initialize();
+  assert.deepEqual(restarted.list().projects[0].generation_sources, opened.generation_sources);
+});
+
+test("projects without an authorized standard title contract keep generation sources empty", async () => {
+  const { projectRoot, outlinePath, registry } = await fixture();
+  await writeFile(path.join(projectRoot, "logo.json"), "{}\n");
+  await writeFile(path.join(projectRoot, "global_chrome_contract.json"), `${JSON.stringify({
+    global_chrome_contract_version: 1,
+    authorization: { status: "draft" },
+    deck_title_system: { enabled: true },
+  })}\n`);
+
+  const opened = await registry.openExisting({ outlinePath });
+  assert.deepEqual(opened.generation_sources, []);
+});
+
 test("a v1 registry without hidden_decks migrates without losing projects", async () => {
   const { dataRoot, outlinePath, registry: initialized } = await fixture();
   await writeFile(initialized.path, `${JSON.stringify({

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -124,7 +125,7 @@ export class TaskAssociationIndex {
     const operation = async () => {
       const next = structuredClone(this.state);
       change(next);
-      const temporary = `${this.path}.${process.pid}.tmp`;
+      const temporary = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
       try {
         await writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, {
           encoding: "utf8",

@@ -40,6 +40,7 @@ test("an explicit image request appears immediately and is replaced by its forma
   assert.equal(result.tasks.length, 1);
   assert.equal(result.tasks[0].title, "P06 · 8×1");
   assert.equal(result.tasks[0].status, "preparing");
+  assert.equal(result.tasks[0].status_label, "正在准备作图");
   assert.equal(result.tasks[0].can_open_conversation, true);
 
   const stateDir = path.join(output, "formal-fast8", "state");
@@ -63,6 +64,147 @@ test("an explicit image request appears immediately and is replaced by its forma
   assert.equal(result.active_count, 1);
   assert.equal(result.tasks.length, 1, "the provisional request is not duplicated after formal state exists");
   assert.equal(result.tasks[0].mode, "fast_8x1_diverse");
+});
+
+test("a selected-style subset names the actual pages during preparation", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "studio-selected-preparing-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const output = path.join(root, "output");
+  const stateDir = path.join(output, "selected-run", "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "source_snapshot.json"), JSON.stringify({
+    page_ids: ["P01", "P02"],
+    slide_identity: {
+      deck_uid: "DECK_SELECTED",
+      slide_uids: { P01: "SLIDE_01", P02: "SLIDE_02" },
+    },
+  }));
+  await writeFile(path.join(stateDir, "selected_style_run_state.json"), JSON.stringify({
+    run_id: "selected-run",
+    run_mode: "selected_style_expansion",
+    status: "running",
+    scheduler: { active_actions: [], ready_queue: [], recovery_queue: [] },
+    pages: { P01: { status: "pending" }, P02: { status: "pending" } },
+  }));
+  const discovery = { async listDecks() { return { decks: [{
+    deck_id: "deck-selected", deck_uid: "DECK_SELECTED", label: "测试项目",
+    output_root: output, candidate_roots_paths: [output],
+    slides: [
+      { page_id: "P01", slide_uid: "SLIDE_01", page_label: "P01" },
+      { page_id: "P02", slide_uid: "SLIDE_02", page_label: "P02" },
+      { page_id: "P03", slide_uid: "SLIDE_03", page_label: "P03" },
+    ],
+  }] }; } };
+  const conversations = { ready: true, records() { return [{
+    conversation_id: "conversation-1", thread_id: "thread-1", last_used_at: null,
+  }]; } };
+  const relay = {
+    activeTurn: () => "turn-1",
+    latestTurn: () => ({ turnId: "turn-1", status: "inProgress", startedAtMs: Date.now() }),
+  };
+  const projection = new TaskProjection({ discovery, conversations, cacheMs: 0 });
+  const result = await projection.list({ codexInteraction: relay, force: true });
+  assert.equal(result.tasks[0].title, "P01、P02 · 作图");
+  assert.equal(result.tasks[0].status, "preparing");
+  assert.equal(result.tasks[0].status_label, "正在准备页面任务");
+});
+
+test("a whole-deck selected-style run keeps the whole-deck title", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "studio-selected-whole-deck-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const output = path.join(root, "output");
+  const stateDir = path.join(output, "selected-run", "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "source_snapshot.json"), JSON.stringify({
+    page_ids: ["P01", "P02"],
+    slide_identity: {
+      deck_uid: "DECK_SELECTED",
+      slide_uids: { P01: "SLIDE_01", P02: "SLIDE_02" },
+    },
+  }));
+  await writeFile(path.join(stateDir, "selected_style_run_state.json"), JSON.stringify({
+    run_id: "selected-run",
+    run_mode: "selected_style_expansion",
+    status: "completed",
+    pages: { P01: { status: "accepted" }, P02: { status: "accepted" } },
+  }));
+  const discovery = { async listDecks() { return { decks: [{
+    deck_id: "deck-selected", deck_uid: "DECK_SELECTED", label: "测试项目",
+    output_root: output, candidate_roots_paths: [output],
+    slides: [
+      { page_id: "P01", slide_uid: "SLIDE_01", page_label: "P01" },
+      { page_id: "P02", slide_uid: "SLIDE_02", page_label: "P02" },
+    ],
+  }] }; } };
+  const projection = new TaskProjection({
+    discovery,
+    conversations: { ready: true, records() { return []; } },
+    cacheMs: 0,
+  });
+  const result = await projection.list({ codexInteraction: null });
+  assert.equal(result.tasks[0].title, "整套作图 · 2 页");
+});
+
+test("a later selected-style state absorbs the provisional request from the same conversation", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "studio-selected-request-bridge-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const output = path.join(root, "output");
+  const stateDir = path.join(output, "selected-run", "state");
+  await mkdir(stateDir, { recursive: true });
+  const requestStartedAt = "2026-08-23T15:30:00.000Z";
+  const processStartedAt = "2026-08-23T16:00:00.000Z";
+  const associations = new TaskAssociationIndex({ dataRoot: root });
+  await associations.initialize();
+  await associations.rememberImageRequest("DECK_SELECTED", requestStartedAt, "conversation-1", {
+    title: "4 页作图",
+    modeHint: "image_generation",
+    slideUid: "SLIDE_15",
+  });
+  await writeFile(path.join(stateDir, "source_snapshot.json"), JSON.stringify({
+    page_ids: ["15", "16", "19", "27"],
+    slide_identity: {
+      deck_uid: "DECK_SELECTED",
+      slide_uids: {
+        15: "SLIDE_15", 16: "SLIDE_16", 19: "SLIDE_19", 27: "SLIDE_27",
+      },
+    },
+  }));
+  await writeFile(path.join(stateDir, "selected_style_run_state.json"), JSON.stringify({
+    run_id: "selected-run",
+    run_mode: "selected_style_expansion",
+    status: "running",
+    timing: { process_started_at: processStartedAt },
+    style_anchor: "/Users/test/.codex/generated_images/thread-1/style.png",
+    scheduler: { active_actions: [], ready_queue: [] },
+    pages: {
+      15: { status: "pending" }, 16: { status: "pending" },
+      19: { status: "pending" }, 27: { status: "pending" },
+    },
+  }));
+  const slides = [15, 16, 19, 27, 28].map((page) => ({
+    page_id: String(page), slide_uid: `SLIDE_${page}`, page_label: `P${page}`,
+  }));
+  const discovery = { async listDecks() { return { decks: [{
+    deck_id: "deck-selected", deck_uid: "DECK_SELECTED", label: "测试项目",
+    output_root: output, candidate_roots_paths: [output], slides,
+  }] }; } };
+  const conversations = { ready: true, records() { return [{
+    conversation_id: "conversation-1", thread_id: "thread-1", last_used_at: processStartedAt,
+  }]; } };
+  const projection = new TaskProjection({
+    discovery, conversations, associations,
+    clock: () => Date.parse("2026-08-23T16:01:00.000Z"), cacheMs: 0,
+  });
+  const result = await projection.list({
+    codexInteraction: {
+      activeTurn() { return "turn-1"; },
+      latestTurn() { return { turnId: "turn-1", status: "inProgress", startedAtMs: Date.parse(processStartedAt) }; },
+    },
+  });
+  assert.equal(result.active_count, 1);
+  assert.equal(result.tasks.length, 1);
+  assert.equal(result.tasks[0].title, "P15、P16、P19、P27 · 作图");
+  assert.equal(result.tasks[0].mode, "selected_style_expansion");
 });
 
 async function fixture() {
@@ -902,7 +1044,7 @@ test("the Studio host records a request binding before starting its turn", async
   const httpSource = await readFile(new URL("../../server/http-server.mjs", import.meta.url), "utf8");
   const serverSource = await readFile(new URL("../../server/server.mjs", import.meta.url), "utf8");
   const start = httpSource.indexOf("async function streamWorkspaceTurn");
-  const end = httpSource.indexOf("async function serveRuntimeFile", start);
+  const end = httpSource.indexOf("async function serveConversationImage", start);
   const workspaceTurn = httpSource.slice(start, end);
   assert.match(workspaceTurn, /associations\?\.rememberRequest/);
   assert.ok(

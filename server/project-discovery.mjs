@@ -3,6 +3,7 @@ import path from "node:path";
 import { TextDecoder } from "node:util";
 
 import { HttpError } from "./errors.mjs";
+import { discoverProjectGenerationSources } from "./project-generation-sources.mjs";
 import { parseDraftOutline, parseOutlineText } from "./discovery.mjs";
 
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
@@ -136,7 +137,17 @@ export class ProjectDiscovery {
     }
     try {
       const deck = await this.legacyDiscovery.readDeck(deckId);
-      return { ...deck, source_kind: "legacy", project_root: path.dirname(deck.outline.path) };
+      const projectRoot = path.dirname(deck.outline.path);
+      return {
+        ...deck,
+        source_kind: "legacy",
+        project_root: projectRoot,
+        generation_sources: await discoverProjectGenerationSources({
+          projectRoot,
+          outlinePath: deck.outline.path,
+          registeredSources: deck.generation_sources,
+        }),
+      };
     } catch {
       throw new HttpError(404, "project is unavailable", "project_not_found");
     }
@@ -219,6 +230,8 @@ export class ProjectDiscovery {
   }
 
   async #readStudio(record) {
+    await this.projects.refreshGenerationSources(record.deck_id);
+    record = this.projects.get(record.deck_id);
     let bytes;
     let info;
     try {
@@ -252,6 +265,7 @@ export class ProjectDiscovery {
       source_kind: "studio",
       project_root: record.project_root,
       output_root: record.output_root,
+      generation_sources: structuredClone(record.generation_sources || []),
       candidate_roots: [{ id: "output", path: record.output_root }],
       outline,
     };

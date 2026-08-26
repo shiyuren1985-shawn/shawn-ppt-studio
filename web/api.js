@@ -46,20 +46,8 @@ export async function interruptTask(taskId) {
   }));
 }
 
-export async function getDecks() {
-  return readJson(await fetch("/api/decks", { cache: "no-store" }));
-}
-
 export async function getProjects() {
-  try {
-    return await readJson(await fetch("/api/projects", { cache: "no-store" }));
-  } catch (error) {
-    // Older isolated UI fixtures and an older running Studio backend expose the
-    // same merged list at /api/decks. Keep that read-only fallback while users
-    // transition to the project-aware build.
-    if (error.status !== 404) throw error;
-    return getDecks();
-  }
+  return readJson(await fetch("/api/projects", { cache: "no-store" }));
 }
 
 export async function pickProjectFolder() {
@@ -88,11 +76,6 @@ export async function hideProject(deckId) {
 
 export async function getProjectOutline(deckId) {
   return readJson(await fetch(`/api/decks/${encodeURIComponent(deckId)}/outline`, { cache: "no-store" }));
-}
-
-export async function getSelector(deckId) {
-  const query = deckId ? `?deck=${encodeURIComponent(deckId)}` : "";
-  return readJson(await fetch(`${"/api/"}${"selector"}${query}`, { cache: "no-store" }));
 }
 
 export async function getSlide(deckId, slideUid) {
@@ -251,83 +234,6 @@ export async function resolveCodexApproval(requestId, decision) {
   }));
 }
 
-export async function applyOutlineRow(deckId, slideUid, body) {
-  const route = `/api/decks/${encodeURIComponent(deckId)}/slides/${encodeURIComponent(slideUid)}/outline`;
-  return readJson(await fetch(route, {
-    method: "PATCH",
-    headers: MUTATION_HEADERS,
-    body: JSON.stringify(body),
-  }));
-}
-
-export async function applyOutlineChanges(deckId, body) {
-  return readJson(await fetch(`/api/decks/${encodeURIComponent(deckId)}/outline`, {
-    method: "PATCH",
-    headers: MUTATION_HEADERS,
-    body: JSON.stringify(body),
-  }));
-}
-
-export async function startThread(threadId) {
-  return readJson(await fetch("/api/threads", {
-    method: "POST",
-    headers: MUTATION_HEADERS,
-    body: JSON.stringify(threadId ? { thread_id: threadId } : {}),
-  }));
-}
-
-export async function createProductionIntent(body) {
-  return readJson(await fetch("/api/production/intents", {
-    method: "POST",
-    headers: MUTATION_HEADERS,
-    body: JSON.stringify(body),
-  }));
-}
-
-export async function getProductionIntent(intentId) {
-  return readJson(await fetch(`/api/production/intents/${encodeURIComponent(intentId)}`, { cache: "no-store" }));
-}
-
-export async function executeProductionIntent(intentId) {
-  return readJson(await fetch(`/api/production/intents/${encodeURIComponent(intentId)}/execute`, {
-    method: "POST",
-    headers: MUTATION_HEADERS,
-    body: JSON.stringify({ confirmed: true }),
-  }));
-}
-
-export async function getProductionCandidates(intentId) {
-  return readJson(await fetch(`/api/production/intents/${encodeURIComponent(intentId)}/candidates`, { cache: "no-store" }));
-}
-
-export async function createCandidateEdit(body) {
-  return readJson(await fetch("/api/production/candidate-edits", {
-    method: "POST",
-    headers: MUTATION_HEADERS,
-    body: JSON.stringify(body),
-  }));
-}
-
-export async function getCandidateEdit(editId) {
-  return readJson(await fetch(`/api/production/candidate-edits/${encodeURIComponent(editId)}`, { cache: "no-store" }));
-}
-
-export async function executeCandidateEdit(editId) {
-  return readJson(await fetch(`/api/production/candidate-edits/${encodeURIComponent(editId)}/execute`, {
-    method: "POST",
-    headers: MUTATION_HEADERS,
-    body: JSON.stringify({ confirmed: true }),
-  }));
-}
-
-export async function getCandidateEditCandidates(editId) {
-  return readJson(await fetch(`/api/production/candidate-edits/${encodeURIComponent(editId)}/candidates`, { cache: "no-store" }));
-}
-
-export async function getThread(threadId) {
-  return readJson(await fetch(`/api/threads/${encodeURIComponent(threadId)}`, { cache: "no-store" }));
-}
-
 export function parseSseBlock(block) {
   let event = "message";
   const data = [];
@@ -342,42 +248,6 @@ export function parseSseBlock(block) {
   } catch {
     return { event, data: raw };
   }
-}
-
-export async function streamTurn(payload, onEvent, signal) {
-  const response = await fetch("/api/turns", {
-    method: "POST",
-    headers: {
-      Accept: "text/event-stream",
-      "Content-Type": "application/json",
-      "X-Shawn-PPT-Studio": "1",
-    },
-    body: JSON.stringify(payload),
-    signal,
-  });
-  if (!response.ok) return readJson(response);
-  if (!response.body) throw new Error("浏览器未提供流式响应体");
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-    const blocks = buffer.split(/\r?\n\r?\n/);
-    buffer = blocks.pop() || "";
-    for (const block of blocks) {
-      if (block.trim()) onEvent(parseSseBlock(block));
-    }
-    if (done) break;
-  }
-  if (buffer.trim()) onEvent(parseSseBlock(buffer));
-}
-
-export function runtimeFileUrl(path) {
-  if (typeof path !== "string" || !path.trim()) return null;
-  if (!path.trim().startsWith("/") || /^(data|blob):/i.test(path.trim())) return null;
-  return `/api/runtime-file?path=${encodeURIComponent(path.trim())}`;
 }
 
 export function conversationImageUrl(deckId, path) {

@@ -34,7 +34,11 @@ def tracked_runtime_sources() -> set[str]:
     return {
         path
         for path in result.stdout.splitlines()
-        if path.startswith(RUNTIME_PREFIXES) and Path(path).suffix in RUNTIME_EXTENSIONS
+        if (
+            path.startswith(RUNTIME_PREFIXES)
+            and Path(path).suffix in RUNTIME_EXTENSIONS
+            and (STUDIO_ROOT / path).is_file()
+        )
     }
 
 

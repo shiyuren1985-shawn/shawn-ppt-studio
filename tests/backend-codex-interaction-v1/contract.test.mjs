@@ -37,6 +37,11 @@ const deck = {
     slides: [{ slide_uid: "SLIDE_1", page_id: "P1", page_label: "P01", title: "Title", markdown: "| P1 | Title | Body |" }],
   },
   candidate_roots: [{ path: `${root}/candidates` }],
+  generation_sources: [{
+    role: "global_chrome_contract",
+    scope: "deck",
+    path: `${root}/outline/全稿标题系统合同.json`,
+  }],
 };
 
 test("workspace turn is one natural Codex turn with official skills and no proposal schema", async () => {
@@ -82,6 +87,15 @@ test("workspace turn is one natural Codex turn with official skills and no propo
   assert.match(text, /confirmed_selected_image_refs:.*file_sha256/s);
   assert.match(text, /authoritative_outline_path:/);
   assert.match(text, /candidate_output_roots:/);
+  assert.match(text, /project_generation_sources:.*global_chrome_contract/s);
+  assert.match(text, /selected-style expansion/);
+  assert.match(text, /--supporting-source.*<path>::deck/);
+  assert.match(text, /If project_generation_sources is empty, do not infer or impose/);
+  assert.equal(
+    built.params.input.some((item) =>
+      item.type === "localImage" && item.path.endsWith("全稿标题系统合同.json")),
+    false,
+  );
   assert.match(text, /role=primary_style_reference/);
   assert.match(text, /style_anchor_only is an approval scope, never an asset role/);
   assert.match(text, /perform one bounded read-only input enumeration/);

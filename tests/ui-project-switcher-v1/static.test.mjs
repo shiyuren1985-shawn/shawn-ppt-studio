@@ -115,3 +115,10 @@ test("long-term Studio rules are visible, editable, and can also be saved from r
   assert.match(server, /rememberFromMessage\(body\?\.message\)/);
   assert.match(server, /requestUrl\.pathname === "\/api\/studio-rules"/);
 });
+
+test("the visible Studio version comes from the running desktop health response", () => {
+  assert.match(html, /id="app-version"/);
+  assert.match(app, /async function loadAppVersion\(\)/);
+  assert.match(app, /health\?\.app_version/);
+  assert.match(app, /document\.title = `Shawn PPT Studio · v\$\{version\}`/);
+});
