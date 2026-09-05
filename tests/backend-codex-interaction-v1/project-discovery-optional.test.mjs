@@ -38,6 +38,40 @@ test("Studio projects stay available when the optional legacy registry is absent
   assert.equal(outline.outline_kind, "draft");
 });
 
+test("an incompatible paged outline returns its original text with an actionable warning", async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "studio-outline-warning-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataRoot = path.join(root, "data");
+  const projectRoot = path.join(root, "project");
+  const outlinePath = path.join(projectRoot, "outline.md");
+  await mkdir(projectRoot, { recursive: true });
+  const original = `---
+deck_uid: STUDIO_WARNING_TEST
+slide_uids:
+  - PAGE_ONE
+---
+
+## P01 第一页
+
+原始内容仍应显示。
+`;
+  await writeFile(outlinePath, original, "utf8");
+
+  const projects = new StudioProjectRegistry({ dataRoot });
+  await projects.initialize();
+  const created = await projects.openExisting({ outlinePath });
+  const discovery = new ProjectDiscovery({
+    legacyDiscovery: new DeckDiscovery({ decksFile: path.join(root, "legacy.json"), allowMissing: true }),
+    projects,
+  });
+
+  const outline = await discovery.getOutline(created.deck_id);
+  assert.equal(outline.outline_kind, "draft");
+  assert.equal(outline.slide_count, 0);
+  assert.equal(outline.draft_markdown, original);
+  assert.match(outline.format_warning, /已经有分页内容/);
+});
+
 test("the normal Studio runtime treats its intentionally absent legacy registry as empty", async (t) => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "studio-empty-legacy-")));
   t.after(() => rm(root, { recursive: true, force: true }));

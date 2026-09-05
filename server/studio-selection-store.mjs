@@ -92,9 +92,11 @@ function validate(document, deck) {
   ) {
     throw new HttpError(409, "这套 PPT 的选稿记录无法读取，请检查项目文件。", "studio_selection_invalid");
   }
-  const slideUids = new Set(deck.outline.slides.map((slide) => slide.slide_uid));
+  // This is durable selection history, not a snapshot of the current outline.
+  // Removed pages stay keyed by UID so they can be restored without remapping
+  // their images onto a different page that later reuses the same page number.
   for (const [slideUid, page] of Object.entries(document.pages)) {
-    if (!slideUids.has(slideUid) || !page || typeof page !== "object" || Array.isArray(page)) {
+    if (!slideUid.trim() || !page || typeof page !== "object" || Array.isArray(page)) {
       throw new HttpError(409, "这套 PPT 的选稿记录与当前大纲不一致。", "studio_selection_invalid");
     }
     page.selected_candidate_refs = normalizedRefs(page.selected_candidate_refs);

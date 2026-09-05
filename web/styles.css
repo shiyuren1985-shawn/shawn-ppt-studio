@@ -38,6 +38,7 @@ h3 { margin: 0; font-size: 16px; }
 
 .topbar { display: grid; grid-template-columns: 220px minmax(230px, 320px) 1px auto minmax(220px, 1fr); align-items: center; gap: 16px; padding: 0 18px; color: white; background: var(--forest); border-bottom: 2px solid var(--lime); }
 .brand { min-width: 0; display: flex; align-items: center; gap: 11px; }
+.brand > div { min-width: 0; }
 .brand-mark { width: 36px; height: 36px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 11px; color: var(--forest); background: var(--lime); font-weight: 900; }
 .brand p { display: flex; align-items: center; gap: 6px; overflow: hidden; margin: 0; color: rgba(255,255,255,.7); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .app-version { padding-left: 6px; border-left: 1px solid rgba(255,255,255,.28); color: var(--lime); font-size: 11px; font-weight: 800; }
@@ -196,11 +197,12 @@ h3 { margin: 0; font-size: 16px; }
 .loading-copy { color: var(--muted); }
 
 .conversation-host { min-width: 0; min-height: 0; overflow: hidden; }
-.conversation-panel { width: 100%; height: 100%; min-height: 0; display: grid; grid-template-rows: 44px minmax(70px, 1fr) auto; border-left: 1px solid var(--line); background: white; box-shadow: -8px 0 20px rgba(27,49,41,.05); }
+.conversation-panel { width: 100%; height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 44px minmax(70px, 1fr) auto; border-left: 1px solid var(--line); background: white; box-shadow: -8px 0 20px rgba(27,49,41,.05); }
 .conversation-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 10px 6px 14px; border-bottom: 1px solid #edf0ee; }
-.conversation-heading > div { min-width: 0; display: flex; align-items: baseline; gap: 7px; }
+.conversation-heading > div { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 7px; }
 .conversation-heading strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.conversation-heading span { color: var(--muted); font-size: 11px; }
+.conversation-heading span { flex-shrink: 0; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.conversation-heading > .column-toggle { flex-shrink: 0; }
 .message-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 11px 13px; }
 .welcome-message { max-width: 760px; padding: 9px 11px; border-radius: 10px; color: #345047; background: var(--mint); font-size: 13px; line-height: 1.45; }
 .welcome-message p { margin: 4px 0 0; }
@@ -405,8 +407,10 @@ html[data-conversation-column="collapsed"] .conversation-heading .column-toggle 
 
 @media (max-width: 1180px) {
   :root { --sidebar-width: 195px; --conversation-width: 350px; }
-  .topbar { grid-template-columns: 170px minmax(210px, 270px) 1px auto minmax(180px, 1fr); gap: 9px; padding-inline: 12px; }
+  .topbar { grid-template-columns: 170px minmax(160px, 1fr) 1px auto auto; gap: 9px; padding-inline: 12px; }
   .brand p { max-width: 160px; }
+  .brand h1 { overflow: hidden; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
+  .top-actions > button, .task-center-button { white-space: nowrap; flex-shrink: 0; }
   .workspace-tabs button { min-width: 70px; padding-inline: 11px; }
   .quiet-button { padding-inline: 10px; }
   .page-context-bar p { display: none; }

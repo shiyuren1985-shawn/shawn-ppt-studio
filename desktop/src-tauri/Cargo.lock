@@ -2783,7 +2783,7 @@ dependencies = [
 
 [[package]]
 name = "shawn-ppt-studio"
-version = "0.2.3"
+version = "0.2.12"
 dependencies = [
  "serde_json",
  "tauri",

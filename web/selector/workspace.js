@@ -65,6 +65,7 @@ export function mountSelectorWorkspace({
     deleteConfirmId: "",
     exportReadiness: null,
     exportResult: null,
+    exportFormats: [],
     exportBusy: false,
     exportError: "",
     destroyed: false,
@@ -100,6 +101,7 @@ export function mountSelectorWorkspace({
         <div><strong data-selector-selection-count>尚未选择图片</strong><span>点击“选择这张”后会立即保存</span></div>
         <div class="selector-action-buttons">
           <button class="selector-secondary" type="button" data-use-baseline title="不使用新候选，继续使用原 PPT 中这一页已有的图片">使用原 PPT 图片</button>
+          <button class="selector-secondary" type="button" data-export-open-folder>打开导出文件夹</button>
           <button class="selector-primary" type="button" data-export-open>导出成品</button>
         </div>
       </footer>
@@ -117,10 +119,19 @@ export function mountSelectorWorkspace({
         <button class="selector-dialog-close selector-export-close" type="button" data-export-close aria-label="关闭导出">×</button>
       </div>
       <p class="selector-export-message" data-export-message role="status" aria-live="polite"></p>
+      <fieldset class="selector-export-formats" data-export-formats>
+        <legend>选择导出格式</legend>
+        <div class="selector-export-format-list">
+          <label><input type="checkbox" value="pptx" data-export-format><span><strong>PPTX</strong><small>纯图片型，Public 标签</small></span></label>
+          <label><input type="checkbox" value="pdf" data-export-format><span><strong>PDF</strong><small>整套页面 PDF</small></span></label>
+          <label><input type="checkbox" value="images_zip" data-export-format><span><strong>图片集 ZIP</strong><small>每页一张原图</small></span></label>
+        </div>
+        <p data-export-format-hint hidden>请至少选择一种导出格式。</p>
+      </fieldset>
       <ul class="selector-export-missing" data-export-missing></ul>
       <div class="selector-export-result" data-export-result hidden>
         <div class="selector-export-files" data-export-files></div>
-        <button class="selector-secondary" type="button" data-export-open-folder>在 Finder 中显示</button>
+        <button class="selector-primary selector-export-result-folder" type="button" data-export-result-open-folder>打开本次成品文件夹</button>
       </div>
       <div class="selector-export-actions">
         <button class="selector-secondary" type="button" data-export-close>关闭</button>
@@ -161,8 +172,12 @@ export function mountSelectorWorkspace({
     exportMissing: find("[data-export-missing]"),
     exportResult: find("[data-export-result]"),
     exportFiles: find("[data-export-files]"),
+    exportResultOpenFolder: find("[data-export-result-open-folder]"),
     exportGenerate: find("[data-export-generate]"),
     exportOpenFolder: find("[data-export-open-folder]"),
+    exportFormats: find("[data-export-formats]"),
+    exportFormatInputs: [...shell.querySelectorAll("[data-export-format]")],
+    exportFormatHint: find("[data-export-format-hint]"),
   };
 
   function reportError(error, fallback) {
@@ -223,14 +238,24 @@ export function mountSelectorWorkspace({
     nodes.exportMissing.replaceChildren();
     nodes.exportFiles.replaceChildren();
     nodes.exportResult.hidden = !result;
+    nodes.exportFormats.hidden = !readiness || Boolean(result);
+    const availableFormats = new Set(readiness?.formats || []);
+    const selectedFormats = view.exportFormats.filter((format) => availableFormats.has(format));
+    for (const input of nodes.exportFormatInputs) {
+      input.checked = selectedFormats.includes(input.value);
+      input.disabled = view.exportBusy || Boolean(result) || !availableFormats.has(input.value);
+      input.closest("label")?.classList.toggle("unavailable", !availableFormats.has(input.value));
+    }
+    nodes.exportFormatHint.hidden = !readiness?.ready || selectedFormats.length > 0;
     nodes.exportGenerate.hidden = Boolean(result) || !readiness?.ready;
-    nodes.exportGenerate.disabled = view.exportBusy;
+    nodes.exportGenerate.disabled = view.exportBusy || selectedFormats.length === 0;
     nodes.exportOpenFolder.disabled = view.exportBusy;
+    nodes.exportResultOpenFolder.disabled = view.exportBusy;
     if (view.exportBusy) {
       nodes.exportTitle.textContent = result ? "正在打开 Finder…" : (readiness ? "正在生成成品…" : "正在检查…");
       nodes.exportMessage.textContent = result
         ? "请稍候。"
-        : (readiness ? `${exportFormatsCopy(readiness.formats)}正在生成，请稍候。` : "正在确认每一页是否已经选好图片。");
+        : (readiness ? `${exportFormatsCopy(selectedFormats)}正在生成，请稍候。` : "正在读取已选中的图片。");
       return;
     }
     if (view.exportError) {
@@ -240,24 +265,23 @@ export function mountSelectorWorkspace({
     }
     if (result) {
       nodes.exportTitle.textContent = "成品已生成";
+      const completedFormats = exportFormatsCopy(result.formats);
       nodes.exportMessage.textContent = result.warning
-        ? `PDF 和页面图片已经生成。${result.warning}`
-        : "可以直接下载，也可以在 Finder 中查看。";
+        ? `${completedFormats}已保存在本机的 ${result.output_folder_name}。${result.warning}`
+        : `${completedFormats}已保存在本机的 ${result.output_folder_name}。`;
       for (const artifact of result.artifacts) {
-        const link = element("a", "selector-export-file");
-        link.href = artifact.download_url;
-        link.download = artifact.filename;
-        link.append(element("strong", "", artifact.label), element("span", "", "下载"));
-        nodes.exportFiles.append(link);
+        const item = element("div", "selector-export-file");
+        item.append(element("strong", "", artifact.label), element("span", "", artifact.filename));
+        nodes.exportFiles.append(item);
       }
       return;
     }
     if (!readiness) {
       nodes.exportTitle.textContent = "正在检查…";
-      nodes.exportMessage.textContent = "正在确认每一页是否已经选好图片。";
+      nodes.exportMessage.textContent = "正在读取已选中的图片。";
       return;
     }
-    nodes.exportTitle.textContent = readiness.ready ? "已经可以导出" : "还差几页";
+    nodes.exportTitle.textContent = readiness.ready ? "已经可以导出" : "还没有已选图片";
     nodes.exportMessage.textContent = readiness.warning
       ? `${readiness.message} ${readiness.warning}`
       : readiness.message;
@@ -273,12 +297,14 @@ export function mountSelectorWorkspace({
     if (!view.deckId || view.exportBusy) return;
     view.exportReadiness = null;
     view.exportResult = null;
+    view.exportFormats = [];
     view.exportError = "";
     view.exportBusy = true;
     renderExport();
     nodes.exportDialog.showModal();
     try {
       view.exportReadiness = normalizeExportReadiness(await api.getExportReadiness(view.deckId));
+      view.exportFormats = [...view.exportReadiness.formats];
     } catch (error) {
       view.exportError = error?.message || "暂时无法检查导出状态，请重试";
     } finally {
@@ -292,12 +318,14 @@ export function mountSelectorWorkspace({
   }
 
   async function generateExport() {
-    if (!view.exportReadiness?.ready || view.exportBusy) return;
+    if (!view.exportReadiness?.ready || view.exportBusy || view.exportFormats.length === 0) return;
     view.exportBusy = true;
     view.exportError = "";
     renderExport();
     try {
-      view.exportResult = normalizeExportResult(await api.createExport(view.deckId));
+      view.exportResult = normalizeExportResult(await api.createExport(view.deckId, {
+        formats: view.exportFormats,
+      }));
     } catch (error) {
       view.exportError = error?.message || "成品没有生成成功，请重试";
       if (error?.status === 409 && error?.payload?.missing_pages) {
@@ -315,12 +343,13 @@ export function mountSelectorWorkspace({
   }
 
   async function openExportFolder() {
-    if (!view.exportResult || view.exportBusy) return;
+    if (view.exportBusy) return;
     view.exportBusy = true;
     view.exportError = "";
     renderExport();
     try {
-      await api.openExportFolder(view.deckId, view.exportResult.export_id);
+      if (view.exportResult) await api.openExportFolder(view.deckId, view.exportResult.export_id);
+      else await api.openExportRoot();
     } catch (error) {
       view.exportError = error?.message || "暂时无法打开 Finder";
     } finally {
@@ -647,6 +676,14 @@ export function mountSelectorWorkspace({
     }
   }
 
+  shell.addEventListener("change", (event) => {
+    if (!event.target.closest("[data-export-format]") || view.exportBusy || view.exportResult) return;
+    view.exportFormats = nodes.exportFormatInputs
+      .filter((input) => input.checked && !input.disabled)
+      .map((input) => input.value);
+    renderExport();
+  });
+
   shell.addEventListener("click", (event) => {
     const pageButton = event.target.closest("[data-slide-uid]");
     if (pageButton) {
@@ -675,7 +712,7 @@ export function mountSelectorWorkspace({
     else if (event.target.closest("[data-refresh], [data-retry]")) controller.refresh();
     else if (event.target.closest("[data-export-open]")) void openExport();
     else if (event.target.closest("[data-export-generate]")) void generateExport();
-    else if (event.target.closest("[data-export-open-folder]")) void openExportFolder();
+    else if (event.target.closest("[data-export-open-folder], [data-export-result-open-folder]")) void openExportFolder();
     else if (event.target.closest("[data-export-close]")) closeExport();
   });
 

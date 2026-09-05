@@ -156,9 +156,13 @@ function identityMatches(identity, deck, slideUid, expectedPageId) {
   );
 }
 
-function identityAllowsHistoricalPage(identity, deck, slide) {
-  if (!identity || identity.required !== true) return true;
-  return identityMatches(identity, deck, slide.slide_uid, slide.page_id);
+function slideForIdentityPage(identity, deck, sourcePageId) {
+  const mappings = Object.entries(identity?.slide_uids || {}).filter(
+    ([key]) => pageId(key) === pageId(sourcePageId),
+  );
+  if (mappings.length !== 1) return null;
+  const slide = deck.outline.slides.find((item) => item.slide_uid === mappings[0][1]);
+  return slide && identityMatches(identity, deck, slide.slide_uid, sourcePageId) ? slide : null;
 }
 
 async function jsonFile(filePath) {
@@ -314,25 +318,26 @@ async function verifyHandoff(deck, handoffPath, outputReal) {
     try {
       const slide = slides.get(candidate?.slide_uid);
       const nativeId = typeof candidate?.candidate_id === "string" ? candidate.candidate_id : "";
+      const sourcePageId = pageId(candidate?.page_id);
       if (
         !slide ||
         !nativeId ||
         candidate.deck_uid !== deck.outline.deck_uid ||
-        pageId(candidate.page_id) !== pageId(slide.page_id) ||
-        !identityMatches(handoff.slide_identity, deck, slide.slide_uid, slide.page_id) ||
-        !identityMatches(snapshot.slide_identity, deck, slide.slide_uid, slide.page_id) ||
+        !sourcePageId ||
+        slideForIdentityPage(handoff.slide_identity, deck, sourcePageId) !== slide ||
+        slideForIdentityPage(snapshot.slide_identity, deck, sourcePageId) !== slide ||
         !["candidate_ready", "accepted"].includes(candidate.status)
       ) throw new Error("candidate identity mismatch");
       if (
-        handoff.run_mode === "fast_8x1_diverse" && pageId(state.anchor_page_id) !== pageId(slide.page_id) ||
+        handoff.run_mode === "fast_8x1_diverse" && pageId(state.anchor_page_id) !== sourcePageId ||
         handoff.run_mode === "fast_4x3_anchored" &&
-          ![state.anchor_page_id, ...(state.follower_page_ids || [])].some((item) => pageId(item) === pageId(slide.page_id)) ||
+          ![state.anchor_page_id, ...(state.follower_page_ids || [])].some((item) => pageId(item) === sourcePageId) ||
         handoff.run_mode === "selected_style_expansion" &&
-          !Object.keys(state.pages || {}).some((item) => pageId(item) === pageId(slide.page_id)) ||
+          !Object.keys(state.pages || {}).some((item) => pageId(item) === sourcePageId) ||
         handoff.run_mode === "single_image_edit" &&
           (state.identity?.deck_uid !== deck.outline.deck_uid ||
             state.identity?.slide_uid !== slide.slide_uid ||
-            pageId(state.identity?.page_id) !== pageId(slide.page_id))
+            pageId(state.identity?.page_id) !== sourcePageId)
       ) throw new Error("state identity mismatch");
       const file = await verifiedCandidateFile({
         candidatePath: candidate.path,
@@ -422,13 +427,16 @@ async function verifyHistoricalState(deck, statePath, outputReal) {
   for (const row of historicalRows(state)) {
     try {
       const sourcePageId = pageId(row.page_id);
-      const slide = historicalSlides.map.get(sourcePageId) || (
-        historicalSlides.semanticPageIds.has(sourcePageId) ? null : slideForPage(deck, row.page_id)
-      );
+      // Page numbers describe the frozen run. Stable UIDs describe the current
+      // outline, including pages moved by insertion, deletion or reordering.
+      const slide = identity?.required === true
+        ? slideForIdentityPage(identity, deck, sourcePageId)
+        : historicalSlides.map.get(sourcePageId) || (
+          historicalSlides.semanticPageIds.has(sourcePageId) ? null : slideForPage(deck, row.page_id)
+        );
       if (
         !slide ||
-        !["candidate_ready", "accepted"].includes(row.status) ||
-        !identityAllowsHistoricalPage(identity, deck, slide)
+        !["candidate_ready", "accepted"].includes(row.status)
       ) throw new Error("historical page identity mismatch");
       const file = await verifiedCandidateFile({
         candidatePath: row.path,
@@ -572,7 +580,11 @@ function deduplicateCandidates(deck, candidates) {
     const key = JSON.stringify([candidate.slide_uid, candidate.file_sha256]);
     if (!groups.has(key)) groups.set(key, []);
     const sources = groups.get(key);
-    if (!sources.some((source) => source.path === candidate.path)) sources.push(candidate);
+    // The same bytes/path may be published first by state and later by handoff.
+    // Keep both durable refs so an existing selection survives that transition.
+    if (!sources.some((source) => refKey(source.selection_ref) === refKey(candidate.selection_ref))) {
+      sources.push(candidate);
+    }
   }
   const result = [];
   for (const sources of groups.values()) {
@@ -587,7 +599,7 @@ function deduplicateCandidates(deck, candidates) {
       representative.slide_uid,
       representative.file_sha256,
     );
-    representative.duplicate_source_count = sources.length;
+    representative.duplicate_source_count = new Set(sources.map((source) => source.path)).size;
     representative.duplicate_sources = sources.map((source) => ({ ...source }));
     result.push(representative);
   }
@@ -694,7 +706,7 @@ export async function scanStudioCandidates(deck, { diagnostics = null } = {}) {
   const deduplicated = deduplicateCandidates(deck, candidates);
   if (diagnostics && typeof diagnostics === "object") {
     const verifiedSourceCount = deduplicated.reduce(
-      (total, candidate) => total + candidate.duplicate_sources.length,
+      (total, candidate) => total + candidate.duplicate_source_count,
       0,
     );
     Object.assign(diagnostics, counts, {

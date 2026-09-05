@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs";
 import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import { URL } from "node:url";
 
 import { HttpError, publicError } from "./errors.mjs";
@@ -73,7 +74,7 @@ async function serveExportFile(res, resolved) {
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
   });
-  createReadStream(resolved.path).pipe(res);
+  await pipeline(createReadStream(resolved.path), res);
 }
 
 async function readJson(req) {
@@ -91,11 +92,16 @@ async function readJson(req) {
     chunks.push(chunk);
   }
 
+  let body;
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
   } catch {
     throw new HttpError(400, "request body is not valid JSON", "invalid_json");
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new HttpError(400, "request body must be a JSON object", "invalid_json_object");
+  }
+  return body;
 }
 
 async function readBytes(req, limit = ATTACHMENT_LIMIT) {
@@ -247,12 +253,22 @@ async function startTurnWithArchivedRecovery(client, { threadId, params, resumeP
   }
 }
 
-async function streamWorkspaceTurn(req, res, context, route) {
-  const requestStartedAt = new Date().toISOString();
-  const body = await readJson(req);
+async function requireConversationClient(context) {
+  if (!context.client.ready && typeof context.client.start === "function") {
+    if (context.conversationLifecycle && !context.conversationLifecycle.ready) {
+      throw new HttpError(503, "Studio conversation storage is unavailable", "conversation_storage_unavailable");
+    }
+    await context.client.start();
+  }
   if (!context.client.ready) {
     throw new HttpError(503, "Codex App Server is not ready", "app_server_unavailable");
   }
+}
+
+async function streamWorkspaceTurn(req, res, context, route) {
+  const requestStartedAt = new Date().toISOString();
+  const body = await readJson(req);
+  await requireConversationClient(context);
   if (!context.conversations?.ready) {
     throw new HttpError(503, "conversation history is unavailable", "conversation_index_unavailable");
   }
@@ -274,14 +290,19 @@ async function streamWorkspaceTurn(req, res, context, route) {
     threadId,
     studioRules,
   );
-  await context.client.request("thread/resume", resumeParams);
   const relay = context.codexInteraction;
   if (!relay.markStarting(threadId)) {
     throw new HttpError(409, "this conversation already has an active turn", "turn_already_active");
   }
   let params;
   let message;
+  const transport = context.client.child;
   try {
+    const resumed = await context.client.request("thread/resume", resumeParams);
+    relay.observeThreadSnapshot(resumed?.thread);
+    if (relay.activeTurn(threadId)) {
+      throw new HttpError(409, "this conversation already has an active turn", "turn_already_active");
+    }
     ({ params, message } = await buildWorkspaceTurn(body, {
       dataRoot: context.dataRoot || context.labRoot,
       deck,
@@ -321,6 +342,9 @@ async function streamWorkspaceTurn(req, res, context, route) {
         },
       )?.catch(() => {});
     }
+    if (!context.client.ready || context.client.child !== transport) {
+      throw new HttpError(503, "Codex connection changed while preparing this request; please retry", "app_server_unavailable");
+    }
   } catch (error) {
     relay.clearStarting(threadId);
     context.singleEditTurnFinalizer?.clearStarting?.(threadId);
@@ -348,7 +372,7 @@ async function streamWorkspaceTurn(req, res, context, route) {
     threadId,
     listener(record) {
       sseRecord(res, record);
-      if (record.method !== "turn/completed") return;
+      if (record.method !== "turn/completed" && record.terminal !== true) return;
       ended = true;
       void context.conversations.touch(deck.outline.deck_uid, route.conversationId, {
         firstMessage: message,
@@ -362,6 +386,12 @@ async function streamWorkspaceTurn(req, res, context, route) {
   });
 
   try {
+    await context.conversations.touch(deck.outline.deck_uid, route.conversationId, {
+      firstMessage: message,
+    });
+    if (!context.client.ready || context.client.child !== transport) {
+      throw new HttpError(503, "Codex connection changed while preparing this request; please retry", "app_server_unavailable");
+    }
     await startTurnWithArchivedRecovery(context.client, {
       threadId,
       params,
@@ -375,6 +405,7 @@ async function streamWorkspaceTurn(req, res, context, route) {
       contract_version: 1,
       message: error.message,
       code: error.code || "turn_start_failed",
+      terminal: true,
     });
     res.end();
   }
@@ -390,7 +421,7 @@ async function serveConversationImage(res, requestUrl, context, deckId) {
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
   });
-  createReadStream(resolved.path).pipe(res);
+  await pipeline(createReadStream(resolved.path), res);
 }
 
 async function serveStatic(res, pathname, context) {
@@ -417,7 +448,7 @@ async function serveStatic(res, pathname, context) {
     "x-content-type-options": "nosniff",
     "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
   });
-  createReadStream(fileReal).pipe(res);
+  await pipeline(createReadStream(fileReal), res);
   return true;
 }
 
@@ -460,6 +491,11 @@ export function createLabHttpServer(context) {
               ready: false,
               conversation_count: 0,
               error: "conversation adapter is not configured",
+            },
+            conversation_storage: context.conversationLifecycle?.health?.() || {
+              ready: false,
+              isolated: false,
+              error: "isolated conversation storage is unavailable",
             },
             discovery: context.discovery?.health?.() || {
               ready: false,
@@ -676,6 +712,7 @@ export function createLabHttpServer(context) {
       }
 
       if (req.method === "POST" && conversationCollectionMatch) {
+        await requireConversationClient(context);
         if (!context.client.ready || !context.conversations?.ready) {
           throw new HttpError(503, "conversation service is unavailable", "conversation_unavailable");
         }
@@ -787,7 +824,7 @@ export function createLabHttpServer(context) {
           throw new HttpError(404, "conversation was not found", "conversation_not_found");
         }
         const threadId = context.conversations.threadIdFor(deck.outline.deck_uid, conversationId);
-        if (context.codexInteraction.activeTurn(threadId)) {
+        if (context.codexInteraction.isBusy(threadId)) {
           throw new HttpError(409, "running conversations cannot be deleted", "conversation_active");
         }
         await context.client.request("thread/archive", { threadId });
@@ -841,6 +878,7 @@ export function createLabHttpServer(context) {
         /^\/api\/decks\/([^/]+)\/conversations\/([^/]+)\/open$/,
       );
       if (req.method === "POST" && conversationOpenMatch) {
+        await requireConversationClient(context);
         if (!context.client.ready || !context.conversations?.ready) {
           throw new HttpError(503, "conversation service is unavailable", "conversation_unavailable");
         }
@@ -907,6 +945,9 @@ export function createLabHttpServer(context) {
         } catch (error) {
           throw new HttpError(409, error.message, "turn_not_active");
         }
+        await context.conversations.touch(deck.outline.deck_uid, conversationId, {
+          firstMessage: body?.message,
+        });
         json(res, 202, {
           contract_version: 1,
           thread_id: threadId,
@@ -965,7 +1006,7 @@ export function createLabHttpServer(context) {
         });
         res.flushHeaders?.();
         records.forEach((record) => sseRecord(res, record));
-        if (records.some((record) => record.method === "turn/completed")) {
+        if (context.codexInteraction.isStreamFinished(threadId, turnId)) {
           res.end();
           return;
         }
@@ -974,7 +1015,7 @@ export function createLabHttpServer(context) {
           turnId,
           listener(record) {
             sseRecord(res, record);
-            if (record.method === "turn/completed") {
+            if (record.method === "turn/completed" || record.terminal === true) {
               unsubscribe();
               res.end();
             }
@@ -1010,6 +1051,14 @@ export function createLabHttpServer(context) {
           await readJson(req),
         );
         json(res, 201, result);
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/exports/open-folder") {
+        if (!context.exports) {
+          throw new HttpError(503, "导出服务暂时不可用。", "export_unavailable");
+        }
+        json(res, 200, await context.exports.showRootInFinder());
         return;
       }
 

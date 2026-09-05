@@ -22,6 +22,10 @@ function revisionOf(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function outlineFormatError(message, code) {
+  return Object.assign(new Error(message), { code });
+}
+
 function normalizedPageId(value) {
   const match = String(value ?? "").trim().match(/^P?0*(\d+)$/i);
   if (!match || Number(match[1]) <= 0) {
@@ -135,12 +139,17 @@ export function parseOutlineText({ text, bytes, outlinePath, info }) {
 
   const slideUids = {};
   let inSlideUids = false;
+  let slideUidListEntry = false;
   for (const line of frontmatter.split(/\r?\n/)) {
     if (/^slide_uids:\s*$/.test(line)) {
       inSlideUids = true;
       continue;
     }
     if (!inSlideUids) continue;
+    if (/^\s{2}-\s+\S/.test(line)) {
+      slideUidListEntry = true;
+      continue;
+    }
     const item = line.match(/^\s{2}(P?0*\d+):\s*(\S.*?)\s*$/);
     if (item) {
       slideUids[normalizedPageId(item[1])] = item[2];
@@ -148,16 +157,26 @@ export function parseOutlineText({ text, bytes, outlinePath, info }) {
     }
     if (line && !line.startsWith(" ")) inSlideUids = false;
   }
+  if (slideUidListEntry) {
+    throw outlineFormatError(
+      "outline slide_uids must map page numbers to stable UIDs",
+      "outline_slide_uids_not_mapping",
+    );
+  }
   if (new Set(Object.values(slideUids)).size !== Object.values(slideUids).length) {
     throw new Error("outline has duplicate slide_uid values");
   }
 
   const rows = new Map();
   let activeHeaders = [];
+  let pageStructureEvidence = false;
   let offset = 0;
-  for (const rawLine of text.match(/.*(?:\n|$)/g) ?? []) {
+  for (const rawLine of text.match(/[^\n]*(?:\n|$)/g) ?? []) {
     if (rawLine === "") continue;
     const line = rawLine.replace(/\r?\n$/, "");
+    if (/^#{2,6}\s+P?0*\d+\b/i.test(line) || TABLE_ROW.test(line)) {
+      pageStructureEvidence = true;
+    }
     const cells = splitTableCells(line);
     if (cells.length >= 2 && isPageHeader(cells[0])) activeHeaders = cells;
     const rowMatch = TABLE_ROW.exec(line);
@@ -181,12 +200,21 @@ export function parseOutlineText({ text, bytes, outlinePath, info }) {
           subtitle: subtitle || null,
           multilingual: multilingualOutlineFields(activeHeaders, cells),
           markdown: line,
+          table_headers: [...activeHeaders],
+          table_cells: [...cells],
           span: [offset, offset + rawLine.length],
           column_count: cells.length,
         });
       }
     }
     offset += rawLine.length;
+  }
+
+  if (Object.keys(slideUids).length === 0 && pageStructureEvidence) {
+    throw outlineFormatError(
+      "outline has page content but no recognizable page-to-UID mapping",
+      "outline_page_structure_unrecognized",
+    );
   }
 
   const missing = Object.keys(slideUids).filter((pageId) => !rows.has(pageId));
@@ -212,7 +240,7 @@ export function parseOutlineText({ text, bytes, outlinePath, info }) {
   };
 }
 
-export function parseDraftOutline({ text, bytes, outlinePath, info, deckUid }) {
+export function parseDraftOutline({ text, bytes, outlinePath, info, deckUid, formatWarning = null }) {
   const sha256 = revisionOf(bytes);
   return {
     path: path.resolve(outlinePath),
@@ -229,6 +257,7 @@ export function parseDraftOutline({ text, bytes, outlinePath, info, deckUid }) {
     bytes,
     body_start: 0,
     outline_kind: "draft",
+    format_warning: formatWarning,
   };
 }
 

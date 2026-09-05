@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { promisify } from "node:util";
 
 import {
@@ -73,9 +74,10 @@ function commandErrorCode(error) {
   return error?.code || "single_edit_host_finalize_failed";
 }
 
-async function defaultCommandRunner(spec) {
+async function defaultCommandRunner(spec, env) {
   return execFileAsync(spec.command, spec.args, {
     encoding: "utf8",
+    env,
     maxBuffer: 1024 * 1024,
     timeout: 11 * 60 * 1000,
   });
@@ -134,11 +136,14 @@ function releaseSpec(statePath) {
  */
 export class SingleEditTurnFinalizer {
   constructor({
-    commandRunner = defaultCommandRunner,
+    commandRunner = null,
+    env = process.env,
     readState = defaultReadState,
     planBuilder = buildSingleImageEditHostFinalizePlan,
   } = {}) {
-    this.commandRunner = commandRunner;
+    this.env = { ...env };
+    this.generatedImagesRoot = path.join(path.resolve(env.CODEX_HOME || path.join(os.homedir(), ".codex")), "generated_images");
+    this.commandRunner = commandRunner || ((spec) => defaultCommandRunner(spec, this.env));
     this.readState = readState;
     this.planBuilder = planBuilder;
     this.starting = new Map();
@@ -243,7 +248,9 @@ export class SingleEditTurnFinalizer {
     let outcome = { status: "ignored", reason: "insufficient_exact_evidence" };
     try {
       if (entry.statePaths.size !== 1) return;
-      const statePath = [...entry.statePaths][0];
+      const observedStatePath = [...entry.statePaths][0];
+      const statePath = await realpath(observedStatePath).catch(() => observedStatePath);
+      const candidateRoots = await Promise.all(entry.candidateRoots.map((root) => realpath(root).catch(() => root)));
       let state;
       try {
         state = await this.readState(statePath);
@@ -253,7 +260,7 @@ export class SingleEditTurnFinalizer {
       }
       if (
         (entry.deckUid && state?.identity?.deck_uid !== entry.deckUid) ||
-        (entry.candidateRoots.length && !entry.candidateRoots.some((root) => {
+        (candidateRoots.length && !candidateRoots.some((root) => {
           const relative = path.relative(root, statePath);
           return relative && relative !== ".." && !relative.startsWith(`..${path.sep}`);
         }))
@@ -266,8 +273,12 @@ export class SingleEditTurnFinalizer {
           outcome = { status: "ignored", reason: "native_state_not_pending", state_path: statePath };
           return;
         }
-        const savedPath = [...entry.completedImages.values()][0];
-        const plan = this.planBuilder(minimalCompiled(statePath), { saved_path: savedPath });
+        const observedPath = [...entry.completedImages.values()][0];
+        const savedPath = await realpath(observedPath).catch(() => observedPath);
+        const generatedImagesRoot = await realpath(this.generatedImagesRoot).catch(() => this.generatedImagesRoot);
+        const plan = this.planBuilder(minimalCompiled(statePath), { saved_path: savedPath }, {
+          generatedImagesRoot,
+        });
         try {
           await this.commandRunner(plan.attempt_complete);
         } catch (error) {

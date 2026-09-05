@@ -70,10 +70,14 @@ wait_new_studio() {
 env -u SHAWN_PPT_STUDIO_PORT -u PPT_AI_LAB_DESKTOP_PORT \
   SHAWN_PPT_STUDIO_NODE="$NODE_BIN" \
   SHAWN_PPT_STUDIO_DATA_ROOT="$SMOKE_DIR/data" \
+  SHAWN_PPT_STUDIO_CODEX_HOME="$SMOKE_DIR/isolated-codex" \
+  SHAWN_PPT_STUDIO_LEGACY_CODEX_HOME="$SMOKE_DIR/legacy-codex" \
+  SHAWN_PPT_STUDIO_EXPORT_ROOT="$SMOKE_DIR/exports" \
   SHAWN_PPT_STUDIO_DESKTOP_SMOKE_MS=3500 \
   PPT_AI_LAB_TEST_MODE=1 \
   PPT_AI_LAB_ROOT="$SMOKE_DIR/lab" \
   PPT_AI_LAB_CODEX_BIN="$FAKE_CODEX" \
+  CODEX_BIN="$FAKE_CODEX" \
   PPT_AI_LAB_FAKE_STATE="$SMOKE_DIR/fake-codex.json" \
   PPT_AI_LAB_DECKS_FILE="$SMOKE_DIR/missing-decks.json" \
   PPT_AI_LAB_RUN_ROOT="$SMOKE_DIR/run" \
@@ -91,6 +95,7 @@ grep -q 'id="task-center-button"' "$SMOKE_DIR/new-index.html"
 curl -fsS "http://127.0.0.1:$NEW_PORT/api/tasks" >"$SMOKE_DIR/new-tasks.json"
 grep -q '"contract_version":1' "$SMOKE_DIR/new-tasks.json"
 grep -q '"tasks":\[\]' "$SMOKE_DIR/new-tasks.json"
+grep -q '"conversation_storage":{"ready":true,"isolated":true' "$SMOKE_DIR/new-health.json"
 kill -0 "$OLD_PID"
 test "$(lsof -nP -t -iTCP:$OLD_PORT -sTCP:LISTEN 2>/dev/null | head -1)" = "$OLD_PID"
 curl -fsS "http://127.0.0.1:$OLD_PORT/api/health" >"$SMOKE_DIR/legacy-after-fallback.json"

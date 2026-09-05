@@ -77,6 +77,8 @@ export function scopeFromSlide(detail) {
     subtitle: detail.slide.subtitle || null,
     multilingual: detail.slide.multilingual || null,
     outline_markdown: detail.slide.markdown,
+    table_headers: detail.slide.table_headers || null,
+    table_cells: detail.slide.table_cells || null,
     revision_id: detail.revision_id,
     sha256: detail.sha256,
     outline_path: detail.outline_path,
@@ -119,6 +121,8 @@ export function outlineReadingModel(
   explicitSubtitle = "",
   multilingual = null,
   languageView = "bilingual",
+  tableHeaders = null,
+  tableCells = null,
 ) {
   const source = String(markdown || "").trim();
   const cleanFallbackTitle = outlineDisplayValue(fallbackTitle);
@@ -153,6 +157,20 @@ export function outlineReadingModel(
             ],
     };
   }
+  if (Array.isArray(tableHeaders) && Array.isArray(tableCells) && tableHeaders.length) {
+    const headers = tableHeaders.map(outlineDisplayValue);
+    const cells = tableCells.map(outlineDisplayValue);
+    const matchedTitleIndex = headers.findIndex((header) => /标题|title/i.test(header) && !/副标题|subtitle/i.test(header));
+    const titleIndex = matchedTitleIndex >= 0 ? matchedTitleIndex : 1;
+    const subtitleIndex = headers.findIndex((header) => /副标题|subtitle/i.test(header));
+    return {
+      title: cells[titleIndex] || cleanFallbackTitle || "这一页的大纲",
+      subtitle: subtitle || (subtitleIndex >= 0 ? cells[subtitleIndex] : ""),
+      sections: cells.map((value, index) => ({ label: headers[index] || `补充内容 ${index + 1}`, value, index }))
+        .filter((section) => section.index !== 0 && section.index !== titleIndex && section.index !== subtitleIndex && section.value)
+        .map(({ label, value }) => ({ label, value })),
+    };
+  }
   if (!source.startsWith("|") || !source.endsWith("|")) {
     return {
       title: cleanFallbackTitle || "这一页的大纲",
@@ -161,7 +179,7 @@ export function outlineReadingModel(
     };
   }
   const cells = source.slice(1, -1).split("|").map((cell) => cell.replaceAll("**", "").trim());
-  const values = cells.slice(1).map(outlineDisplayValue).filter(Boolean);
+  const values = cells.slice(1).map(outlineDisplayValue);
   const title = values.shift() || cleanFallbackTitle || "这一页的大纲";
   if (subtitle) {
     const subtitleIndex = values.indexOf(subtitle);
@@ -171,7 +189,7 @@ export function outlineReadingModel(
   return {
     title,
     subtitle,
-    sections: values.map((value, index) => ({ label: labels[index] || `补充内容 ${index + 1}`, value })),
+    sections: values.map((value, index) => ({ label: labels[index] || `补充内容 ${index + 1}`, value })).filter((section) => section.value),
   };
 }
 

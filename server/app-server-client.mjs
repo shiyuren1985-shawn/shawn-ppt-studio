@@ -28,14 +28,23 @@ export class AppServerClient extends EventEmitter {
     this.lastError = null;
     this.stderrTail = "";
     this.stopping = false;
+    this.startPromise = null;
   }
 
   get pid() {
     return this.child?.pid || null;
   }
 
-  async start() {
-    if (this.child) return;
+  start() {
+    if (this.startPromise) return this.startPromise;
+    if (this.ready) return Promise.resolve();
+    this.startPromise = this.#start().finally(() => { this.startPromise = null; });
+    return this.startPromise;
+  }
+
+  async #start() {
+    this.stopping = false;
+    this.stderrTail = "";
 
     const child = spawn(this.executable, ["app-server", "--stdio"], {
       cwd: this.cwd,
@@ -50,14 +59,17 @@ export class AppServerClient extends EventEmitter {
     });
 
     const lines = readline.createInterface({ input: child.stdout });
-    lines.on("line", (line) => this.#handleLine(line));
+    lines.on("line", (line) => {
+      if (this.child === child) this.#handleLine(line);
+    });
+    child.stdin.on("error", (error) => this.#handleExit(error, child));
 
-    child.once("error", (error) => this.#handleExit(error));
+    child.once("error", (error) => this.#handleExit(error, child));
     child.once("exit", (code, signal) => {
       const message = this.stopping
         ? "Codex App Server stopped"
         : `Codex App Server exited (code=${code ?? "null"}, signal=${signal ?? "null"})`;
-      this.#handleExit(Object.assign(new Error(message), { code: "app_server_exited" }));
+      this.#handleExit(Object.assign(new Error(message), { code: "app_server_exited" }), child);
     });
 
     await new Promise((resolve, reject) => {
@@ -135,8 +147,20 @@ export class AppServerClient extends EventEmitter {
         code: "approval_request_not_found",
       });
     }
-    this.serverRequests.delete(key);
     this.#write({ id: request.id, result });
+    this.serverRequests.delete(key);
+  }
+
+  rejectServerRequest(requestId, error) {
+    const key = String(requestId);
+    const request = this.serverRequests.get(key);
+    if (!request) {
+      throw Object.assign(new Error("Codex permission request is no longer active"), {
+        code: "approval_request_not_found",
+      });
+    }
+    this.#write({ id: request.id, error });
+    this.serverRequests.delete(key);
   }
 
   async stop() {
@@ -149,10 +173,11 @@ export class AppServerClient extends EventEmitter {
     child.kill("SIGTERM");
     const timer = setTimeout(() => child.kill("SIGKILL"), 3000);
     timer.unref?.();
-    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 3500))]);
+    let deadline;
+    await Promise.race([exited, new Promise((resolve) => { deadline = setTimeout(resolve, 3500); })]);
     clearTimeout(timer);
-    this.child = null;
-    this.serverRequests.clear();
+    clearTimeout(deadline);
+    if (this.child === child) this.#handleExit(Object.assign(new Error("Codex App Server stopped"), { code: "app_server_exited" }), child);
   }
 
   #write(message) {
@@ -160,6 +185,7 @@ export class AppServerClient extends EventEmitter {
       this.child.stdin.write(`${JSON.stringify(message)}\n`);
     } catch (error) {
       this.#handleExit(error);
+      throw error;
     }
   }
 
@@ -169,6 +195,11 @@ export class AppServerClient extends EventEmitter {
       message = JSON.parse(line);
     } catch {
       this.emit("protocolError", new Error("Codex App Server emitted invalid JSONL"));
+      return;
+    }
+
+    if (!message || typeof message !== "object" || Array.isArray(message)) {
+      this.emit("protocolError", new Error("Codex App Server emitted an invalid message"));
       return;
     }
 
@@ -197,20 +228,42 @@ export class AppServerClient extends EventEmitter {
     }
 
     if (message.method) {
+      if (message.method === "serverRequest/resolved") {
+        this.#resolveServerRequests((request) => (
+          String(request.id) === String(message.params?.requestId)
+          && request.params?.threadId === message.params?.threadId
+        ), "server_resolved");
+      } else if (message.method === "turn/completed") {
+        this.#resolveServerRequests((request) => (
+          request.params?.threadId === message.params?.threadId
+          && request.params?.turnId === message.params?.turn?.id
+        ), "turn_completed");
+      }
       this.emit("notification", message);
     }
   }
 
-  #handleExit(error) {
-    if (this.child === null && this.pending.size === 0) return;
+  #resolveServerRequests(matches, reason) {
+    for (const [key, request] of this.serverRequests) {
+      if (!matches(request)) continue;
+      this.serverRequests.delete(key);
+      this.emit("serverRequestResolved", { request: { ...request, requestId: key }, reason });
+    }
+  }
+
+  #handleExit(error, child = this.child) {
+    if (!child || this.child !== child) return;
+    this.child = null;
     this.ready = false;
+    this.account = null;
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
     this.lastError = error;
     for (const { reject, timer } of this.pending.values()) {
       clearTimeout(timer);
       reject(error);
     }
     this.pending.clear();
-    this.serverRequests.clear();
+    this.#resolveServerRequests(() => true, "connection_closed");
     this.emit("appServerError", error);
   }
 }

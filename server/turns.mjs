@@ -129,15 +129,15 @@ export async function buildWorkspaceTurn(
     throw new HttpError(400, "JSON body must be an object", "invalid_turn_request");
   }
   const message = requireString(body.message, "message");
-  const currentSlideUid =
+  const requestedSlideUid =
     typeof body.current_slide_uid === "string" && body.current_slide_uid.trim()
       ? body.current_slide_uid.trim()
       : null;
-  if (
-    currentSlideUid &&
-    !deck.outline.slides.some((slide) => slide.slide_uid === currentSlideUid)
-  ) {
-    throw new HttpError(404, "current slide was not found", "slide_not_found");
+  const currentSlideUid = deck.outline.slides.some((slide) => slide.slide_uid === requestedSlideUid)
+    ? requestedSlideUid : null;
+  const viewedPageRemoved = Boolean(requestedSlideUid && !currentSlideUid);
+  if (viewedPageRemoved && body.retouch_context === true) {
+    throw new HttpError(409, "当前修图页面已从大纲移除，请重新选择要修改的页面。", "slide_not_found");
   }
 
   const referencePaths = cleanReferences(body.reference_images);
@@ -150,13 +150,6 @@ export async function buildWorkspaceTurn(
     typeof overviewPython === "string" && path.isAbsolute(overviewPython)
       ? path.normalize(overviewPython)
       : null;
-  if (!boundOverviewPython) {
-    throw new HttpError(
-      503,
-      "Studio overview runtime is unavailable",
-      "overview_runtime_unavailable",
-    );
-  }
   const candidateOutputRoots = (deck.candidate_roots || []).map((root) => path.resolve(root.path));
   const writableRoots = [
     path.resolve(dataRoot),
@@ -185,13 +178,14 @@ export async function buildWorkspaceTurn(
     USER_MESSAGE_END,
     "You are Codex working directly inside Shawn PPT Studio. Follow normal Codex thread, turn, item, streaming, steering, interruption, and approval behavior.",
     "This conversation belongs to the entire PPT deck. The currently viewed slide is context only; it never limits the pages you may discuss or change.",
+    ...(viewedPageRemoved ? ["The previously viewed page has been removed from the current outline. No current page is selected; do not substitute another page by its former number. Follow explicitly named targets in the user message using the current outline; ask briefly if the request only says this page or otherwise has no clear target."] : []),
     "Respond naturally. Do not emit JSON, a proposal schema, or a host-action envelope.",
     "For a question, brainstorming request, or ambiguous request, discuss it naturally and do not make changes that were not requested.",
     "For a clear instruction to change the outline, generate images, or edit formal selected images, carry out the work inside this same turn. Do not end the turn after merely announcing that a hidden job has started.",
     ...STUDIO_COMMUNICATION_RULES,
     ...studioUserRuleLines(studioRules),
     "For outline edits, modify the authoritative outline in place, preserve deck_uid and slide_uid identities, and do not create a second authoritative outline.",
-    "If the outline is a zero-page draft, use the exact deck_uid supplied below when converting it to canonical front matter and create stable slide_uids for real pages; never replace the project deck_uid with a new one.",
+    "If the outline is a zero-page draft, use the exact deck_uid supplied below when converting it to canonical front matter; never replace the project deck_uid with a new one. In that front matter, slide_uids must be a page-to-UID mapping such as `slide_uids:` followed by `  P01: stable_slide_uid`, never a YAML list. The body must be a Markdown table whose first column is `页码`, with one `| P01 | ... |` data row per real page; use the standard seven columns `页码｜客户钩子／页面标题｜核心命题｜信息密度／上屏层级｜页面必讲内容｜页面说明／资产引用｜视觉表达目标／用户硬约束` unless the authoritative outline already requires additional structured columns. After writing, re-read the file and verify that the slide_uids mapping count equals the page table row count and both are greater than zero; do not report success when they differ or when Studio would still see zero pages.",
     "For PPT image generation or image editing, use the supplied shawn-ppt-image skill and its canonical control planes, run state, source snapshot, ImageGen path, and existing sole Judge. Do not create another reviewer, state machine, or image concurrency layer.",
     "The Studio host has already resolved the optional project_generation_sources below. For every formal image-generation route, including Fast8, 4x3, and selected-style expansion, register each supplied deck-scoped source before the run is frozen. A global_chrome_contract must be passed as the exact deck supporting source, equivalent to --supporting-source \"<path>::deck\"; do not replace it with a user style reference or rediscover another contract. If project_generation_sources is empty, do not infer or impose a global title system.",
     "The supplied skill is already attached by the Studio host. For a formal Fast8 request, do not search memory or reopen the entire skill before preflight. After one short acknowledgement, perform one bounded read-only input enumeration: inspect only the target page hard requirements and, only when a mandatory image path is missing, the directly referenced page-level asset index. Register every mandatory ImageGen logo, product image, or photo together with user style references in the initial preflight; do not scan unrelated pages, collect optional/planning assets, or start a Director or Reviewer for this enumeration. The first state-mutating command must then build the preflight manifest and initialize the one formal run; read only the stage-gated references when their stage begins.",
@@ -199,6 +193,7 @@ export async function buildWorkspaceTurn(
     "For a new Fast8 run, never use a distinct slide identity sidecar. When building the preflight manifest, the authoritative page source may also be registered as --slide-identity-file only when it is the exact same canonical outline. When calling init_task_dir.py with that frozen preflight manifest, never pass --slide-identity-file again; init reads the optional identity binding from the manifest. This prevents one request from producing a rejected initialization and a second suffixed preflight.",
     "Pass the exact studio_request_started_at below to build_fast8_preflight_manifest.py --request-started-at. Never replace it with the time when preflight work happens.",
     "If the user explicitly requests every Fast8 candidate to use a light or dark background system, pass --tone light or --tone dark to build_fast8_preflight_manifest.py. Do not leave the default mixed A-D dark / E-H light matrix active for an all-light or all-dark request.",
+    ...(!boundOverviewPython ? ["Studio image overview runtime is unavailable. Continue ordinary conversation and outline editing normally. If formal image generation is requested, report overview_runtime_unavailable before creating a formal run; do not install dependencies or invent a runtime path."] : []),
     "For every formal Fast8 run, use the exact studio_overview_python supplied below as init_task_dir.py --overview-python. It is host-bound and already includes Pillow. Never search for another Python, create a virtual environment, run pip/uv/conda, or request network access to install Pillow. If this exact runtime cannot execute or import Pillow, stop with overview_runtime_unavailable before creating the formal run.",
     "The supplied imagegen skill is the image generation/editing engine. Use it only through the shawn-ppt-image workflow when producing formal PPT candidates.",
     "A generated or edited image is a new candidate. Never mark it selected and never overwrite the canonical selection merely because generation completed.",
@@ -211,8 +206,10 @@ export async function buildWorkspaceTurn(
     `authoritative_outline_path: ${deck.outline.path}`,
     `candidate_output_roots: ${JSON.stringify(candidateOutputRoots)}`,
     `monitoring_root: ${monitoringRoot ? path.resolve(monitoringRoot) : "none"}`,
-    `studio_overview_python: ${boundOverviewPython}`,
+    `studio_overview_python: ${boundOverviewPython || "unavailable"}`,
     `studio_request_started_at: ${requestStartedAt}`,
+    `shawn_ppt_image_skill_path: ${SHAWN_SKILL_PATH}`,
+    `imagegen_skill_path: ${IMAGEGEN_SKILL_PATH}`,
     `currently_viewed_slide_uid: ${currentSlideUid || "none"}`,
     `reference_image_paths: ${JSON.stringify(validatedReferences)}`,
     `project_generation_sources: ${JSON.stringify(projectGenerationSources)}`,

@@ -14,7 +14,7 @@ test("desktop package metadata shares one visible Studio version", async () => {
     readFile(path.join(root, "desktop/src-tauri/Cargo.toml"), "utf8"),
   ]);
   const cargoVersion = cargo.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
-  assert.equal(rootPackage.version, "0.2.3");
+  assert.equal(rootPackage.version, "0.2.12");
   assert.equal(desktopPackage.version, rootPackage.version);
   assert.equal(tauriConfig.version, rootPackage.version);
   assert.equal(cargoVersion, rootPackage.version);

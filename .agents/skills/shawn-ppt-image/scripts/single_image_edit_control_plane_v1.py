@@ -35,7 +35,7 @@ import pipeline_control as pc
 
 CONTRACT_VERSION = 1
 RUN_MODE = "single_image_edit"
-GENERATED_IMAGES_ROOT = (Path.home() / ".codex" / "generated_images").resolve()
+GENERATED_IMAGES_ROOT = pc.GENERATED_IMAGES_ROOT
 CENTRAL_IMAGEGEN_CAPACITY = 5
 DEFAULT_CLAIM_WAIT_SECONDS = 600.0
 PAGE_ID_PATTERN = re.compile(r"^P0*([1-9]\d{0,2})$", re.IGNORECASE)

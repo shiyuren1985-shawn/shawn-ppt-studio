@@ -14,7 +14,7 @@ Shawn PPT Studio is a local, conversation-first workspace for building visual Po
 - A native candidate-selection workspace with three images per row, immediate selection, zoom, and Trash support.
 - New-project flows for an empty folder or an existing Markdown outline.
 - Canonical Fast8 and single-image-edit adapters. A bundled Skill at `.agents/skills/shawn-ppt-image` remains available as a distribution fallback.
-- PDF and ordered page-image ZIP export. PPTX export remains unavailable until a real Microsoft Office sensitivity label can be verified.
+- Image-slide PPTX with verified company sensitivity-label metadata, PDF, and ordered page-image ZIP export. Available formats depend on their own runtime requirements.
 - A Tauri desktop shell for macOS.
 
 Studio has one execution path: a project conversation invokes the canonical `shawn-ppt-image` Skill directly, while `作图任务` and the selector read that Skill's formal state and handoff records. Superseded production-intent, candidate-edit, prototype-turn, and external selector services are not started or exposed.
@@ -73,13 +73,23 @@ The defaults work with a standard Codex home directory. These environment variab
 
 | Variable | Purpose |
 | --- | --- |
-| `CODEX_HOME` | Codex data and skill directory; defaults to `~/.codex` |
+| `CODEX_HOME` | Main Codex home used only to bootstrap Studio login/config and locate installed Skills; defaults to `~/.codex` |
+| `SHAWN_PPT_STUDIO_CODEX_HOME` | Studio-only Codex task store; defaults to `Studio Library/Studio Codex Home` |
+| `SHAWN_PPT_STUDIO_LEGACY_CODEX_HOME` | Optional source store for the one-time migration of older Studio conversations |
 | `CODEX_BIN` | Explicit Codex executable |
 | `SHAWN_PPT_STUDIO_NODE` | Node.js executable used by the desktop shell |
 | `SHAWN_PPT_STUDIO_PYTHON` | Python executable used by the production adapter |
 | `SHAWN_PPT_STUDIO_RUNTIME_ROOT` | Runtime containing export tools |
 | `SHAWN_PPT_IMAGE_SKILL_ROOT` | Optional standalone `shawn-ppt-image` checkout; overrides both the installed and bundled copies |
 | `SHAWN_PPT_IMAGE_MONITORING_ROOT` | Shared image-generation slot registry |
+| `SHAWN_PPT_STUDIO_EXPORT_ROOT` | Fixed export folder; defaults to `~/Documents/Shawn PPT Studio Exports` |
+| `SHAWN_PPT_PUBLIC_LABEL_TEMPLATE` | Optional replacement for the bundled PowerPoint-labelled Public template |
+
+Studio conversations use their own Codex task store, so they do not appear in the main Codex app task list. On the first upgraded launch, Studio copies only the login/config files it needs, migrates conversations used within the last 10 days, verifies each migrated thread, and only then removes the old main-store copy. Conversations unused for more than 10 complete calendar days are permanently removed from both the Studio index and the underlying Codex store. Running, approval-waiting, or uncertain threads are skipped and retried later. Manual “delete” and restore remain soft-delete actions during the retention window.
+
+The copied login/config files are private to Studio and never written back to the main Codex home. Studio continues to attach the selected installed or bundled `shawn-ppt-image` Skill and the Codex `imagegen` Skill by explicit path, while editable Studio long-term rules remain in `Studio Library`. Main Codex tasks, Memories, logs, and UI state are not copied into Studio storage.
+
+Studio can export any selected combination of a full-slide image PPTX, PDF, and page-image ZIP into one fixed folder: `~/Documents/Shawn PPT Studio Exports/<project>/<export>`. All three formats are selected by default, and at least one is required. Only pages with a confirmed selected image enter the export; unselected pages are skipped, and export is blocked only when the deck has no selected image at all. The PPTX contains one selected image per 16:9 slide and preserves the real company Public sensitivity-label metadata from the bundled PowerPoint-labelled template. Temporary loose page copies are created only when the ZIP is requested and are removed after verification. Because Studio is a local desktop app, the completion view lists the generated filenames and opens the concrete export folder in Finder instead of offering browser-style download links. The action bar can also open the shared export folder, and older project-local exports remain readable.
 
 ## Updating the distribution fallback
 
@@ -110,6 +120,12 @@ pnpm check
 ```
 
 No real ImageGen call is made by these tests.
+
+The 0.2.12 regression suite also covers interrupted transports, late snapshots,
+pending approval cleanup, conversation maintenance races, project-specific drafts,
+stable page identities after reordering, CRLF outlines, negated image requests,
+and atomic exports built from the confirmed source-image bytes. Real Codex and
+visual acceptance are recorded separately from fixture-based tests.
 
 ## Platform status
 

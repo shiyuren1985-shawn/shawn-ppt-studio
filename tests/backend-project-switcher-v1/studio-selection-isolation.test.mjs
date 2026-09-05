@@ -88,3 +88,39 @@ test("a malformed legacy selection still fails closed", async (t) => {
     { code: "studio_selection_invalid" },
   );
 });
+
+test("11 to 10 pages preserves removed-page selections across renumbering, writes and restoration", async (t) => {
+  const { first } = await fixture(t);
+  const store = new StudioSelectionStore();
+  first.outline.slides = Array.from({ length: 11 }, (_, i) => ({ page_id: `P${i + 1}`, slide_uid: `UID_${i + 1}` }));
+  const ref = (n) => ({ run_id: "original", handoff_path: path.join(first.project_root, "output/state/handoff.json"), native_candidate_id: `C${n}` });
+  for (let n = 1; n <= 11; n++) await store.setCandidate(first, `UID_${n}`, ref(n), true);
+  const before = await readFile(studioSelectionPath(first), "utf8");
+  first.outline.slides = first.outline.slides.filter(s => s.slide_uid !== "UID_7")
+    .map((s, i) => ({ ...s, page_id: `P${i + 1}` }));
+  const read = await store.read(first);
+  assert.equal(Object.keys(read.pages).length, 11);
+  assert.equal(read.pages.UID_8.selected_candidate_refs[0].native_candidate_id, "C8");
+  assert.equal(await readFile(studioSelectionPath(first), "utf8"), before, "reading must not mutate selection history");
+  await store.setCandidate(first, "UID_1", ref(1), false);
+  assert.deepEqual((await new StudioSelectionStore().read(first)).pages.UID_7, read.pages.UID_7);
+  await assert.rejects(() => store.setCandidate(first, "UID_7", ref(7), true), { code: "slide_not_found" });
+  first.outline.slides.push({ page_id: "P11", slide_uid: "NEW_UID" });
+  assert.equal((await store.read(first)).pages.NEW_UID, undefined, "reused page numbers must not inherit selection");
+  first.outline.slides.push({ page_id: "P12", slide_uid: "UID_7" });
+  assert.equal((await store.read(first)).pages.UID_7.selected_candidate_refs[0].native_candidate_id, "C7");
+});
+
+test("malformed page records and foreign deck identities remain invalid", async (t) => {
+  const { first, second } = await fixture(t);
+  const store = new StudioSelectionStore();
+  await store.setCandidate(first, first.outline.slides[0].slide_uid, {
+    run_id: "run", handoff_path: path.join(first.project_root, "handoff.json"), native_candidate_id: "A",
+  }, true);
+  const file = studioSelectionPath(first);
+  const original = JSON.parse(await readFile(file, "utf8"));
+  await writeFile(file, JSON.stringify({ ...original, pages: { OLD_UID: null } }));
+  await assert.rejects(() => store.read(first), { code: "studio_selection_invalid" });
+  await writeFile(file, JSON.stringify({ ...original, deck_uid: second.outline.deck_uid }));
+  await assert.rejects(() => store.read(first), { code: "studio_selection_invalid" });
+});

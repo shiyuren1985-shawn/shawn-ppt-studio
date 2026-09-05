@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import http from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 
 import { createLabHttpServer } from "../../server/http-server.mjs";
+import { StudioSelectionStore } from "../../server/studio-selection-store.mjs";
+import { SelectionProjection } from "../../server/selection-projection.mjs";
 
 class FakeAppServer extends EventEmitter {
   constructor() {
@@ -125,6 +130,7 @@ function fixtureContext() {
   const client = new FakeAppServer();
   const studioRuleState = { rules: ["测试中的全局长期规则"] };
   const openedConversationFiles = [];
+  const conversationTouches = [];
   const conversationState = {
     conversation_id: "conversation-1",
     title: "Test",
@@ -161,7 +167,10 @@ function fixtureContext() {
       ready: true,
       threadIdFor: () => "thread-1",
       get: () => ({ ...conversationState }),
-      touch: async () => ({ ...conversationState }),
+      touch: async (_deckUid, _conversationId, options) => {
+        conversationTouches.push(options);
+        return { ...conversationState };
+      },
       listArchived: () => ({
         contract_version: 1,
         deck_uid: "TEST_DECK",
@@ -226,6 +235,7 @@ function fixtureContext() {
       return { opened: true, kind: "file" };
     },
     openedConversationFiles,
+    conversationTouches,
   };
   return { client, context };
 }
@@ -286,6 +296,8 @@ test("HTTP uses start, steer and interrupt on one official turn", async () => {
     const initial = await waitForText(reader, /item\/agentMessage\/delta/);
     assert.match(initial, /event: codex/);
     assert.match(initial, /"delta":"正在处理。"/);
+    assert.equal(context.conversationTouches.length, 1);
+    assert.equal(context.conversationTouches[0].firstMessage, "修改 P01 并作图");
 
     const steer = await fetch(
       `${baseUrl}/api/decks/fixture/conversations/conversation-1/steer`,
@@ -296,6 +308,7 @@ test("HTTP uses start, steer and interrupt on one official turn", async () => {
       },
     );
     assert.equal(steer.status, 202);
+    assert.equal(context.conversationTouches.length, 2);
 
     const interrupt = await fetch(
       `${baseUrl}/api/decks/fixture/conversations/conversation-1/interrupt`,
@@ -324,6 +337,48 @@ test("HTTP uses start, steer and interrupt on one official turn", async () => {
     assert.match(started.input.find((item) => item.type === "text").text, /测试中的全局长期规则/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("HTTP sends against the latest ten-page outline despite eleven-page selection history", async (t) => {
+  const { client, context } = fixtureContext();
+  const root = await mkdtemp(path.join(os.tmpdir(), "studio-outline-evolution-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const deck = await context.discovery.readDeck("fixture");
+  Object.assign(deck, { source_kind: "studio", project_root: root, output_root: path.join(root, "output") });
+  deck.outline.path = path.join(root, "outline.md");
+  deck.outline.slides = Array.from({ length: 11 }, (_, i) => ({
+    slide_uid: `UID_${i + 1}`, page_id: `P${i + 1}`, page_label: `P${i + 1}`, title: `Title ${i + 1}`,
+  }));
+  await new StudioSelectionStore().setCandidate(deck, "UID_7", {
+    run_id: "old", handoff_path: path.join(root, "output/old/state/handoff.json"), native_candidate_id: "C7",
+  }, true);
+  deck.outline.slides = deck.outline.slides.filter(s => s.slide_uid !== "UID_7")
+    .map((s, i) => ({ ...s, page_id: `P${i + 1}`, page_label: `P${i + 1}` }));
+  deck.outline.revision_id = "sha256:latest-ten-pages";
+  context.selectionProjection = new SelectionProjection({ discovery: context.discovery });
+  const server = createLabHttpServer(context);
+  const baseUrl = await listen(server);
+  try {
+    const response = await fetch(`${baseUrl}/api/decks/fixture/conversations/conversation-1/messages`, {
+      method: "POST", headers: { ...writeHeaders(), accept: "text/event-stream" },
+      body: JSON.stringify({ message: "基于新的 10 页大纲重新生成图片", current_slide_uid: "UID_7" }),
+    });
+    assert.equal(response.status, 200);
+    const reader = response.body.getReader();
+    await waitForText(reader, /item\/agentMessage\/delta/);
+    await reader.cancel();
+    const starts = client.calls.filter(call => call.method === "turn/start");
+    assert.equal(starts.length, 1);
+    const prompt = starts[0].params.input.find(item => item.type === "text").text;
+    assert.match(prompt, /outline_revision_id: sha256:latest-ten-pages/);
+    const index = JSON.parse(prompt.match(/^outline_page_index: (.+)$/m)[1]);
+    assert.equal(index.length, 10);
+    assert.equal(index.some(s => s.slide_uid === "UID_7"), false);
+    assert.equal(index.find(s => s.slide_uid === "UID_8").page_id, "P7");
+    assert.match(prompt, /currently_viewed_slide_uid: none/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
   }
 });
 
