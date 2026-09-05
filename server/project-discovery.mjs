@@ -21,6 +21,7 @@ function publicDeck(deck) {
     project_root: deck.project_root || path.dirname(deck.outline.path),
     outline_path: deck.outline.path,
     outline_kind: deck.outline.outline_kind || "canonical",
+    format_warning: deck.outline.format_warning || null,
     source_kind: deck.source_kind || "legacy",
     revision_id: deck.outline.revision_id,
     sha256: deck.outline.sha256,
@@ -249,13 +250,20 @@ export class ProjectDiscovery {
         info,
       });
       outline.outline_kind = "canonical";
-    } catch {
+    } catch (error) {
+      const formatWarning = [
+        "outline_slide_uids_not_mapping",
+        "outline_page_structure_unrecognized",
+      ].includes(error?.code)
+        ? "这份大纲已经有分页内容，但页面格式还不能被 Studio 识别。原文仍完整保留，请让 AI 整理成 Studio 正式分页大纲。"
+        : null;
       outline = parseDraftOutline({
         text,
         bytes,
         outlinePath: record.outline_path,
         info,
         deckUid: record.deck_uid,
+        formatWarning,
       });
     }
     return {

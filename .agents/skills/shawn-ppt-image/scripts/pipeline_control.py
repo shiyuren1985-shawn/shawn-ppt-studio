@@ -126,10 +126,10 @@ IMAGEGEN_TOOL_CALL_ID_RE = re.compile(r"^exec-[0-9a-fA-F-]{36}$")
 CODEX_AGENT_THREAD_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
-EMBEDDED_IMAGEGEN_PNG_RE = re.compile(
-    r"(?P<path>/[^\s\"'<>]+/exec-[0-9a-fA-F-]{36}\.png)"
-)
-GENERATED_IMAGES_ROOT = (Path.home() / ".codex" / "generated_images").resolve()
+GENERATED_IMAGES_ROOT = (
+    Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
+    / "generated_images"
+).resolve()
 SPATIAL_PROMPT_CUES = {
     "low": (
         "低视觉压力；在准确呈现必显内容的前提下，优先保留明显、连续、"
@@ -524,7 +524,12 @@ def resolve_imagegen_artifact_hint(value: Any) -> tuple[Path | None, str | None]
     # canonical exec artifact from Codex's generated_images root; ambiguity is
     # deliberately routed to recovery instead of guessing the newest file.
     candidates: dict[str, tuple[Path, str]] = {}
-    for match in EMBEDDED_IMAGEGEN_PNG_RE.finditer(text):
+    # Inspect overlapping absolute paths so spaces and repeated directory prose
+    # remain parseable; accept only one existing artifact inside the real store.
+    image_path_pattern = re.compile(
+        r"(?=(?P<path>/[^\r\n\"'<>]*?/exec-[0-9a-fA-F-]{36}\.png))"
+    )
+    for match in image_path_pattern.finditer(text):
         candidate = Path(match.group("path")).expanduser().resolve()
         try:
             candidate.relative_to(GENERATED_IMAGES_ROOT)

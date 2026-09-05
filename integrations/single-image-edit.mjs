@@ -566,7 +566,11 @@ function canonicalCommandSpec(compiled, action, extraArgs = []) {
  * commands or read/write state.  The caller must still parse the control-plane
  * JSON and run verifySingleImageEditNativeRefs after a successful complete.
  */
-export function buildSingleImageEditHostFinalizePlan(compiled, { saved_path } = {}) {
+export function buildSingleImageEditHostFinalizePlan(
+  compiled,
+  { saved_path } = {},
+  { generatedImagesRoot = CODEX_GENERATED_IMAGES_ROOT } = {},
+) {
   if (
     compiled?.contract_version !== SINGLE_IMAGE_EDIT_CONTRACT_VERSION ||
     compiled?.run_mode !== SINGLE_IMAGE_EDIT_RUN_MODE ||
@@ -575,7 +579,8 @@ export function buildSingleImageEditHostFinalizePlan(compiled, { saved_path } = 
     fail("invalid_compiled_request", "compiled single-image-edit request is invalid");
   }
   const savedPath = requireAbsoluteNormalized(saved_path, "saved_path");
-  if (!relativeWithin(CODEX_GENERATED_IMAGES_ROOT, savedPath) || savedPath === CODEX_GENERATED_IMAGES_ROOT) {
+  const trustedRoot = requireAbsoluteNormalized(generatedImagesRoot, "generated_images_root");
+  if (!relativeWithin(trustedRoot, savedPath) || savedPath === trustedRoot) {
     fail("invalid_saved_path", "saved_path must be below Codex generated_images");
   }
   const complete = canonicalCommandSpec(compiled, "complete", ["--saved-path", savedPath]);

@@ -136,12 +136,15 @@ export function sha256Bytes(bytes) {
 }
 
 export function parseOutlineIdentity(outlineMarkdown) {
-  if (typeof outlineMarkdown !== "string" || !outlineMarkdown.startsWith("---\n")) {
+  // Normalize only the parsing view; request revision hashes still cover the
+  // exact original file bytes, including its line endings.
+  const text = typeof outlineMarkdown === "string" ? outlineMarkdown.replaceAll("\r\n", "\n") : "";
+  if (!text.startsWith("---\n")) {
     fail("outline_identity_missing", "outline must begin with YAML front matter");
   }
-  const end = outlineMarkdown.indexOf("\n---\n", 4);
+  const end = text.indexOf("\n---\n", 4);
   if (end < 0) fail("outline_identity_missing", "outline YAML front matter is not closed");
-  const frontmatter = outlineMarkdown.slice(4, end);
+  const frontmatter = text.slice(4, end);
   const lines = frontmatter.split("\n");
 
   const required = lines.filter((line) => /^slide_identity_required:\s*true\s*$/i.test(line));

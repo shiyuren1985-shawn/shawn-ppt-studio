@@ -81,3 +81,18 @@ test("outline reading converts Markdown table break tags into readable line brea
   assert.equal(outlineInlineDisplayValue("主标题<br><br>客户钩子"), "主标题 · 客户钩子");
   assert.match(app, /outlineInlineDisplayValue\(slide\.title\)/);
 });
+
+test("canonical column headers retain their meaning and empty cells do not shift later content", () => {
+  const model = outlineReadingModel("", "备用标题", "", null, "zh",
+    ["页码", "客户钩子／页面标题", "核心命题", "信息密度／上屏层级", "页面必讲内容", "页面说明／资产引用", "视觉表达目标／用户硬约束"],
+    ["P01", "让想法成为画面", "", "低密度", "输入大纲 → 探索画面 → 选择成稿", "", "保持浅色"],
+  );
+  assert.equal(model.title,"让想法成为画面");
+  assert.deepEqual(model.sections,[
+    {label:"信息密度／上屏层级",value:"低密度"},
+    {label:"页面必讲内容",value:"输入大纲 → 探索画面 → 选择成稿"},
+    {label:"视觉表达目标／用户硬约束",value:"保持浅色"},
+  ]);
+  const legacy=outlineReadingModel("| P01 | 标题 | | 内容仍是内容 |");
+  assert.deepEqual(legacy.sections,[{label:"内容要点",value:"内容仍是内容"}]);
+});

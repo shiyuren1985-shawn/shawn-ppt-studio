@@ -29,6 +29,15 @@ tests/*
 !tests/backend-task-center-v1/**
 !tests/backend-chat-links-v1/
 !tests/backend-chat-links-v1/**
+!tests/backend-export-v1/
+!tests/backend-export-v1/*.test.mjs
+!tests/ui-export-v1/
+tests/ui-export-v1/*
+!tests/ui-export-v1/*.test.mjs
+!tests/backend-export-label-v1/
+tests/backend-export-label-v1/*
+!tests/backend-export-label-v1/label-package.test.mjs
+!tests/backend-export-label-v1/powerpoint-ui-verification.json
 !tests/ui-project-switcher-v1/
 !tests/ui-project-switcher-v1/**
 !tests/ui-task-center-v1/

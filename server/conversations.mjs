@@ -49,6 +49,7 @@ export class ConversationIndex {
     this.ready = false;
     this.lastError = null;
     this.writeQueue = Promise.resolve();
+    this.suppressedConversationIds = new Set();
   }
 
   async initialize() {
@@ -88,13 +89,15 @@ export class ConversationIndex {
     const uid = requiredString(deckUid, "deck_uid");
     const deck = this.state.decks[uid];
     const conversations = [...(deck?.conversations || [])]
-      .filter((record) => !record.archived_at)
+      .filter((record) => !record.archived_at && !this.suppressedConversationIds.has(record.conversation_id))
       .sort((left, right) => right.last_used_at.localeCompare(left.last_used_at))
       .map(publicConversation);
     return {
       contract_version: CONTRACT_VERSION,
       deck_uid: uid,
-      active_conversation_id: deck?.active_conversation_id || null,
+      active_conversation_id: conversations.some((record) => (
+        record.conversation_id === deck?.active_conversation_id
+      )) ? deck.active_conversation_id : conversations[0]?.conversation_id || null,
       conversations,
     };
   }
@@ -102,15 +105,26 @@ export class ConversationIndex {
   records(deckUid) {
     const uid = requiredString(deckUid, "deck_uid");
     return [...(this.state.decks[uid]?.conversations || [])]
-      .filter((record) => !record.archived_at)
+      .filter((record) => !record.archived_at && !this.suppressedConversationIds.has(record.conversation_id))
       .sort((left, right) => right.last_used_at.localeCompare(left.last_used_at))
       .map((record) => ({ ...publicConversation(record), thread_id: record.thread_id }));
+  }
+
+  allRecords() {
+    return Object.entries(this.state.decks).flatMap(([deckUid, deck]) => (
+      deck.conversations.map((record) => ({
+        ...publicConversation(record),
+        deck_id: deck.deck_id,
+        deck_uid: deckUid,
+        thread_id: record.thread_id,
+      }))
+    ));
   }
 
   listArchived(deckUid) {
     const uid = requiredString(deckUid, "deck_uid");
     const conversations = [...(this.state.decks[uid]?.conversations || [])]
-      .filter((record) => Boolean(record.archived_at))
+      .filter((record) => Boolean(record.archived_at) && !this.suppressedConversationIds.has(record.conversation_id))
       .sort((left, right) => String(right.archived_at).localeCompare(String(left.archived_at)))
       .map(publicConversation);
     return {
@@ -127,6 +141,14 @@ export class ConversationIndex {
 
   threadIdFor(deckUid, conversationId) {
     return this.#record(deckUid, conversationId).thread_id;
+  }
+
+  suppress(conversationId) {
+    this.suppressedConversationIds.add(requiredString(conversationId, "conversation_id"));
+  }
+
+  unsuppress(conversationId) {
+    this.suppressedConversationIds.delete(requiredString(conversationId, "conversation_id"));
   }
 
   active(deckUid) {
@@ -176,7 +198,7 @@ export class ConversationIndex {
     await this.#mutate((state) => {
       const deck = state.decks[uid];
       activated = deck?.conversations.find((item) => item.conversation_id === id);
-      if (!activated || activated.archived_at) {
+      if (!activated || activated.archived_at || this.suppressedConversationIds.has(id)) {
         throw new HttpError(404, "conversation was not found", "conversation_not_found");
       }
       deck.active_conversation_id = id;
@@ -194,7 +216,7 @@ export class ConversationIndex {
     await this.#mutate((state) => {
       const deck = state.decks[uid];
       updated = deck?.conversations.find((item) => item.conversation_id === id);
-      if (!updated || updated.archived_at) {
+      if (!updated || updated.archived_at || this.suppressedConversationIds.has(id)) {
         throw new HttpError(404, "conversation was not found", "conversation_not_found");
       }
       if (updated.title_is_default && firstMessage) {
@@ -217,7 +239,7 @@ export class ConversationIndex {
     await this.#mutate((state) => {
       const deck = state.decks[uid];
       updated = deck?.conversations.find((item) => item.conversation_id === id);
-      if (!updated || updated.archived_at) {
+      if (!updated || updated.archived_at || this.suppressedConversationIds.has(id)) {
         throw new HttpError(404, "conversation was not found", "conversation_not_found");
       }
       updated.title = cleaned;
@@ -236,7 +258,7 @@ export class ConversationIndex {
     await this.#mutate((state) => {
       const deck = state.decks[uid];
       archived = deck?.conversations.find((item) => item.conversation_id === id);
-      if (!archived || archived.archived_at) {
+      if (!archived || archived.archived_at || this.suppressedConversationIds.has(id)) {
         throw new HttpError(404, "conversation was not found", "conversation_not_found");
       }
       archived.archived_at = timestamp;
@@ -263,7 +285,7 @@ export class ConversationIndex {
     await this.#mutate((state) => {
       const deck = state.decks[uid];
       restored = deck?.conversations.find((item) => item.conversation_id === id);
-      if (!restored || !restored.archived_at) {
+      if (!restored || !restored.archived_at || this.suppressedConversationIds.has(id)) {
         throw new HttpError(404, "archived conversation was not found", "conversation_not_found");
       }
       restored.archived_at = null;
@@ -274,13 +296,34 @@ export class ConversationIndex {
     return publicConversation(restored);
   }
 
+  async purge(deckUid, conversationId) {
+    const uid = requiredString(deckUid, "deck_uid");
+    const id = requiredString(conversationId, "conversation_id");
+    let removed = null;
+    await this.#mutate((state) => {
+      const deck = state.decks[uid];
+      const index = deck?.conversations.findIndex((item) => item.conversation_id === id) ?? -1;
+      if (!deck || index < 0) return;
+      [removed] = deck.conversations.splice(index, 1);
+      if (deck.active_conversation_id === id) {
+        const next = deck.conversations
+          .filter((item) => !item.archived_at)
+          .sort((left, right) => right.last_used_at.localeCompare(left.last_used_at))[0] || null;
+        deck.active_conversation_id = next?.conversation_id || null;
+      }
+      if (!deck.conversations.length) delete state.decks[uid];
+    });
+    this.suppressedConversationIds.delete(id);
+    return removed ? publicConversation(removed) : null;
+  }
+
   #record(deckUid, conversationId) {
     const uid = requiredString(deckUid, "deck_uid");
     const id = requiredString(conversationId, "conversation_id");
     const record = this.state.decks[uid]?.conversations.find(
       (item) => item.conversation_id === id,
     );
-    if (!record) {
+    if (!record || this.suppressedConversationIds.has(id)) {
       throw new HttpError(404, "conversation was not found", "conversation_not_found");
     }
     return record;

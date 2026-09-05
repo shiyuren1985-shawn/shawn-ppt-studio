@@ -85,12 +85,20 @@ export function createSelectorApi(fetchImpl = globalThis.fetch?.bind(globalThis)
     getExportReadiness(deckId) {
       return request(deckRoute(deckId, "/export-readiness"), { cache: "no-store" });
     },
-    createExport(deckId, name) {
-      const body = typeof name === "string" && name.trim() ? { name: name.trim() } : {};
+    createExport(deckId, options = {}) {
+      const { name = null, formats = null } = typeof options === "string"
+        ? { name: options }
+        : (options || {});
+      const body = {};
+      if (Array.isArray(formats)) body.formats = formats;
+      if (typeof name === "string" && name.trim()) body.name = name.trim();
       return mutate(deckRoute(deckId, "/exports"), body);
     },
     openExportFolder(deckId, exportId) {
       return mutate(deckRoute(deckId, `/exports/${encodeURIComponent(exportId)}/open-folder`));
+    },
+    openExportRoot() {
+      return mutate("/api/exports/open-folder");
     },
   });
 }

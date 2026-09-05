@@ -1,4 +1,5 @@
 import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 
 function json(res, statusCode, value) {
   const payload = JSON.stringify(value);
@@ -40,7 +41,7 @@ export async function handleSelectorProjectionRequest(req, res, requestUrl, proj
       "x-content-type-options": "nosniff",
       "content-security-policy": "default-src 'none'",
     });
-    createReadStream(image.path).pipe(res);
+    await pipeline(createReadStream(image.path), res);
     return true;
   }
 

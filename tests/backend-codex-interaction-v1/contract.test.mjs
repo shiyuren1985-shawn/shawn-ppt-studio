@@ -112,24 +112,38 @@ test("workspace turn is one natural Codex turn with official skills and no propo
   assert.match(text, /use the exact studio_overview_python/);
   assert.match(text, /Never search for another Python, create a virtual environment, run pip\/uv\/conda/);
   assert.match(text, /currently_viewed_slide:.*Body/s);
+  assert.match(text, /slide_uids must be a page-to-UID mapping/);
+  assert.match(text, /P01: stable_slide_uid/);
+  assert.match(text, /first column is `页码`/);
+  assert.match(text, /mapping count equals the page table row count/);
   assert.doesNotMatch(text, /PRIVATE_WHOLE_OUTLINE_SENTINEL/);
   assert.ok(built.params.sandboxPolicy.writableRoots.includes(path.join(root, "monitoring")));
 });
 
-test("workspace turn fails before dispatch when the host runtime is not bound", async () => {
-  await assert.rejects(
-    buildWorkspaceTurn(
-      { message: "生成 P01" },
-      {
-        dataRoot: root,
-        deck,
-        conversationId: "conversation-1",
-        threadId: "thread-1",
-        pathPolicy: { requireReferenceImage: async (value) => value },
-      },
-    ),
-    (error) => error?.statusCode === 503 && error?.code === "overview_runtime_unavailable",
-  );
+test("missing image runtime does not block ordinary conversation or outline edits", async () => {
+  for (const message of ["讨论一下这份大纲", "修改 P01 标题", "生成 P01"]) {
+    const built = await buildWorkspaceTurn({ message }, {
+      dataRoot: root, deck, conversationId: "conversation-1", threadId: "thread-1",
+      pathPolicy: { requireReferenceImage: async (value) => value },
+    });
+    const prompt = built.params.input[0].text;
+    assert.match(prompt, /studio_overview_python: unavailable/);
+    assert.match(prompt, /Continue ordinary conversation and outline editing normally/);
+    assert.match(prompt, /overview_runtime_unavailable before creating a formal run/);
+  }
+});
+
+test("a removed viewed page is advisory for new work, never silently retargeted for retouch", async () => {
+  const options = { dataRoot: root, deck, conversationId: "conversation-1", threadId: "thread-1",
+    overviewPython: `${root}/runtime/python3`, pathPolicy: { requireReferenceImage: async value => value } };
+  const body = { message: "基于最新大纲重新作图", current_slide_uid: "REMOVED_UID" };
+  const built = await buildWorkspaceTurn(body, options);
+  const text = built.params.input.find(item => item.type === "text").text;
+  assert.match(text, /previously viewed page has been removed/);
+  assert.match(text, /currently_viewed_slide_uid: none/);
+  assert.match(text, /currently_viewed_slide: null/);
+  assert.match(text, /outline_revision_id: sha256:test/);
+  await assert.rejects(() => buildWorkspaceTurn({ ...body, retouch_context: true }, options), { code: "slide_not_found" });
 });
 
 test("global Studio communication rules also apply when a new Codex thread is created", () => {

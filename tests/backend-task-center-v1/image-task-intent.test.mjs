@@ -60,3 +60,25 @@ test("retouch context and anchored references enter the image task catalog", () 
     title: "P11 · 作图",
   });
 });
+
+test("negated image instructions and informational questions do not create image tasks", () => {
+  for (const message of [
+    "这是隔离测试。请只回答：Studio 连接测试通过。不要访问网络、不要改文件、不要生成图片。",
+    "请不要生成图片", "暂时不需要作图，先讨论大纲", "先别做 8×1，先解释方案", "先不生成图片",
+    "Do not generate an image.", "Don't create images; just discuss the outline.",
+    "8×1 是什么？", "什么是 8×1？", "请解释一下 Fast8", "如何生成图片？", "How do I generate an image?",
+  ]) assert.equal(classifyImageTaskRequest({ message }), null, message);
+  assert.equal(classifyImageTaskRequest({ message: "先只讨论，不要修图", retouchContext: true }), null);
+});
+
+test("negated modes do not override a positive one-image request", () => {
+  for (const message of [
+    "请给 P01 生成一张图片，不要 Fast8", "不是 8×1，请生成 P01 的图片",
+    "Generate one image for P01, no Fast8.", "不要改大纲，请为 P01 生成图片",
+    "Generate one image for P01. Do not use Fast8.", "生成 P01 的图片\n不使用 Fast8",
+    "不要生成 P02 的图片，改为生成 P01 的图片",
+  ]) assert.deepEqual(classifyImageTaskRequest({ message }), {
+    kind: "image", mode_hint: "image_generation", title: "P01 · 作图",
+  }, message);
+  assert.equal(classifyImageTaskRequest({ message: "能帮我生成一张图片吗？" })?.kind, "image");
+});

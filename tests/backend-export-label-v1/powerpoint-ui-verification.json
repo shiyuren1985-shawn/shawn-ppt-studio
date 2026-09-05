@@ -1,0 +1,11 @@
+{
+  "status": "verified",
+  "checked_at": "2026-08-28T00:39:59+08:00",
+  "visible_label_before_save": "Public",
+  "saved_closed_and_reopened": true,
+  "visible_label_after_reopen": "Public",
+  "slide_count": 2,
+  "full_slide_images_rendered": true,
+  "blank_overlap_or_visible_crop": false,
+  "production_export_enabled": true
+}

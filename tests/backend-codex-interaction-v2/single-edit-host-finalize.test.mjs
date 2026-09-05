@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -197,4 +197,43 @@ test("workspace turn explicitly carries the Studio transport marker for the root
   assert.match(prompt, /project_generation_sources: \[\]/);
   assert.doesNotMatch(prompt, /project_generation_sources: \[\{.*global_chrome_contract/s);
   await rm(root, { recursive: true, force: true });
+});
+
+
+test("host finalize binds path validation and canonical subprocess to the same isolated Codex home", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "studio-finalize-home-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "Studio Codex Home");
+  const alias = path.join(root, "home-alias");
+  const artifactRoot = path.join(home, "generated_images");
+  await mkdir(artifactRoot, { recursive: true });
+  await symlink(home, alias);
+  const savedPath = path.join(artifactRoot, "fixture.png");
+  await writeFile(savedPath, "fixture bytes");
+  const statePath = path.join(root, "state", "single_image_edit_state.json");
+  await mkdir(path.dirname(statePath));
+  await writeFile(statePath, "{}");
+  const resultPath = path.join(root, "subprocess-env.json");
+  let observedRoot;
+  let observedSavedPath;
+  const finalizer = new SingleEditTurnFinalizer({
+    env: { ...process.env, CODEX_HOME: alias },
+    readState: async () => pendingState(),
+    planBuilder(_compiled, input, options) {
+      observedRoot = options.generatedImagesRoot;
+      observedSavedPath = input.saved_path;
+      return { attempt_complete: { command: process.execPath, args: ["-e",
+        "require('node:fs').writeFileSync(process.argv[1], JSON.stringify({home:process.env.CODEX_HOME}))", resultPath] } };
+    },
+  });
+  finalizer.registerStarting("thread-1", { transport: STUDIO_APP_SERVER_TRANSPORT, candidateRoots: [root] });
+  finalizer.observeNotification({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-1" } } });
+  finalizer.observeNotification({ method: "item/started", params: {
+    threadId: "thread-1", turnId: "turn-1", item: { command: stateCommand(await realpath(statePath)) },
+  } });
+  completed(finalizer, { id: "image", type: "imageGeneration", status: "completed", savedPath });
+  assert.equal((await finalizer.waitForOutcome("thread-1", "turn-1", 3000)).status, "completed");
+  assert.equal(observedRoot, await realpath(artifactRoot));
+  assert.equal(observedSavedPath, await realpath(savedPath));
+  assert.equal(JSON.parse(await readFile(resultPath, "utf8")).home, alias);
 });

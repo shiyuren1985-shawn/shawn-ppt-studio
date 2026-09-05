@@ -98,6 +98,8 @@ export function normalizeExportReadiness(value) {
   return {
     ready: value.ready === true && missingPages.length === 0,
     logical_page_count: Number.isFinite(value.logical_page_count) ? value.logical_page_count : 0,
+    selected_page_count: Number.isFinite(value.selected_page_count) ? value.selected_page_count : 0,
+    skipped_page_count: Number.isFinite(value.skipped_page_count) ? value.skipped_page_count : 0,
     output_slide_count: Number.isFinite(value.output_slide_count) ? value.output_slide_count : 0,
     missing_pages: missingPages,
     formats: (Array.isArray(value.formats) ? value.formats : [])
@@ -117,7 +119,7 @@ export function exportFormatsCopy(formats) {
   const names = {
     pptx: "PPTX",
     pdf: "PDF",
-    images_zip: "页面图片",
+    images_zip: "图片集 ZIP",
   };
   const visible = [...new Set(Array.isArray(formats) ? formats : [])]
     .map((format) => names[format])
@@ -127,21 +129,15 @@ export function exportFormatsCopy(formats) {
   return `${visible.slice(0, -1).join("、")}和${visible.at(-1)}`;
 }
 
-function safeDownloadUrl(value) {
-  return typeof value === "string" && /^\/api\/decks\/[^/]+\/exports\/[^/]+\/files\/(pptx|pdf|images_zip)$/.test(value)
-    ? value
-    : "";
-}
-
 export function normalizeExportResult(value) {
   if (!value || typeof value !== "object" || !["completed", "completed_with_warnings"].includes(value.status)) {
     throw new Error("成品生成结果暂时无法读取");
   }
   const source = value.artifacts && typeof value.artifacts === "object" ? value.artifacts : {};
   const definitions = [
-    ["pptx", "图片版 PPTX"],
+    ["pptx", "图片版 PPTX（Public）"],
     ["pdf", "图片版 PDF"],
-    ["images_zip", "页面图片 ZIP"],
+    ["images_zip", "图片集 ZIP"],
   ];
   const artifacts = definitions
     .filter(([kind]) => source[kind] && typeof source[kind] === "object")
@@ -149,22 +145,27 @@ export function normalizeExportResult(value) {
       kind,
       label,
       filename: cleanString(source[kind]?.filename, label),
-      download_url: safeDownloadUrl(source[kind]?.download_url),
     }));
-  const requiredKinds = value.status === "completed_with_warnings" ? ["pdf", "images_zip"] : ["pptx", "pdf", "images_zip"];
+  const requestedFormats = (Array.isArray(value.formats) ? value.formats : [])
+    .filter((format) => ["pptx", "pdf", "images_zip"].includes(format));
+  const requiredKinds = requestedFormats.length
+    ? [...new Set(requestedFormats)]
+    : (value.status === "completed_with_warnings" ? ["pdf", "images_zip"] : ["pptx", "pdf", "images_zip"]);
   if (!cleanString(value.export_id)
-    || artifacts.some((artifact) => !artifact.download_url)
+    || requiredKinds.length === 0
     || requiredKinds.some((kind) => !artifacts.some((artifact) => artifact.kind === kind))) {
     throw new Error("成品文件还没有准备完整");
   }
   return {
     export_id: cleanString(value.export_id),
     name: cleanString(value.name, "PPT 成品"),
+    formats: requiredKinds,
     artifacts,
     warning: cleanString(
       (Array.isArray(value.warnings) ? value.warnings : [])
         .find((warning) => warning?.code === "pptx_label_template_unavailable")?.message,
     ),
+    output_folder_name: cleanString(value.output_folder_name, "Shawn PPT Studio Exports"),
   };
 }
 

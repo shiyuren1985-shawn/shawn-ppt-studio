@@ -1,7 +1,23 @@
 const PAGE_REFERENCE_RE = /\bP\s*0*(\d{1,3})\b/gi;
 
 function normalizedMessage(value) {
-  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  return typeof value === "string" ? value.replace(/[^\S\r\n]+/g, " ").trim() : "";
+}
+
+function requestedVisualText(message) {
+  let negatedVisual = false;
+  const clauses = message.split(/[。！？!?；;，,、.\r\n]+|(?:但是|而是|改为|然后)|\b(?:but|instead)\b/iu);
+  const retained = clauses.filter((clause) => {
+    const negative = /(?:不要|不需要|无需|不必|先别|暂时别|禁止|不是|不用|别|不)\s*(?:(?:再|实际|立即|直接|给我|帮我|执行|进行|运行|用|使用|调用|走|跑|做)\s*)*(?:生成|制作|重做|重新生成|作图|生图|修图|改图|扩页|fast\s*[48]|[48]\s*[×x]\s*[13]|selected[_ -]?style|选定风格扩页|整稿扩页)/iu.test(clause)
+      || /\b(?:do\s+not|don['’]t|never|no|without)\s+(?:(?:use|run|any)\s+)*(?:generate|create|redraw|edit|revise|fast\s*[48]|[48]\s*[×x]\s*[13])/iu.test(clause);
+    if (negative) {
+      negatedVisual = true;
+      return false;
+    }
+    // These are explanations of a pipeline, not requests to dispatch one.
+    return !/(?:如何|怎么|怎样).{0,12}(?:生成|制作|作图|生图|修图)|(?:什么是|解释|介绍|讲讲).{0,12}(?:fast\s*[48]|[48]\s*[×x]\s*[13])|(?:fast\s*[48]|[48]\s*[×x]\s*[13]).{0,8}(?:是什么|什么意思)|\bhow\s+(?:do|can|does|to)\b/iu.test(clause);
+  });
+  return { text: retained.join("，").trim(), negatedVisual };
 }
 
 function pageLabels(message) {
@@ -46,10 +62,10 @@ export function classifyImageTaskRequest({
   retouchContext = false,
   referenceImages = [],
 } = {}) {
-  const text = normalizedMessage(message);
+  const { text, negatedVisual } = requestedVisualText(normalizedMessage(message));
   if (!text) return null;
   let modeHint = null;
-  if (retouchContext) modeHint = "retouch";
+  if (retouchContext && !negatedVisual) modeHint = "retouch";
   else if (/(?:fast\s*8|8\s*[×xX]\s*1)/i.test(text)) modeHint = "fast_8x1";
   else if (/(?:fast\s*4|4\s*[×xX]\s*3)/i.test(text)) modeHint = "fast_4x3";
 

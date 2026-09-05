@@ -31,10 +31,20 @@ function pageEntries(state, kind) {
   return entries(state.styles).flatMap((style) => entries(style?.pages));
 }
 
+function unitNeedsRecovery(unit) {
+  if (unit?.recovery_status === "recovered" && (unit.selected_source || unit.final_path || unit.saved_path)) {
+    return false;
+  }
+  return unit?.recovery_required === true
+    || /^recovery_(?:pending|running|failed)$/.test(String(unit?.status || ""))
+    || unit?.failure_reason === "artifact_handoff_unresolved";
+}
+
 function unitDone(unit, kind) {
+  if (unitNeedsRecovery(unit)) return false;
   if (kind === "single") return unit?.status === "completed" || Boolean(unit?.saved_path);
   return FINISHED.has(unit?.status) || Boolean(
-    unit?.tool_finished_at || unit?.selected_source || unit?.final_path || unit?.completed_at,
+    unit?.selected_source || unit?.final_path,
   );
 }
 
@@ -224,10 +234,9 @@ function compatibleRequestMode(requestMode, formalMode) {
   return formalMode !== "single_image_edit";
 }
 
-function stageOf({ state, kind, completed, total, started, updatedAt, now, staleMs, hasLiveTurn, pendingApprovals, terminalTurnStatus }) {
+function stageOf({ state, kind, completed, total, started, recovering, updatedAt, now, staleMs, hasLiveTurn, pendingApprovals, terminalTurnStatus }) {
   const root = String(state.status || "").toLowerCase();
   if (FAILED.has(root)) return { status: "failed", label: "需要查看", percent: null };
-  if (root === "completed") return { status: "completed", label: "已完成", percent: 100 };
   if (hasLiveTurn && pendingApprovals > 0) {
     return {
       status: "waiting_permission",
@@ -242,6 +251,14 @@ function stageOf({ state, kind, completed, total, started, updatedAt, now, stale
       percent: null,
     };
   }
+  if (recovering) {
+    return {
+      status: hasLiveTurn ? "preparing" : "attention",
+      label: hasLiveTurn ? "正在找回图片文件" : "图片文件尚未取回，请查看对话",
+      percent: null,
+    };
+  }
+  if (root === "completed") return { status: "completed", label: "已完成", percent: 100 };
   if (!hasLiveTurn && now - updatedAt > staleMs) {
     return { status: "attention", label: "任务已停滞", percent: null };
   }
@@ -411,29 +428,41 @@ export class TaskProjection {
 
   #imageRequestTasks({ deck, conversations, codexInteraction, now }) {
     const requests = this.associations?.imageRequests?.(deck.deck_uid) || [];
-    return requests.map((request) => {
+    const latestByConversation = new Map();
+    for (const request of requests) {
+      const prior = latestByConversation.get(request.conversation_id);
+      if (!prior || asTime(request.request_started_at) > asTime(prior.request_started_at)) {
+        latestByConversation.set(request.conversation_id, request);
+      }
+    }
+    // Provisional cards bridge a request to a formal run; they are not a second
+    // history of every request ever made in this conversation.
+    return [...latestByConversation.values()].map((request) => {
       const conversation = conversations.find(
         (candidate) => candidate.conversation_id === request.conversation_id,
       );
       if (!conversation) return null;
       const requestStartedMs = asTime(request.request_started_at);
       if (!requestStartedMs) return null;
-      const turnId = codexInteraction?.activeTurn?.(conversation.thread_id) || null;
+      const activeTurnId = codexInteraction?.activeTurn?.(conversation.thread_id) || null;
       const latest = codexInteraction?.latestTurn?.(conversation.thread_id) || null;
       const justSubmitted = now - requestStartedMs < 60_000;
+      const turnDelay = latest?.startedAtMs ? latest.startedAtMs - requestStartedMs : null;
+      const matchesRequest = turnDelay === null ? justSubmitted : turnDelay >= -1000 && turnDelay < 60_000;
+      const turnId = matchesRequest && (!latest?.turnId || latest.turnId === activeTurnId) ? activeTurnId : null;
       let status = "preparing";
       let statusLabel = "正在准备作图";
       if (!turnId && !justSubmitted) {
         status = "attention";
-        statusLabel = latest?.status === "interrupted"
+        statusLabel = matchesRequest && latest?.status === "interrupted"
           ? "任务已停止"
-          : latest?.status === "failed" ? "任务需要查看" : "尚未建立正式作图任务";
+          : matchesRequest && latest?.status === "failed" ? "任务需要查看" : "尚未建立正式作图任务";
       }
       const slide = deck.slides.find((candidate) => candidate.slide_uid === request.slide_uid) || null;
       const updatedMs = Math.max(
         requestStartedMs,
-        latest?.completedAtMs || 0,
-        latest?.startedAtMs || 0,
+        matchesRequest ? latest?.completedAtMs || 0 : 0,
+        matchesRequest ? latest?.startedAtMs || 0 : 0,
       );
       return {
         task_id: idFor(deck.deck_id, request.request_started_at, "image-request"),
@@ -703,7 +732,8 @@ export class TaskProjection {
         const exactTurn = exactApproval
           && exactApproval.conversation.thread_id === conversation?.thread_id
           && exactApproval.turnId === activeTurnId;
-        const turnId = activeTurnId && (exactTurn || !activityMs || updatedMs >= activityMs - this.associationGraceMs)
+        const turnId = !FINISHED.has(String(state.status || "").toLowerCase())
+          && activeTurnId && (exactTurn || !activityMs || updatedMs >= activityMs - this.associationGraceMs)
           ? activeTurnId
           : null;
         const pendingApprovals = pendingApprovalCount(
@@ -723,6 +753,8 @@ export class TaskProjection {
           completed,
           total,
           started,
+          recovering: units.some(unitNeedsRecovery)
+            || entries(state.scheduler?.active_actions).some((action) => action?.action === "recover_artifact"),
           updatedAt: updatedMs,
           now,
           staleMs: this.staleMs,

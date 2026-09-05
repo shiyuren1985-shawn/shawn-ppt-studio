@@ -1,14 +1,13 @@
-import { spawn } from "node:child_process";
+import { runProcess } from "./export-runtime.mjs";
 
 export const PUBLIC_LABEL_ID = "937d27c0-b6cd-40f3-a0e1-631f68c80666";
 export const PUBLIC_SITE_ID = "855b093e-7340-45c7-9f0c-96150415893e";
 
-// This helper deliberately does not claim that PowerPoint accepted a label.
-// It copies the complete custom-properties package part from a presentation
-// that PowerPoint has already labelled, then proves only that the OOXML package
-// carries the byte-identical part and the required package references. The
-// caller must still pass a visible PowerPoint UI verification before returning
-// `verified: true` to Studio.
+// The label source is a presentation that PowerPoint has already saved with the
+// company Public label. We copy its complete MIP custom-properties part and
+// verify the label id, tenant id, package relationship, content type and exact
+// bytes. This preserves the real Office label metadata without opening or
+// rewriting the user's generated deck in PowerPoint.
 const PYTHON_PROGRAM = String.raw`
 import hashlib, json, os, re, sys, tempfile, zipfile
 from xml.etree import ElementTree as ET
@@ -69,6 +68,8 @@ def ensure_relationship(raw):
     matches=[item for item in root if item.attrib.get('Type')==CUSTOM_REL]
     if len(matches)>1:
         raise RuntimeError('PPTX package has duplicate custom-properties relationships')
+    if matches and (matches[0].attrib.get('Target')!='docProps/custom.xml' or matches[0].attrib.get('TargetMode')=='External'):
+        raise RuntimeError('PPTX custom-properties relationship target is invalid')
     if not matches:
         used={item.attrib.get('Id') for item in root}
         number=1
@@ -128,7 +129,7 @@ def verify_package(pptx, expected_custom):
         if actual!=expected_custom:
             raise RuntimeError('sensitivity custom-properties part changed during assembly')
         relationships=ET.fromstring(package.read('_rels/.rels'))
-        if len([item for item in relationships if item.attrib.get('Type')==CUSTOM_REL])!=1:
+        if len([item for item in relationships if item.attrib.get('Type')==CUSTOM_REL and item.attrib.get('Target')=='docProps/custom.xml' and item.attrib.get('TargetMode')!='External'])!=1:
             raise RuntimeError('sensitivity custom-properties relationship verification failed')
         content_types=ET.fromstring(package.read('[Content_Types].xml'))
         if len([item for item in content_types if item.attrib.get('PartName')=='/docProps/custom.xml' and item.attrib.get('ContentType')==CUSTOM_CT])!=1:
@@ -154,34 +155,17 @@ print(json.dumps({
 },ensure_ascii=False))
 `;
 
-function runPython(executable, input) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(executable, ["-c", PYTHON_PROGRAM], {
-      stdio: ["pipe", "pipe", "pipe"],
+async function runPython(executable, input) {
+  try {
+    const result = await runProcess(executable, ["-c", PYTHON_PROGRAM], {
+      input: JSON.stringify(input),
     });
-    const stdout = [];
-    const stderr = [];
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.once("error", reject);
-    child.once("close", (code) => {
-      const diagnostic = Buffer.concat(stderr).toString("utf8").trim();
-      if (code !== 0) {
-        reject(Object.assign(new Error(diagnostic || "Office sensitivity label package copy failed"), {
-          code: "office_label_failed",
-        }));
-        return;
-      }
-      try {
-        resolve(JSON.parse(Buffer.concat(stdout).toString("utf8")));
-      } catch {
-        reject(Object.assign(new Error("Office sensitivity label verifier returned invalid JSON"), {
-          code: "office_label_failed",
-        }));
-      }
+    return JSON.parse(result.stdout);
+  } catch (cause) {
+    throw Object.assign(new Error(cause.message || "Office sensitivity label package copy failed", { cause }), {
+      code: "office_label_failed",
     });
-    child.stdin.end(JSON.stringify(input));
-  });
+  }
 }
 
 export async function preserveOfficeLabelMetadata({
@@ -196,4 +180,30 @@ export async function preserveOfficeLabelMetadata({
     expected_label_id: expectedLabelId,
     public_label_id: PUBLIC_LABEL_ID,
   });
+}
+
+export function verifyPreservedPublicLabel({ metadata } = {}) {
+  if (!metadata || metadata.id?.toLowerCase() !== PUBLIC_LABEL_ID.toLowerCase()) {
+    throw Object.assign(new Error("PPTX does not carry the required Public sensitivity label"), {
+      code: "office_label_failed",
+    });
+  }
+  if (metadata.site_id?.toLowerCase() !== PUBLIC_SITE_ID.toLowerCase()
+    || metadata.package_part_preserved !== true
+    || metadata.source_custom_xml_sha256 !== metadata.target_custom_xml_sha256
+    || !Number.isInteger(metadata.property_count)
+    || metadata.property_count < 4) {
+    throw Object.assign(new Error("PPTX Public sensitivity label metadata was not preserved completely"), {
+      code: "office_label_failed",
+    });
+  }
+  return {
+    verified: true,
+    id: metadata.id,
+    name: "Public",
+    site_id: metadata.site_id,
+    method: metadata.method,
+    source: metadata.source,
+    verification: "trusted_powerpoint_template_package",
+  };
 }

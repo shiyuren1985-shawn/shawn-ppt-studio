@@ -1,4 +1,5 @@
 import * as api from "./api.js";
+import { createConversationDraftStore } from "./conversation-drafts.js";
 import {
   chooseScope,
   conversationDisplayTurns,
@@ -37,6 +38,7 @@ const state = {
   slideUid: "",
   scope: null,
   draftMarkdown: "",
+  draftFormatWarning: "",
   selection: normalizeSelection({ status: "unavailable" }),
   selectorController: null,
   selectorMounting: null,
@@ -61,7 +63,7 @@ const state = {
   resolvingApprovalIds: new Set(),
   pendingConversationSubmissions: new Map(),
   interrupting: false,
-  creatingConversation: false,
+  creatingConversations: new Set(),
   conversationActionTargetId: "",
   conversationContextTargetId: "",
   removeTargetDeckId: "",
@@ -99,6 +101,8 @@ const ids = [
   "studio-rules-cancel", "studio-rules-save", "studio-rules-status",
 ];
 const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
+const conversationDrafts = createConversationDraftStore();
+let composerRoute = null;
 
 const observeTaskCatalogRefresh = createTaskCatalogRefreshTracker({
   refreshCatalog: async (deckId) => {
@@ -140,6 +144,9 @@ async function loadAppVersion() {
       ? "当前安装的本地开发版"
       : "当前 Studio 版本";
     document.title = `Shawn PPT Studio · v${version}`;
+    if (health?.account?.authenticated === false) {
+      toast("Studio 的独立 Codex 工作区尚未登录。请先在 Codex 桌面端完成登录，然后重启 Studio。");
+    }
   } catch {
     el["app-version"].textContent = "版本未知";
   }
@@ -375,6 +382,7 @@ async function confirmRemoveProject() {
       state.deckId = "";
       state.slideUid = "";
       state.activeConversationId = "";
+    syncComposerDraft();
       state.conversations = [];
       state.messages = [];
       stopEventStream();
@@ -486,9 +494,11 @@ async function startProject(mode) {
     state.deckId = project.deck_id;
     state.slideUid = project.default_slide_uid || project.slides?.[0]?.slide_uid || "";
     state.activeConversationId = "";
+    syncComposerDraft();
     state.conversations = [];
     state.messages = [];
     state.draftMarkdown = "";
+    state.draftFormatWarning = "";
     stopEventStream();
     setActiveTurn(null);
     closeProjectDialog();
@@ -542,9 +552,11 @@ async function selectDeck(deckId) {
   state.deckId = deck.deck_id;
   state.slideUid = deck.default_slide_uid || deck.slides[0]?.slide_uid || "";
   state.activeConversationId = "";
+    syncComposerDraft();
   state.conversations = [];
   state.messages = [];
   state.draftMarkdown = "";
+  state.draftFormatWarning = "";
   stopEventStream();
   setActiveTurn(null);
   renderDeckSwitcher();
@@ -587,6 +599,8 @@ function renderOutline() {
     state.scope?.subtitle || slide?.subtitle,
     multilingual,
     state.outlineLanguageView,
+    state.scope?.table_headers || slide?.table_headers,
+    state.scope?.table_cells || slide?.table_cells,
   );
   el["outline-reading-view"].replaceChildren();
   const list = document.createElement("dl");
@@ -627,6 +641,34 @@ function projectEmptyNode(title, copy) {
   return empty;
 }
 
+function renderNoProject() {
+  state.scope = null;
+  state.selection = normalizeSelection({ status: "empty", message: "" });
+  state.draftMarkdown = "";
+  state.draftFormatWarning = "";
+  el["outline-language-switch"].hidden = true;
+  el["current-page-label"].textContent = "";
+  el["current-page-title"].textContent = "开始一份 PPT";
+  el["current-page-context-copy"].textContent = "";
+  el["outline-version"].textContent = "";
+  el["selection-count"].textContent = "";
+  el["composer-page"].textContent = "尚未选择 PPT";
+  el["composer-scope-copy"].textContent = "";
+  const empty = projectEmptyNode("新建或打开一份 PPT", "从空白开始，或打开已有的 Markdown 大纲。");
+  const action = document.createElement("button");
+  action.type = "button";
+  action.className = "primary-button";
+  action.textContent = "新建或打开 PPT";
+  action.addEventListener("click", openProjectDialog);
+  empty.append(action);
+  el["selected-preview"].replaceChildren(empty);
+  el["outline-reading-view"].replaceChildren(projectEmptyNode("大纲会显示在这里", "打开项目后，可以和 AI 一起整理内容。"));
+  el["retouch-page-label"].textContent = "";
+  el["retouch-page-title"].textContent = "修图";
+  el["retouch-gallery"].replaceChildren(projectEmptyNode("尚未选择 PPT", "请先新建或打开一份 PPT。"));
+  updateSendState();
+}
+
 function renderProjectWithoutSlides() {
   const deck = currentDeck();
   el["outline-language-switch"].hidden = true;
@@ -642,7 +684,8 @@ function renderProjectWithoutSlides() {
   if (state.draftMarkdown.trim()) {
     const note = document.createElement("p");
     note.className = "draft-note";
-    note.textContent = "这是现有的大纲草稿。可以直接在右侧和 AI 讨论；需要时，告诉 AI 整理成逐页大纲。";
+    note.textContent = state.draftFormatWarning
+      || "这是现有的大纲草稿。可以直接在右侧和 AI 讨论；需要时，告诉 AI 整理成逐页大纲。";
     const draft = document.createElement("div");
     draft.className = "draft-reading-view";
     draft.textContent = state.draftMarkdown;
@@ -702,13 +745,21 @@ function renderSelection() {
 async function loadCurrentPage() {
   const deckId = state.deckId;
   const slideUid = state.slideUid;
-  if (!deckId) return;
+  if (state.scope?.deck_id !== deckId || state.scope?.slide_uid !== (slideUid || null)) {
+    state.scope = null;
+    updateSendState();
+  }
+  if (!deckId) {
+    renderNoProject();
+    return;
+  }
   if (!slideUid) {
     const deck = currentDeck();
     try {
       const outline = await api.getProjectOutline(deckId);
       if (deckId !== state.deckId) return;
       state.draftMarkdown = typeof outline?.draft_markdown === "string" ? outline.draft_markdown : "";
+      state.draftFormatWarning = typeof outline?.format_warning === "string" ? outline.format_warning : "";
       state.scope = {
         deck_id: deckId,
         deck_uid: deck?.deck_uid || "",
@@ -732,6 +783,8 @@ async function loadCurrentPage() {
     const [detail, selectionPayload] = await Promise.all([slideRequest, selectionRequest]);
     if (deckId !== state.deckId || slideUid !== state.slideUid) return;
     state.scope = scopeFromSlide(detail);
+    state.draftMarkdown = "";
+    state.draftFormatWarning = "";
     state.selection = normalizeSelection(selectionPayload);
     renderOutline();
     renderSelection();
@@ -806,6 +859,7 @@ async function synchronizeFromSelector({ deckId, slideUid } = {}) {
   state.slideUid = slide.slide_uid;
   if (deckChanged) {
     state.activeConversationId = "";
+    syncComposerDraft();
     state.conversations = [];
     state.messages = [];
     stopEventStream();
@@ -1500,6 +1554,7 @@ async function loadConversations() {
     if (state.deckId !== deckId) return;
     state.conversations = [];
     state.activeConversationId = "";
+    syncComposerDraft();
     advanceConversationView();
     state.messages = [];
     renderConversationList();
@@ -1510,16 +1565,18 @@ async function loadConversations() {
 }
 
 async function createConversation({ silent = false } = {}) {
-  if (state.creatingConversation) return;
   const deck = currentDeck();
-  if (!deck) return;
-  state.creatingConversation = true;
+  if (!deck || state.creatingConversations.has(deck.deck_id)) return;
+  const deckId = deck.deck_id;
+  state.creatingConversations.add(deckId);
   el["drawer-new-conversation"].disabled = true;
   try {
-    const payload = await api.createConversation(deck.deck_id);
+    const payload = await api.createConversation(deckId);
+    if (state.deckId !== deckId) return;
     const created = payload?.conversation || payload;
     if (!created?.conversation_id) throw new Error("没有创建成功");
-    const directory = normalizeConversations(await api.getConversations(deck.deck_id));
+    const directory = normalizeConversations(await api.getConversations(deckId));
+    if (state.deckId !== deckId) return;
     state.conversations = directory.conversations;
     state.activeConversationId = created.conversation_id;
     advanceConversationView();
@@ -1531,10 +1588,10 @@ async function createConversation({ silent = false } = {}) {
     closeConversationDrawerIfOpen();
     if (!silent) toast("已新建对话，原来的对话仍保留在历史对话中");
   } catch (error) {
-    if (!silent) toast(`无法新建对话：${error.message}`);
+    if (!silent && state.deckId === deckId) toast(`无法新建对话：${error.message}`);
   } finally {
-    state.creatingConversation = false;
-    el["drawer-new-conversation"].disabled = false;
+    state.creatingConversations.delete(deckId);
+    el["drawer-new-conversation"].disabled = state.creatingConversations.has(state.deckId);
     updateSendState();
   }
 }
@@ -1545,7 +1602,27 @@ function closeConversationDrawerIfOpen() {
 
 function advanceConversationView() {
   state.conversationViewEpoch += 1;
+  syncComposerDraft();
   return captureConversationRoute(state);
+}
+
+function saveComposerDraft() {
+  conversationDrafts.save(composerRoute, { text: el["message-input"].value, attachments: state.attachments });
+}
+
+function restoreComposerDraft() {
+  const draft = conversationDrafts.read(composerRoute);
+  el["message-input"].value = draft.text;
+  state.attachments = draft.attachments;
+  resizeMessageInput();
+  renderAttachments();
+  updateSendState();
+}
+
+function syncComposerDraft() {
+  saveComposerDraft();
+  composerRoute = currentConversationRoute();
+  restoreComposerDraft();
 }
 
 function currentConversationRoute() {
@@ -1760,7 +1837,8 @@ function renderTaskCenter() {
     toggle.textContent = state.showCompletedTasks
       ? "收起最近完成"
       : `查看最近完成（${completedTasks.length}）`;
-    toggle.addEventListener("click", () => {
+    toggle.addEventListener("click", (event) => {
+      event.stopPropagation();
       state.showCompletedTasks = !state.showCompletedTasks;
       renderTaskCenter();
     });
@@ -1890,7 +1968,9 @@ async function uploadReferenceFiles(files) {
     toast("请添加 PNG、JPEG 或 WebP 图片；本地路径也可以直接写进对话。 ");
     return;
   }
-  el["attach-button"].disabled = true;
+  const uploadToken = conversationDrafts.beginUpload(currentConversationRoute());
+  if (!uploadToken) return;
+  updateSendState();
   const attachments = await Promise.all(usable.map(async (file) => {
     try {
       const payload = await api.uploadAttachment(file);
@@ -1901,9 +1981,9 @@ async function uploadReferenceFiles(files) {
       return null;
     }
   }));
-  state.attachments.push(...attachments.filter(Boolean));
-  renderAttachments();
-  el["attach-button"].disabled = false;
+  saveComposerDraft();
+  conversationDrafts.completeUpload(uploadToken, attachments);
+  restoreComposerDraft();
 }
 
 function resizeMessageInput() {
@@ -1921,7 +2001,12 @@ function updateSendState() {
     state.deckId,
     state.activeConversationId,
   );
-  el["send-button"].disabled = submitting || !state.activeConversationId || !state.scope || !el["message-input"].value.trim();
+  const uploading = conversationDrafts.hasPendingUploads(currentConversationRoute());
+  el["message-input"].disabled = !state.activeConversationId;
+  el["drawer-new-conversation"].disabled = state.creatingConversations.has(state.deckId);
+  el["attach-button"].disabled = !state.activeConversationId || uploading;
+  el["attach-button"].textContent = uploading ? "上传中…" : "＋ 添加参考";
+  el["send-button"].disabled = submitting || uploading || !state.activeConversationId || !state.scope || !el["message-input"].value.trim();
   el["send-button"].textContent = "发送";
 }
 
@@ -2166,6 +2251,17 @@ function onConversationEvent(event, route = currentConversationRoute()) {
     return;
   }
   if (event.event === "error") {
+    if (data?.terminal === true) {
+      finishConversationSubmission(state.pendingConversationSubmissions, route);
+      finishTurnProcess(state.activeTurnId, "failed");
+      state.interrupting = false;
+      state.pendingApprovals.clear();
+      for (const view of state.itemViews.values()) view.article?.classList.remove("streaming");
+      stopEventStream();
+      setActiveTurn(null);
+      renderApprovalCards();
+      void loadTasks({ force: true });
+    }
     toast(data?.message || "Codex 返回了一个错误");
     return;
   }
@@ -2248,7 +2344,7 @@ function onConversationEvent(event, route = currentConversationRoute()) {
 
 async function submitConversation(event) {
   event.preventDefault();
-  if (!state.activeConversationId || !state.scope) return;
+  if (!state.activeConversationId || !state.scope || conversationDrafts.hasPendingUploads(currentConversationRoute())) return;
   const route = beginConversationSubmission(state.pendingConversationSubmissions, currentConversationRoute());
   if (!route) return;
   const message = el["message-input"].value.trim();
@@ -2265,6 +2361,7 @@ async function submitConversation(event) {
   el["message-input"].value = "";
   resizeMessageInput();
   state.attachments = [];
+  conversationDrafts.clear(route);
   renderAttachments();
   updateSendState();
   const requestBody = {

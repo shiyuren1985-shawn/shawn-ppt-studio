@@ -15,6 +15,19 @@ if [ -z "$NODE_DIR" ] || [ ! -x "$NODE_DIR/node" ]; then
 fi
 
 export PATH="$NODE_DIR:$PATH"
+export PYTHONDONTWRITEBYTECODE=1
+# Local pipeline tests may leave interpreter caches in the fallback Skill.
+# These generated files carry machine-specific paths and are never app assets.
+python3 - "$STUDIO_ROOT/.agents/skills/shawn-ppt-image/scripts" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+
+root = Path(sys.argv[1])
+for cache in root.rglob("__pycache__"):
+    if cache.is_dir() and not cache.is_symlink():
+        shutil.rmtree(cache)
+PY
 python3 "$STUDIO_ROOT/tests/desktop/bundle-resource-hygiene.py"
 cd "$STUDIO_ROOT/desktop"
 if [ ! -x node_modules/.bin/tauri ]; then

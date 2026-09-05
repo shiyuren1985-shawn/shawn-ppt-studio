@@ -27,6 +27,12 @@ test("switching a task keeps the current workspace and reloads its conversations
   assert.match(selectDeck, /state\.activeConversationId = ""/);
 });
 
+test("an incompatible paged outline stays visible as raw text with a format warning", () => {
+  assert.match(app, /draftFormatWarning/);
+  assert.match(app, /outline\?\.format_warning/);
+  assert.match(app, /state\.draftFormatWarning\s*\|\|/);
+});
+
 test("remove means hide from the list, never delete project files", () => {
   assert.match(html, /从列表移除这份 PPT/);
   assert.match(html, /大纲、图片、对话和导出文件都不会删除/);
@@ -78,8 +84,19 @@ test("the selector keeps the requested page visible and the composer grows to a 
   assert.match(app, /Math\.min\(240, Math\.max\(120, window\.innerHeight \* 0\.32\)\)/);
   assert.match(css, /max-height: min\(240px, 32vh\)/);
   assert.match(css, /resize: none; overflow-y: hidden/);
-  assert.match(selector, /exportFormatsCopy\(readiness\.formats\)/);
+  assert.match(selector, /exportFormatsCopy\(selectedFormats\)/);
   assert.match(selectorModel, /export function exportFormatsCopy\(formats\)/);
+  assert.match(selector, /打开导出文件夹/);
+  assert.match(
+    selector,
+    /data-export-open-folder>打开导出文件夹<\/button>\s*<button class="selector-primary" type="button" data-export-open>导出成品<\/button>/,
+  );
+  assert.equal(selector.match(/<button[^>]*data-export-open-folder/g)?.length, 1);
+  assert.match(selector, /value="pptx" data-export-format/);
+  assert.match(selector, /value="pdf" data-export-format/);
+  assert.match(selector, /value="images_zip" data-export-format/);
+  const selectorApi = await readFile(new URL("../../web/selector/api.js", import.meta.url), "utf8");
+  assert.match(selectorApi, /openExportRoot\(\)/);
   assert.doesNotMatch(selector, /PPTX、PDF 和页面图片正在生成/);
 });
 

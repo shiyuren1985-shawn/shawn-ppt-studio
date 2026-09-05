@@ -1,6 +1,6 @@
 {
   "name": "shawn-ppt-studio",
-  "version": "0.2.3",
+  "version": "0.2.12",
   "private": true,
   "type": "module",
   "engines": {
@@ -9,6 +9,6 @@
   "scripts": {
     "start": "node server/server.mjs",
     "check": "for file in server/*.mjs integrations/*.mjs web/*.js web/selector/*.js; do node --check \"$file\"; done",
-    "test": "node --test tests/architecture/*.test.mjs tests/backend-codex-interaction-v1/*.test.mjs tests/backend-codex-interaction-v2/*.test.mjs tests/backend-project-switcher-v1/*.test.mjs tests/backend-task-center-v1/*.test.mjs tests/backend-chat-links-v1/*.test.mjs tests/ui-project-switcher-v1/*.test.mjs tests/ui-task-center-v1/*.test.mjs tests/ui-approval-batch-v1/*.test.mjs tests/ui-chat-links-v1/*.test.mjs tests/integrations/skill-paths.test.mjs tests/integrations/shawn-single-page.test.mjs tests/integrations/single-image-edit.test.mjs"
+    "test": "PYTHONDONTWRITEBYTECODE=1 node --test tests/architecture/*.test.mjs tests/backend-codex-interaction-v1/*.test.mjs tests/backend-codex-interaction-v2/*.test.mjs tests/backend-project-switcher-v1/*.test.mjs tests/backend-task-center-v1/*.test.mjs tests/backend-chat-links-v1/*.test.mjs tests/backend-export-v1/*.test.mjs tests/backend-export-label-v1/*.test.mjs tests/ui-project-switcher-v1/*.test.mjs tests/ui-task-center-v1/*.test.mjs tests/ui-approval-batch-v1/*.test.mjs tests/ui-chat-links-v1/*.test.mjs tests/ui-export-v1/*.test.mjs tests/integrations/skill-paths.test.mjs tests/integrations/shawn-single-page.test.mjs tests/integrations/single-image-edit.test.mjs"
   }
 }

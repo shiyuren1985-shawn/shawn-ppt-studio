@@ -580,3 +580,16 @@ test("native refs parser accepts final fenced JSON but never guesses from progre
     (error) => error instanceof SingleImageEditContractError && error.code === "invalid_native_refs",
   );
 });
+
+
+test("host finalize accepts only the isolated artifact root supplied by its host", async (t) => {
+  const data = await fixture(t);
+  const compiled = await loadAndCompileSingleImageEditRequest(directInput(data), data.context);
+  const generatedImagesRoot = path.join(data.root, "Studio Codex Home", "generated_images");
+  const savedPath = path.join(generatedImagesRoot, "host-visible.png");
+  const plan = buildSingleImageEditHostFinalizePlan(compiled, { saved_path: savedPath }, { generatedImagesRoot });
+  assert.equal(plan.saved_path, savedPath);
+  assert.throws(() => buildSingleImageEditHostFinalizePlan(compiled,
+    { saved_path: path.join(CODEX_GENERATED_IMAGES_ROOT, "main-home.png") }, { generatedImagesRoot }),
+    { code: "invalid_saved_path" });
+});

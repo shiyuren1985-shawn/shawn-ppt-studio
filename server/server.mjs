@@ -17,12 +17,14 @@ import { createPathPolicy } from "./path-policy.mjs";
 import { SelectionProjection } from "./selection-projection.mjs";
 import { SelectorWorkspace } from "./selector-workspace.mjs";
 import { ExportService } from "./export-service.mjs";
+import { verifyPreservedPublicLabel } from "./export-office-label.mjs";
 import { SingleEditTurnFinalizer } from "./single-edit-turn-finalizer.mjs";
 import { TaskProjection } from "./task-projection.mjs";
 import { TaskAssociationIndex } from "./task-associations.mjs";
 import { StudioRulesStore } from "./studio-rules.mjs";
 import { RuntimeEventLog } from "./runtime-event-log.mjs";
 import { prepareStudioLibrary } from "./studio-library.mjs";
+import { StudioConversationLifecycle } from "./studio-codex-storage.mjs";
 import {
   DEFAULT_MONITORING_ROOT,
   DEFAULT_OVERVIEW_PYTHON,
@@ -73,7 +75,6 @@ const discovery = new ProjectDiscovery({ legacyDiscovery, projects });
 const projectPicker = new MacProjectPicker();
 await discovery.probe();
 const selectionProjection = new SelectionProjection({ discovery });
-const singleEditTurnFinalizer = new SingleEditTurnFinalizer();
 const selectorWorkspace = new SelectorWorkspace({
   discovery,
   artifactCleanupPlanner: createCandidateArtifactCleanupPlanner({
@@ -89,10 +90,9 @@ const exports = new ExportService({
   discovery,
   selectionProjection,
   integrationPath: path.join(projectRoot, "integrations", "export-image-deck.mjs"),
-  publicLabelTemplate: process.env.SHAWN_PPT_PUBLIC_LABEL_TEMPLATE || null,
-  // A metadata copy is not a real Office label verification. Keep PPTX
-  // unavailable until a PowerPoint/MIP verifier is supplied by the desktop host.
-  officeLabelVerifier: null,
+  publicLabelTemplate: process.env.SHAWN_PPT_PUBLIC_LABEL_TEMPLATE
+    || path.join(projectRoot, "assets", "Public_Label_Template.pptx"),
+  officeLabelVerifier: verifyPreservedPublicLabel,
 });
 try {
   await exports.initialize();
@@ -107,6 +107,19 @@ try {
   conversations.lastError = error;
   process.stderr.write(`Shawn PPT Studio: conversation history unavailable: ${error.message}\n`);
 }
+const codexExecutable = resolveCodexExecutable();
+const conversationLifecycle = new StudioConversationLifecycle({
+  dataRoot,
+  executable: codexExecutable,
+  cwd: labRoot,
+});
+try {
+  await conversationLifecycle.initialize();
+} catch (error) {
+  conversationLifecycle.lastError = error;
+  process.stderr.write(`Shawn PPT Studio: isolated conversation storage unavailable: ${error.message}\n`);
+}
+const singleEditTurnFinalizer = new SingleEditTurnFinalizer({ env: conversationLifecycle.env });
 const taskAssociations = new TaskAssociationIndex({ dataRoot });
 try {
   await taskAssociations.initialize();
@@ -124,12 +137,18 @@ try {
 }
 
 const client = new AppServerClient({
-  executable: resolveCodexExecutable(),
+  executable: codexExecutable,
   cwd: labRoot,
+  env: conversationLifecycle.env,
 });
 
 try {
+  if (!conversationLifecycle.ready) throw conversationLifecycle.lastError;
   await client.start();
+  if (!client.account && conversationLifecycle.ready && await conversationLifecycle.refreshAuthenticationFromLegacy()) {
+    await client.stop();
+    await client.start();
+  }
 } catch (error) {
   client.lastError = error;
   process.stderr.write(`PPT AI Lab: Codex App Server unavailable: ${error.message}\n`);
@@ -155,7 +174,7 @@ try {
 } catch (error) {
   process.stderr.write(`Shawn PPT Studio: overview runtime unavailable: ${error.message}\n`);
 }
-const server = createLabHttpServer({
+const serverContext = {
   client,
   appId: "shawn-ppt-studio",
   codeRoot: projectRoot,
@@ -163,6 +182,7 @@ const server = createLabHttpServer({
   labRoot,
   pathPolicy,
   conversations,
+  conversationLifecycle,
   discovery,
   selectionProjection,
   selectorWorkspace,
@@ -174,7 +194,8 @@ const server = createLabHttpServer({
   singleEditTurnFinalizer,
   taskProjection,
   studioRules,
-});
+};
+const server = createLabHttpServer(serverContext);
 const port = parsePort(process.argv.slice(2), process.env);
 
 await new Promise((resolve, reject) => {
@@ -186,10 +207,32 @@ const address = server.address();
 process.stdout.write(`PPT AI Lab listening on http://127.0.0.1:${address.port}\n`);
 await runtimeEvents.record("server_started", { port: address.port });
 
+// Historical migration can take several App Server requests. Keep it out of
+// desktop startup so a slow old conversation cannot prevent the window opening.
+void conversationLifecycle.run({
+  conversations,
+  isolatedClient: client,
+  codexInteraction: serverContext.codexInteraction,
+}).catch((error) => {
+  process.stderr.write(`Shawn PPT Studio: conversation migration or cleanup deferred: ${error.message}\n`);
+});
+
+const conversationMaintenanceTimer = setInterval(() => {
+  void conversationLifecycle.run({
+    conversations,
+    isolatedClient: client,
+    codexInteraction: serverContext.codexInteraction,
+  }).catch((error) => {
+    process.stderr.write(`Shawn PPT Studio: scheduled conversation maintenance deferred: ${error.message}\n`);
+  });
+}, 6 * 60 * 60 * 1000);
+conversationMaintenanceTimer.unref();
+
 let closing = false;
 async function close(reason = "unknown") {
   if (closing) return;
   closing = true;
+  clearInterval(conversationMaintenanceTimer);
   await runtimeEvents.record("server_shutdown_started", { reason });
   await new Promise((resolve) => {
     let settled = false;

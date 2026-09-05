@@ -129,11 +129,17 @@ export class CodexInteractionRelay {
     this.turnObserver = turnObserver;
     this.unsubscribe = client.subscribe((notification) => this.#notification(notification));
     this.unsubscribeRequests = client.subscribeServerRequests((request) => this.#serverRequest(request));
+    this.onRequestResolved = ({ request, reason }) => this.resolveApproval(request, null, reason);
+    this.onClientError = (error) => this.#disconnect(error);
+    client.on?.("serverRequestResolved", this.onRequestResolved);
+    client.on?.("appServerError", this.onClientError);
   }
 
   close() {
     this.unsubscribe?.();
     this.unsubscribeRequests?.();
+    this.client.off?.("serverRequestResolved", this.onRequestResolved);
+    this.client.off?.("appServerError", this.onClientError);
     this.listeners.clear();
   }
 
@@ -155,6 +161,13 @@ export class CodexInteractionRelay {
     const latest = turns.at(-1);
     const turnId = latest?.id || latest?.turnId || null;
     if (!threadId || !turnId) return null;
+    // A read/resume response may arrive after newer streamed notifications.
+    // Never revive a turn whose terminal event we already observed, or replace
+    // a different live turn with an older snapshot.
+    const activeTurnId = this.activeByThread.get(threadId);
+    if (this.isStreamFinished(threadId, turnId) || (activeTurnId && activeTurnId !== turnId)) {
+      return this.latestByThread.get(threadId) || null;
+    }
     const status = latest.status || "completed";
     const snapshot = {
       turnId,
@@ -197,7 +210,13 @@ export class CodexInteractionRelay {
     ));
   }
 
-  resolveApproval(request, decision) {
+  isStreamFinished(threadId, turnId) {
+    return (this.eventsByTurn.get(`${threadId}\u0000${turnId}`) || []).some(
+      (record) => record.method === "turn/completed" || record.terminal === true,
+    );
+  }
+
+  resolveApproval(request, decision, reason = null) {
     const approval = publicApprovalRequest(request);
     if (!approval?.thread_id || !approval.turn_id) return null;
     const record = {
@@ -211,9 +230,32 @@ export class CodexInteractionRelay {
       method: approval.method,
       resolved: true,
       decision,
+      ...(reason ? { reason } : {}),
     };
     this.#publish(record);
     return record;
+  }
+
+  #disconnect(error) {
+    const active = this.activeEntries();
+    this.activeByThread.clear();
+    // Preparing HTTP requests still own their starting guard. They release it
+    // when their pending work detects the failed/replaced transport.
+    for (const { threadId, turnId } of active) {
+      this.latestByThread.set(threadId, {
+        ...this.latestByThread.get(threadId), status: "unknown",
+      });
+      this.#publish({
+        event: "error",
+        contract_version: 1,
+        sequence: this.nextSequence++,
+        thread_id: threadId,
+        turn_id: turnId,
+        terminal: true,
+        code: error?.code || "app_server_unavailable",
+        message: "Codex 连接已断开，本轮结果尚未确认。可以重新打开对话检查后继续。",
+      });
+    }
   }
 
   subscribe({ threadId, turnId = null, listener }) {
@@ -278,7 +320,22 @@ export class CodexInteractionRelay {
   #serverRequest(request) {
     this.turnObserver?.observeApproval?.(request);
     const approval = publicApprovalRequest(request);
-    if (!approval?.thread_id || !approval.turn_id) return;
+    if (!approval) {
+      this.client.rejectServerRequest?.(request.requestId ?? request.id, {
+        code: -32601,
+        message: "Shawn PPT Studio does not support this interactive request. Ask the user in a normal text reply and wait for their response instead.",
+      });
+      const threadId = threadIdOf(request.params);
+      const turnId = turnIdOf(request.params);
+      if (threadId && turnId) this.#publish({
+        event: "error", contract_version: 1, sequence: this.nextSequence++,
+        thread_id: threadId, turn_id: turnId,
+        code: "unsupported_interactive_request",
+        message: "这项交互暂不支持，AI 可改用普通消息向你提问。",
+      });
+      return;
+    }
+    if (!approval.thread_id || !approval.turn_id) return;
     this.#publish({
       event: "approval",
       sequence: this.nextSequence++,
