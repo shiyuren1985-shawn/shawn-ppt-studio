@@ -112,6 +112,19 @@ test("selected and deduplicated candidate cards have one recoverable delete flow
   assert.match(selectorModel, /source_count:/);
 });
 
+test("image editing starts from one selector candidate in the existing conversation", async () => {
+  const selector = await readFile(new URL("../../web/selector/workspace.js", import.meta.url), "utf8");
+  const drafts = await readFile(new URL("../../web/conversation-drafts.js", import.meta.url), "utf8");
+  assert.doesNotMatch(html, /data-workspace="retouch"|id="retouch-workspace"/);
+  assert.match(selector, /基于这张修改/);
+  assert.match(selector, /onEditCandidate\(\{/);
+  assert.match(selector, /candidateId: candidate\.candidate_id/);
+  assert.match(app, /onEditCandidate: \(target\) => \{ void beginEditFromSelector\(target\); \}/);
+  assert.match(app, /requestBody\.edit_candidate = \{/);
+  assert.match(app, /修改原图：\$\{state\.editTarget\.label\}/);
+  assert.match(drafts, /editTarget/);
+});
+
 test("long-term Studio rules are visible, editable, and can also be saved from remember messages", async () => {
   const server = await readFile(new URL("../../server/http-server.mjs", import.meta.url), "utf8");
   assert.match(html, /id="studio-rules-button"[^>]*>长期规则</);

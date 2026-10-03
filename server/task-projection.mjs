@@ -377,13 +377,13 @@ export class TaskProjection {
       });
       const completedByScope = new Map();
       for (const task of withoutSupersededPreflights) {
-        if (task.status !== "completed") continue;
-        const scope = `${task.deck_id}\u0000${task.slide_uid || ""}\u0000${task.mode}`;
+        if (task.sourceKind !== "state" || task.status !== "completed" || !task.scopeKey) continue;
+        const scope = `${task.deck_id}\u0000${task.scopeKey}\u0000${task.mode}`;
         completedByScope.set(scope, Math.max(completedByScope.get(scope) || 0, task.updatedMs));
       }
       const currentTasks = withoutSupersededPreflights.filter((task) => {
-        if (task.status !== "attention" || task.can_stop) return true;
-        const scope = `${task.deck_id}\u0000${task.slide_uid || ""}\u0000${task.mode}`;
+        if (task.sourceKind !== "state" || task.status === "completed" || task.can_stop || !task.scopeKey) return true;
+        const scope = `${task.deck_id}\u0000${task.scopeKey}\u0000${task.mode}`;
         return (completedByScope.get(scope) || 0) <= task.updatedMs;
       });
       const priority = { waiting_permission: 0, generating: 0, reviewing: 0, queued: 1, preparing: 1, attention: 2, failed: 2, completed: 3 };
@@ -403,6 +403,7 @@ export class TaskProjection {
         threadId: _threadId,
         turnId: _turnId,
         sourceKind: _sourceKind,
+        scopeKey: _scopeKey,
         requestStartedMs: _requestStartedMs,
         startedMs: _startedMs,
         ...task
@@ -788,6 +789,9 @@ export class TaskProjection {
           threadId: conversation?.thread_id || null,
           turnId: turnId || null,
           sourceKind: "state",
+          scopeKey: (slideUids.length || pageIds.length)
+            ? JSON.stringify([...new Set(slideUids.length ? slideUids : pageIds)].sort())
+            : null,
           requestStartedMs: asTime(preflight?.request_started_at),
         });
       }

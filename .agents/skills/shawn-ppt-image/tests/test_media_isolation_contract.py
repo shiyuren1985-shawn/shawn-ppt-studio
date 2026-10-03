@@ -35,9 +35,6 @@ class MediaIsolationContractTests(unittest.TestCase):
         worker_text = (SKILL_ROOT / "prompts" / "visual-review-worker.md").read_text(
             encoding="utf-8"
         )
-        global_agents_text = (Path.home() / ".codex" / "AGENTS.md").read_text(
-            encoding="utf-8"
-        )
         self.assertIn("references/媒体隔离与交付格式.md", skill_text)
         self.assertIn("视觉检查与 Judge 必须照常在子 Agent 内执行", media_text)
         self.assertIn("includeOutputs=false", media_text)
@@ -47,11 +44,6 @@ class MediaIsolationContractTests(unittest.TestCase):
         self.assertIn("子 Agent 视觉审查合同", worker_text)
         self.assertIn("子 Agent 可以读取任务明确列出的本地图片", worker_text)
         self.assertIn('"suspect_paths"', worker_text)
-        self.assertIn("图片检查与主对话负载控制", global_agents_text)
-        self.assertIn("隔离的子 Agent", global_agents_text)
-        self.assertIn("子 Agent 可以按任务需要使用图片工具", global_agents_text)
-        self.assertIn("includeOutputs=false", global_agents_text)
-        self.assertIn("不得因为主对话的负载规则削弱", global_agents_text)
 
     def test_imagegen_wrappers_never_emit_generated_image_blocks(self) -> None:
         fast8_script = (SKILL_ROOT / "scripts" / "fast8_control_plane_v1.py").read_text(

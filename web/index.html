@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Shawn PPT Studio：阅读大纲、与 AI 协作、选稿和修图。" />
+    <meta name="description" content="Shawn PPT Studio：阅读大纲、与 AI 协作、选稿和基于候选图片修改。" />
     <title>Shawn PPT Studio</title>
     <link rel="stylesheet" href="/styles.css" />
     <script type="module" src="/app.js"></script>
@@ -40,7 +40,6 @@
         <nav class="workspace-tabs" aria-label="主要工作区">
           <button type="button" data-workspace="outline" aria-current="page">大纲</button>
           <button type="button" data-workspace="selector">选稿</button>
-          <button type="button" data-workspace="retouch">修图</button>
         </nav>
 
         <div class="top-actions">
@@ -160,31 +159,6 @@
           <div class="empty-state"><strong>正在读取候选图片…</strong><p>选稿台会直接显示在这里。</p></div>
         </section>
 
-        <section class="workspace" id="retouch-workspace" data-workspace-panel="retouch" data-testid="workspace-retouch" aria-label="修图工作区" hidden>
-          <aside class="slide-sidebar" id="retouch-sidebar" aria-label="PPT 页面">
-            <div class="sidebar-heading">
-              <div><strong>页面</strong><span id="retouch-slide-count">0</span></div>
-              <button class="column-toggle" id="retouch-left-toggle" data-column-toggle="left" data-testid="retouch-left-column-toggle" type="button" aria-expanded="true">收起</button>
-            </div>
-            <nav class="slide-list" id="retouch-slide-list" aria-label="修图页面"></nav>
-          </aside>
-          <div class="column-resizer" data-column-resizer="left" role="separator" aria-label="调整页面列表宽度" aria-orientation="vertical" tabindex="0"></div>
-          <section class="retouch-stage" id="retouch-stage">
-            <button class="column-toggle content-column-toggle" id="retouch-content-toggle" data-column-toggle="content" data-testid="retouch-content-column-toggle" type="button" aria-expanded="true">收起</button>
-            <div class="workspace-intro compact content-titlebar retouch-titlebar">
-              <div>
-                <span id="retouch-page-label">—</span>
-                <h2 id="retouch-page-title">修图</h2>
-                <p>查看正式图片后，在右侧对话中说明要改什么。</p>
-              </div>
-            </div>
-            <div class="retouch-gallery" id="retouch-gallery" data-testid="retouch-selected-list">
-              <div class="empty-state"><strong>这一页还没有选定图片</strong><p>先去选稿，确定要进入正式环节的图片。</p><button class="secondary-button" type="button" data-open-selector>去选稿</button></div>
-            </div>
-          </section>
-          <div class="column-resizer" data-column-resizer="conversation" role="separator" aria-label="调整对话区宽度" aria-orientation="vertical" tabindex="0"></div>
-          <div class="conversation-host" id="retouch-conversation-host"></div>
-        </section>
       </main>
     </div>
 

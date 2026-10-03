@@ -48,6 +48,7 @@ export function mountSelectorWorkspace({
   state: initialState = {},
   onSlideChange = () => {},
   onSelectionChange = () => {},
+  onEditCandidate = () => {},
   onError = () => {},
 } = {}) {
   if (!isRoot(root)) throw new TypeError("selector workspace root is required");
@@ -399,6 +400,7 @@ export function mountSelectorWorkspace({
         candidate.preview_url,
         candidate.source_count,
         candidate.generated_at,
+        candidate.review_pending,
         candidate.baseline === true,
         page.selected_candidate_ids.includes(candidate.candidate_id),
       ]),
@@ -410,8 +412,10 @@ export function mountSelectorWorkspace({
         if (!card) continue;
         const selected = page.selected_candidate_ids.includes(candidate.candidate_id);
         const toggle = card.querySelector("[data-toggle-candidate]");
+        const edit = card.querySelector("[data-edit-candidate]");
         const trash = card.querySelector("[data-trash-candidate]");
         if (toggle) toggle.disabled = view.busy || !page.included;
+        if (edit) edit.disabled = view.busy || candidate.review_pending;
         if (trash) {
           const confirming = view.deleteConfirmId === candidate.candidate_id;
           trash.className = confirming ? "selector-delete confirming" : "selector-delete";
@@ -425,7 +429,20 @@ export function mountSelectorWorkspace({
     }
     view.candidateRenderKey = renderKey;
     nodes.grid.replaceChildren();
-    page.candidates.forEach((candidate, index) => {
+    const languageLabels = { zh: "中文", en: "English", bilingual: "双语同页", unknown: "未标注" };
+    const languageOrder = ["zh", "en", "bilingual", "unknown"];
+    let previousLanguage = null;
+    const groupedCandidates = [...page.candidates].sort((a, b) => languageOrder.indexOf(a.language || "unknown") - languageOrder.indexOf(b.language || "unknown"));
+    groupedCandidates.forEach((candidate, index) => {
+      const language = candidate.language || "unknown";
+      if (language !== previousLanguage) {
+        const group = groupedCandidates.filter(item => (item.language || "unknown") === language);
+        const count = group.filter(item => page.selected_candidate_ids.includes(item.candidate_id)).length;
+        const heading = element("h3", "selector-language-heading", `${languageLabels[language]} · ${count ? `已选 ${count} 张` : "未选择"}`);
+        heading.style.gridColumn = "1 / -1";
+        nodes.grid.append(heading);
+        previousLanguage = language;
+      }
       const selected = page.selected_candidate_ids.includes(candidate.candidate_id);
       const card = element("article", `selector-candidate-card${selected ? " selected" : ""}`);
       card.dataset.candidateId = candidate.candidate_id;
@@ -440,6 +457,7 @@ export function mountSelectorWorkspace({
       imageButton.append(image);
       const badges = element("div", "selector-card-badges");
       if (candidate.baseline) badges.append(element("span", "baseline", "原 PPT"));
+      if (candidate.review_pending) badges.append(element("span", "baseline", "已生成 · 待检查"));
       if (selected) badges.append(element("span", "selected", "已选择"));
       if (candidate.source_count > 1) {
         badges.append(element("span", "duplicate", `相同图片 · ${candidate.source_count} 个来源`));
@@ -461,6 +479,11 @@ export function mountSelectorWorkspace({
       toggle.setAttribute("aria-pressed", String(selected));
       toggle.disabled = view.busy || !page.included;
       const actions = element("div", "selector-card-actions");
+      const edit = element("button", "selector-edit", "基于这张修改");
+      edit.type = "button";
+      edit.dataset.editCandidate = candidate.candidate_id;
+      edit.disabled = view.busy || candidate.review_pending;
+      if (candidate.review_pending) edit.title = "这张图片仍在完成检查，稍后再修改";
       const trash = element(
         "button",
         view.deleteConfirmId === candidate.candidate_id
@@ -477,7 +500,7 @@ export function mountSelectorWorkspace({
       else if (candidate.source_count > 1) {
         trash.title = `这张卡片包含 ${candidate.source_count} 个相同文件，确认后会一起移到废纸篓`;
       }
-      actions.append(toggle, trash);
+      actions.append(edit, toggle, trash);
       body.append(titleRow, actions);
       card.append(imageButton, body);
       nodes.grid.append(card);
@@ -701,6 +724,24 @@ export function mountSelectorWorkspace({
       void toggleCandidate(toggle.dataset.toggleCandidate);
       return;
     }
+    const edit = event.target.closest("[data-edit-candidate]");
+    if (edit && !view.busy) {
+      const candidate = view.page?.candidates.find((item) => item.candidate_id === edit.dataset.editCandidate);
+      const sha256 = candidateSha256(candidate);
+      if (!candidate || !sha256) {
+        onError(new Error("这张图片已经变化，请刷新后再试"));
+        return;
+      }
+      const index = view.page.candidates.findIndex((item) => item.candidate_id === candidate.candidate_id);
+      onEditCandidate({
+        deckId: view.deckId,
+        slideUid: view.slideUid,
+        candidateId: candidate.candidate_id,
+        sha256,
+        label: `${view.page.page_label} · 图片 ${index + 1}`,
+      });
+      return;
+    }
     const trash = event.target.closest("[data-trash-candidate]");
     if (trash && !view.busy) {
       void trashCandidate(trash.dataset.trashCandidate);
@@ -787,7 +828,6 @@ export function mountSelectorWorkspace({
           onSlideChange({ deckId: view.deckId, slideUid: view.slideUid });
         }
       }
-      else if (view.slideUid && view.page?.slide_uid !== view.slideUid) await selectSlide(view.slideUid);
       else await load({ force: true, requestedSlideUid: view.slideUid });
     },
     refresh() {

@@ -4,6 +4,20 @@ set -eu
 STUDIO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 PNPM_BIN=${SHAWN_PPT_STUDIO_PNPM:-$(command -v pnpm || true)}
 NODE_DIR=${SHAWN_PPT_STUDIO_NODE_DIR:-$(dirname "${SHAWN_PPT_STUDIO_NODE:-$(command -v node || true)}")}
+SIGNING_IDENTITY=${SHAWN_PPT_STUDIO_SIGNING_IDENTITY:-${PPT_AI_LAB_SIGNING_IDENTITY:-}}
+if [ -z "$SIGNING_IDENTITY" ] && security find-identity -v -p codesigning 2>/dev/null | grep -Fq '"Shawn PPT Studio Local Signing"'; then
+  SIGNING_IDENTITY="Shawn PPT Studio Local Signing"
+fi
+
+# Never silently replace an installed app's privacy identity with an ad-hoc build.
+if [ -z "$SIGNING_IDENTITY" ] || [ "$SIGNING_IDENTITY" = "-" ]; then
+  if [ "${SHAWN_PPT_STUDIO_ALLOW_ADHOC:-0}" != "1" ]; then
+    echo "A persistent code-signing identity is required. Set SHAWN_PPT_STUDIO_SIGNING_IDENTITY. For an explicit local-only test build, set SHAWN_PPT_STUDIO_ALLOW_ADHOC=1; replacing the installed app may require macOS permissions again." >&2
+    exit 1
+  fi
+  SIGNING_IDENTITY=-
+  echo "WARNING: explicit ad-hoc test build; macOS permission continuity is not guaranteed." >&2
+fi
 
 if [ -z "$PNPM_BIN" ] || [ ! -x "$PNPM_BIN" ]; then
   echo "pnpm is required. Install it with Corepack or set SHAWN_PPT_STUDIO_PNPM." >&2
@@ -37,7 +51,6 @@ fi
 
 APP="$STUDIO_ROOT/desktop/src-tauri/target/release/bundle/macos/Shawn PPT Studio.app"
 if [ -d "$APP" ] && command -v codesign >/dev/null 2>&1; then
-  SIGNING_IDENTITY=${SHAWN_PPT_STUDIO_SIGNING_IDENTITY:-${PPT_AI_LAB_SIGNING_IDENTITY:--}}
   codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP"
   codesign --verify --deep --strict "$APP"
 fi

@@ -9,7 +9,9 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "../..");
 const webRoot = path.resolve(here, "../../web");
-const evidenceRoot = path.resolve(here, "../ux-evidence/project-switcher-v1");
+const evidenceRoot = process.env.SHAWN_PPT_STUDIO_EVIDENCE_ROOT
+  ? path.resolve(process.env.SHAWN_PPT_STUDIO_EVIDENCE_ROOT)
+  : path.resolve(here, "../ux-evidence/project-switcher-v1");
 
 function loadPlaywright() {
   const moduleRoots = [
@@ -71,6 +73,15 @@ const projects = Array.from({ length: 7 }, (_, index) => {
     slides,
   };
 });
+const editCandidate = {
+  candidate_id: "a".repeat(24),
+  preview_url: `/api/selector-workspace/decks/project-1/candidates/${"a".repeat(24)}/image?sha256=${"b".repeat(64)}`,
+  file_sha256: "b".repeat(64),
+  selected: false,
+};
+function candidatesFor(project, slide) {
+  return project.deck_id === "project-1" && slide.page_label === "P20" ? [editCandidate] : [];
+}
 
 function json(response, value, status = 200) {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
@@ -86,6 +97,7 @@ async function readBody(request) {
 async function startServer() {
   const hidden = new Set();
   const sentMessages = [];
+  const sentBodies = [];
   const stoppedTasks = [];
   const conversationStores = new Map(projects.map((project, index) => {
     const number = index + 1;
@@ -203,6 +215,7 @@ async function startServer() {
     if (request.method === "POST" && /^\/api\/decks\/project-\d+\/conversations\/chat-\d+\/messages$/.test(url.pathname)) {
       const body = await readBody(request);
       sentMessages.push(body.message);
+      sentBodies.push(body);
       const turnId = `keyboard-turn-${sentMessages.length}`;
       await new Promise((resolve) => setTimeout(resolve, 100));
       response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store" });
@@ -233,7 +246,7 @@ async function startServer() {
           included: true,
           confirmed: false,
           resolution: "missing",
-          candidates: [],
+          candidates: candidatesFor(project, slide),
         })),
         summary: { page_count: project.slides.length, included_count: project.slides.length, confirmed_count: 0, pending_count: project.slides.length },
       });
@@ -250,9 +263,14 @@ async function startServer() {
           included: true,
           confirmed: false,
           resolution: "missing",
-          candidates: [],
+          candidates: candidatesFor(project, slide),
         },
       });
+    }
+    if (request.method === "GET" && url.pathname === `/api/selector-workspace/decks/project-1/candidates/${editCandidate.candidate_id}/image`) {
+      const pixel = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/pM8AAAAASUVORK5CYII=", "base64");
+      response.writeHead(200, { "content-type": "image/png", "content-length": pixel.length });
+      return response.end(pixel);
     }
     const asset = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
     const target = path.resolve(webRoot, asset);
@@ -264,11 +282,11 @@ async function startServer() {
     return json(response, { error: "not found" }, 404);
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { server, sentMessages, stoppedTasks, url: `http://127.0.0.1:${server.address().port}/` };
+  return { server, sentMessages, sentBodies, stoppedTasks, url: `http://127.0.0.1:${server.address().port}/` };
 }
 
 test("seven projects stay compact and switch the whole task context", async () => {
-  const { server, sentMessages, stoppedTasks, url } = await startServer();
+  const { server, sentMessages, sentBodies, stoppedTasks, url } = await startServer();
   let browser;
   try {
     fs.mkdirSync(evidenceRoot, { recursive: true });
@@ -362,7 +380,7 @@ test("seven projects stay compact and switch the whole task context", async () =
       assert.equal(await page.locator("#message-list .message.user", { hasText: "按回车发送" }).count(), 1, "user input appears before the server responds");
       await sent;
       assert.equal(sentMessages.at(-1), "按回车发送");
-      await page.locator("#message-list .final-answer", { hasText: "最终答复。" }).waitFor();
+      await page.locator("#message-list .final-answer", { hasText: "最终答复。" }).last().waitFor();
       assert.equal(await page.locator("#message-list .message.user", { hasText: "按回车发送" }).count(), 1, "official history event reuses the optimistic bubble");
       assert.equal(await page.locator("#message-list > .final-answer").count(), 1);
       assert.equal(await page.locator("#message-list > .final-answer .message-meta").textContent(), "Codex · 最终结果");
@@ -402,6 +420,23 @@ test("seven projects stay compact and switch the whole task context", async () =
       assert.ok(selectorPosition.scrollTop > 0, "the page list scrolls to the requested late page");
       assert.equal(selectorPosition.visible, true, "the requested page is visible in the selector sidebar");
 
+      await page.locator("[data-edit-candidate]").click();
+      await page.locator('[data-workspace="outline"][aria-current="page"]').waitFor();
+      await page.locator("#attachment-list").getByText("修改原图：P20 · 图片 1").waitFor();
+      await composer.fill("标题小一点，其他保持不变");
+      const editSent = page.waitForResponse((candidate) => candidate.request().method() === "POST" && /\/conversations\/chat-\d+\/messages$/.test(new URL(candidate.url()).pathname));
+      await composer.press("Enter");
+      await editSent;
+      assert.deepEqual(sentBodies.at(-1).edit_candidate, {
+        slide_uid: "SLIDE_20",
+        candidate_id: editCandidate.candidate_id,
+        sha256: "b".repeat(64),
+      });
+      assert.equal(sentBodies.at(-1).retouch_context, true);
+      await page.locator("#message-list .final-answer", { hasText: "最终答复。" }).last().waitFor();
+
+      await page.locator('[data-workspace="selector"]').click();
+
       await page.locator("#project-picker-button").click();
       assert.equal(await page.locator(".project-option-row").count(), 7);
       const listMetrics = await page.locator("#deck-switcher").evaluate((node) => ({ client: node.clientHeight, scroll: node.scrollHeight }));
@@ -410,11 +445,11 @@ test("seven projects stay compact and switch the whole task context", async () =
       assert.equal(await page.locator(".project-option-row:not([hidden])").count(), 1);
       await page.locator("#project-search").fill("");
 
-      await page.locator('[data-workspace="retouch"]').click();
+      await page.locator('[data-workspace="outline"]').click();
       await page.locator("#project-picker-button").click();
       await page.locator(".project-option-row").nth(1).locator(".deck-button").click();
       await page.locator("#project-picker-label").filter({ hasText: "项目 2" }).waitFor();
-      assert.equal(await page.locator('[data-workspace="retouch"]').getAttribute("aria-current"), "page");
+      assert.equal(await page.locator('[data-workspace="outline"]').getAttribute("aria-current"), "page");
       await page.locator("#active-conversation-title").filter({ hasText: "项目 2 最近对话" }).waitFor();
       await page.locator("#conversation-menu-button").click();
       await page.locator("#conversation-list").getByText("项目 2 最近对话", { exact: true }).waitFor();

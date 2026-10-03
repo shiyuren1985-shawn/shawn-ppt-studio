@@ -7,6 +7,16 @@ function task(taskId, deckId, status) {
   return { task_id: taskId, deck_id: deckId, status };
 }
 
+test("generated pages refresh before whole-run completion, without polling unchanged artifacts", async () => {
+  const refreshed = [];
+  const observe = createTaskCatalogRefreshTracker({ refreshCatalog: async id => refreshed.push(id) });
+  const running = { ...task("run", "deck", "reviewing"), completed_units: 13 };
+  assert.deepEqual(await observe([running]), ["deck"]);
+  assert.deepEqual(await observe([running]), []);
+  assert.deepEqual(await observe([{ ...running, status: "attention" }]), ["deck"]);
+  assert.equal(refreshed.length, 2);
+});
+
 test("refreshes each affected deck once, including tasks first observed after completion", async () => {
   const refreshed = [];
   const observe = createTaskCatalogRefreshTracker({

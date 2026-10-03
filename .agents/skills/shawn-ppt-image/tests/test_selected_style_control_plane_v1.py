@@ -327,6 +327,76 @@ class SelectedStyleControlPlaneV1Test(unittest.TestCase):
         self.assertEqual(retry["generation_job_path"], locked_job_path)
         self.assertEqual(retry["generation_job_sha256"], locked_job_sha)
 
+    def test_user_network_resume_requeues_only_failed_page_once(self) -> None:
+        self.write_director_inputs()
+        control.prepare_directors(self.state_path)
+        state = pipeline.read_json(self.state_path)
+        state["status"] = "attention_required"
+        state["scheduler"]["ready_queue"] = []
+        state["scheduler"]["active_actions"] = []
+        state["scheduler"]["recovery_queue"] = []
+        failed = state["pages"]["02"]
+        failed["status"] = "blocked"
+        failed["failure_reason"] = "technical_retry_budget_exhausted"
+        failed["attempt_count"] = 2
+        failed["attempt_history"] = [{
+            "attempt": 2, "action": "generate_page",
+            "outcome": "imagegen_backend_failed", "tool_error_code": "network timeout",
+        }]
+        state["pages"]["10"]["status"] = "candidate_ready"
+        pipeline.atomic_write_json(self.state_path, state)
+
+        planned = control.resume_network_failures(
+            self.state_path, request_id="request-1", authorization="继续未完成的图片"
+        )
+        self.assertEqual(planned["pages"], ["02"])
+        self.assertEqual(pipeline.read_json(self.state_path)["pages"]["02"]["status"], "blocked")
+        applied = control.resume_network_failures(
+            self.state_path, request_id="request-1", authorization="继续未完成的图片", apply=True
+        )
+        self.assertEqual(applied["status"], "requeued")
+        after = pipeline.read_json(self.state_path)
+        self.assertEqual([task["page_id"] for task in after["scheduler"]["ready_queue"]], ["02"])
+        self.assertEqual(after["pages"]["10"]["status"], "candidate_ready")
+        self.assertEqual(control.resume_network_failures(
+            self.state_path, request_id="request-1", authorization="继续未完成的图片", apply=True
+        )["status"], "already_authorized")
+
+    def test_unknown_result_retry_requires_exact_active_pages_and_is_idempotent(self) -> None:
+        _prepared, manifest_path = self.prepare_and_manifest()
+        manifest = pipeline.read_json(manifest_path)
+        for item in manifest["tasks"]:
+            self.assertEqual(
+                control.claim(self.state_path, manifest_path, item["task_key"], 0)["status"],
+                "claimed",
+            )
+        active = pipeline.read_json(self.state_path)["scheduler"]["active_actions"]
+        self.assertEqual(len(active), 2)
+        with self.assertRaisesRegex(SystemExit, "exactly cover"):
+            control.abandon_unknown_actions(
+                self.state_path, request_id="request-2", authorization="继续没生成的图片",
+                page_ids=active[0]["page_id"], apply=True,
+            )
+        page_ids = ",".join(item["page_id"] for item in active)
+        planned = control.abandon_unknown_actions(
+            self.state_path, request_id="request-2", authorization="继续没生成的图片",
+            page_ids=page_ids,
+        )
+        self.assertEqual(planned["status"], "planned")
+        self.assertEqual(len(pipeline.read_json(self.state_path)["scheduler"]["active_actions"]), 2)
+        applied = control.abandon_unknown_actions(
+            self.state_path, request_id="request-2", authorization="继续没生成的图片",
+            page_ids=page_ids, apply=True,
+        )
+        self.assertEqual(applied["status"], "requeued")
+        after = pipeline.read_json(self.state_path)
+        self.assertEqual(after["scheduler"]["active_actions"], [])
+        self.assertEqual([item["attempt"] for item in after["scheduler"]["ready_queue"]], [2, 2])
+        self.assertEqual(control.abandon_unknown_actions(
+            self.state_path, request_id="request-2", authorization="继续没生成的图片",
+            page_ids=page_ids, apply=True,
+        )["status"], "already_authorized")
+
     def test_recover_orphans_requeues_only_when_claim_and_receipt_are_both_absent(self) -> None:
         _prepared, manifest_path = self.prepare_and_manifest()
         manifest = pipeline.read_json(manifest_path)

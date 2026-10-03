@@ -81,3 +81,17 @@ test("composer edits cannot mutate another saved snapshot and absent routes cann
   assert.equal(drafts.beginUpload(absent), null);
   assert.deepEqual(drafts.read(absent), { text: "", attachments: [] });
 });
+
+test("a chosen edit parent stays with its conversation draft and clears after send", () => {
+  const drafts = createConversationDraftStore();
+  const editTarget = { slide_uid: "SLIDE_A", candidate_id: "a".repeat(24), sha256: "b".repeat(64), label: "P07 · 图片 2" };
+  drafts.save(routeA, { text: "缩小 Logo", attachments: [], editTarget });
+  editTarget.label = "changed outside";
+  assert.equal(drafts.read(routeA).editTarget.label, "P07 · 图片 2");
+  assert.equal(drafts.read(routeB).editTarget, undefined);
+  const token = drafts.beginUpload(routeA);
+  drafts.completeUpload(token, [attachment("reference")]);
+  assert.equal(drafts.read(routeA).editTarget.candidate_id, "a".repeat(24));
+  drafts.clear(routeA);
+  assert.equal(drafts.read(routeA).editTarget, undefined);
+});

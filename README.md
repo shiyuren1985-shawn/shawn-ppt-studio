@@ -1,8 +1,12 @@
 # Shawn PPT Studio
 
-Shawn PPT Studio is a local, conversation-first workspace for building visual PowerPoint decks with Codex. It keeps the outline, selected slide images, candidate review, image retouching, and export workflow in one macOS app.
+Shawn PPT Studio is a local, conversation-first workspace for building visual PowerPoint decks with Codex. It keeps the outline, selected slide images, candidate review, contextual image editing, and export workflow in one macOS app.
 
 > **Developer preview:** the source and the `shawn-ppt-image` project Skill are public. The full image-production workflow still depends on a compatible, signed-in Codex environment and its system `imagegen` Skill.
+
+### macOS update identity and permissions
+
+Installed updates must use a consistent signing identity and bundle identifier. Set `SHAWN_PPT_STUDIO_SIGNING_IDENTITY` to the maintained signing certificate; the build no longer silently falls back to ad-hoc signing. Explicit local test builds may set `SHAWN_PPT_STUDIO_ALLOW_ADHOC=1`, but replacing an installed app with those builds can invalidate prior macOS privacy grants. Full execution access inside Codex does not grant macOS file access. A stable signature reduces update-related reauthorization; it does not bypass system or organization policies. Developer ID signing and notarization remain required for the intended distributable release workflow.
 
 ## What is included
 
@@ -11,7 +15,8 @@ Shawn PPT Studio is a local, conversation-first workspace for building visual Po
 - Recoverable conversation history with rename, soft-delete, and restore controls.
 - A focused `作图任务` catalog for active and recent image-generation or retouching work; outline-only chat is not added to it.
 - Editable long-term Studio rules that persist locally across every project and conversation; explicit `记住，…` and `…。记住这个要求` messages can add a rule directly.
-- A native candidate-selection workspace with three images per row, immediate selection, zoom, and Trash support.
+- A native candidate-selection workspace with three images per row, immediate selection, zoom, Trash support, and “基于这张修改” on any retained candidate. This opens the existing deck conversation with that exact image as the edit parent; edits return as new candidates without selecting or overwriting the source.
+- Candidate refresh records elapsed time, pages with visible images, and pages whose saved selections no longer resolve. These local diagnostics help distinguish a missing generated candidate from a stale selection reference without copying image files.
 - New-project flows for an empty folder or an existing Markdown outline.
 - Canonical Fast8 and single-image-edit adapters. A bundled Skill at `.agents/skills/shawn-ppt-image` remains available as a distribution fallback.
 - Image-slide PPTX with verified company sensitivity-label metadata, PDF, and ordered page-image ZIP export. Available formats depend on their own runtime requirements.
@@ -65,7 +70,7 @@ Build the local macOS app:
 ./bin/desktop-build
 ```
 
-Building from source also requires the Xcode Command Line Tools and a current Rust toolchain. The build produced by `./bin/desktop-build` is ad-hoc signed for local development unless `SHAWN_PPT_STUDIO_SIGNING_IDENTITY` supplies a signing identity. It is not a Developer ID distribution build and it is not notarized by Apple, so another Mac may reject or warn about it through Gatekeeper. Treat the downloadable app as a developer preview, not a normal end-user installer.
+Building from source also requires the Xcode Command Line Tools and a current Rust toolchain. `./bin/desktop-build` requires a stable local signing identity; ad-hoc signing is available only with an explicit test-build override. The local identity is not a Developer ID distribution signature, and this app is not notarized by Apple, so another Mac may reject or warn about it through Gatekeeper. Treat the downloadable app as a developer preview, not a normal end-user installer.
 
 ## Configuration
 
@@ -121,6 +126,13 @@ pnpm check
 
 No real ImageGen call is made by these tests.
 
+Studio keeps conversation storage isolated, but synchronizes a newer login from
+the main Codex home at startup and before idle dispatch. OAuth refresh timestamps
+prevent downgrading Studio's own renewed login; different accounts are not silently
+replaced. Credential reloads wait until active/preparing conversations are idle.
+Expired tokens use App Server's managed refresh; an unrecoverable login error asks
+the user to sign in again instead of continuing to report a usable login.
+
 The 0.2.12 regression suite also covers interrupted transports, late snapshots,
 pending approval cleanup, conversation maintenance races, project-specific drafts,
 stable page identities after reordering, CRLF outlines, negated image requests,
@@ -141,7 +153,7 @@ visual acceptance are recorded separately from fixture-based tests.
 - If a registered outline file is moved or deleted, Studio keeps the remaining projects available and marks only that entry as `原大纲文件已丢失`; removing that stale entry does not delete any other project.
 - Projects, conversations, selections, and generated artifacts remain local unless the user explicitly publishes them.
 - The repository does not contain company documents or generated slide images.
-- Codex approvals and sandbox decisions come from the official App Server protocol; the UI does not invent a second approval system.
+- Studio uses the official App Server full-access mode (`approvalPolicy: never`, `danger-full-access`) for new and resumed conversations and turns. Normal commands, file access, and networking do not prompt for approval. This permits operations outside the project folder; use trusted inputs. It affects only Studio, not the main Codex app. It does not grant unrelated task authority or bypass OS or external-service consent. The approval UI remains available for protocol requests not covered by this execution policy.
 - Candidate identity and file validation are retained only where needed to prevent selecting or overwriting the wrong slide.
 
 ## License

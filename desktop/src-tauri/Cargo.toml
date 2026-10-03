@@ -1,6 +1,6 @@
 [package]
 name = "shawn-ppt-studio"
-version = "0.2.12"
+version = "0.2.22"
 description = "Independent macOS shell for Shawn PPT Studio"
 authors = ["Shawn"]
 edition = "2021"

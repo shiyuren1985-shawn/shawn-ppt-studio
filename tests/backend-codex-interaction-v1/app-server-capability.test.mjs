@@ -13,6 +13,36 @@ test("public CODEX_BIN override takes precedence over the legacy variable", () =
   );
 });
 
+test("Codex executable discovery handles current and older app bundles", () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "studio-codex-discovery-"));
+  const current = path.join(scratch, "codex-cli/bin/codex");
+  const older = path.join(scratch, "codex");
+  try {
+    fs.mkdirSync(path.dirname(current), { recursive: true });
+    fs.writeFileSync(older, "", { mode: 0o755 });
+    assert.equal(resolveCodexExecutable({}, scratch), older);
+    fs.writeFileSync(current, "", { mode: 0o755 });
+    assert.equal(resolveCodexExecutable({}, scratch), current);
+    fs.chmodSync(current, 0o644);
+    assert.equal(resolveCodexExecutable({}, scratch), older);
+    assert.equal(resolveCodexExecutable({ CODEX_BIN: "/custom/codex" }, scratch), "/custom/codex");
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("missing Codex executable reports an actionable launch error", async () => {
+  const client = new AppServerClient({
+    executable: "/nonexistent/shawn-ppt-studio-codex",
+    cwd: os.tmpdir(),
+  });
+  await assert.rejects(client.start(), (error) => {
+    assert.equal(error.code, "codex_executable_missing");
+    assert.match(error.message, /找不到 Codex 命令/);
+    return true;
+  });
+});
+
 test("App Server connection opts into experimental fields used by turn/start", async () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "studio-app-server-capability-"));
   const fake = path.join(scratch, "fake-app-server.mjs");

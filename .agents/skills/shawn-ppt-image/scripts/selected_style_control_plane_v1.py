@@ -1691,6 +1691,129 @@ def lean_finalize(state_path: Path) -> dict[str, Any]:
     return {"status": "completed", "overview": str(final_overview), "state": str(state_path), "handoff": handoff.get("handoff_json"), "delivery_message": str(delivery)}
 
 
+def resume_network_failures(state_path: Path, *, request_id: str, authorization: str, apply: bool = False) -> dict[str, Any]:
+    """Explicit user-authorized, one-attempt continuation after a network outage.
+
+    Reuses immutable initial jobs and the existing shared scheduler/claims.
+    Never resets attempt history, revives a successful page, or raises the
+    automatic retry budget. A request ID can authorize only one continuation.
+    """
+    if not request_id.strip() or not authorization.strip():
+        raise SystemExit("网络续跑需要明确用户请求及唯一 request-id")
+    state, project_dir = require_run(state_path)
+    before_sha = pc.file_sha256(state_path)
+    if state.get("status") == "completed":
+        raise SystemExit("已完成运行不得网络续跑")
+    event_name = "selected_style_network_resume_authorized"
+    if any(e.get("name") == event_name and (e.get("details") or {}).get("request_id") == request_id for e in state.get("events") or []):
+        return {"status": "already_authorized", "request_id": request_id}
+    scheduler = state.get("scheduler") or {}
+    if any(scheduler.get(k) for k in ("active_actions", "ready_queue", "recovery_queue")):
+        raise SystemExit("网络续跑前必须先结算已有 active/ready/recovery 队列")
+    if state.get("selected_style_judge"):
+        raise SystemExit("已进入 Judge 的运行不得重排初次生成")
+    validate_prepare_identity(state.get("selected_style_prepare_identity"))
+    drift = pc.evaluate_source_drift(state_path, state, action="resume")
+    if not drift.get("can_continue"):
+        raise SystemExit("网络续跑输入完整性校验未通过")
+    queued = []
+    for page_id in state["page_order"]:
+        record = state["pages"][page_id]
+        if record.get("status") != "blocked":
+            continue
+        if record.get("selected_source") or record.get("final_path"):
+            raise SystemExit(f"页 {page_id} 已有候选，禁止重复生成")
+        if record.get("failure_reason") != "technical_retry_budget_exhausted":
+            raise SystemExit(f"页 {page_id} 不是可续跑的技术失败")
+        history = record.get("attempt_history") or []
+        latest = max(history, key=lambda h: int(h.get("attempt") or 0), default={})
+        error = str(latest.get("tool_error_code") or "").lower()
+        if latest.get("outcome") != "imagegen_backend_failed" or latest.get("action") != "generate_page" or not any(x in error for x in ("connection failed", "error sending request", "network", "timed out", "timeout")):
+            raise SystemExit(f"页 {page_id} 没有明确的网络失败记录")
+        attempt = max(int(record.get("attempt_count") or 0), int(latest.get("attempt") or 0)) + 1
+        job_path = project_dir / "page_jobs" / f"page_{page_id}.json"
+        task = {"style": state["selected_style"], "page_id": page_id, "action": "generate_page", "attempt": attempt, "technical_retry": True, "retry_reason": "user_authorized_network_resume", "generation_job_path": str(job_path.resolve()), "generation_job_sha256": pc.file_sha256(job_path)}
+        pc.validate_generation_job_inputs(job_path, internal_sources=pc.allowed_internal_sources_for_task(state, task), expected_task=task, state=state, project_dir=project_dir)
+        queued.append(task)
+    if not queued:
+        return {"status": "nothing_to_resume", "pages": []}
+    result = {"status": "planned", "request_id": request_id, "pages": [t["page_id"] for t in queued], "attempts": {t["page_id"]: t["attempt"] for t in queued}, "preserved_pages": [p for p in state["page_order"] if state["pages"][p].get("selected_source")]}
+    if not apply:
+        return result
+    now = pc.now_iso()
+    for task in queued:
+        task["authorized_at"] = now
+        record = state["pages"][task["page_id"]]
+        record["status"] = "retry_pending"
+        record["failure_reason"] = "user_authorized_network_resume"
+    state["scheduler"]["ready_queue"] = queued
+    pc.append_event(state, event_name, now, details={"request_id": request_id, "authorization": authorization, "pages": result["pages"], "attempts": result["attempts"], "preserved_pages": result["preserved_pages"], "automatic_retry_budget_unchanged": True})
+    if pc.file_sha256(state_path) != before_sha:
+        raise SystemExit("续跑准备期间 state 已变化；拒绝覆盖")
+    pc.atomic_write_json(state_path, state)
+    return {**result, "status": "requeued"}
+
+
+def abandon_unknown_actions(state_path: Path, *, request_id: str, authorization: str, page_ids: str, apply: bool = False) -> dict[str, Any]:
+    """Record explicit acceptance of unknown outcomes; never assert backend failure."""
+    if not request_id.strip() or not authorization.strip():
+        raise SystemExit("Explicit authorization and request ID required")
+    state, project_dir = require_run(state_path)
+    before_sha = pc.file_sha256(state_path)
+    event_name = "selected_style_unknown_outcome_abandoned_authorized"
+    if any(e.get("name") == event_name and (e.get("details") or {}).get("request_id") == request_id for e in state.get("events") or []):
+        return {"status": "already_authorized", "request_id": request_id}
+    wanted = [p.strip() for p in page_ids.split(",") if p.strip()]
+    if not wanted or len(set(wanted)) != len(wanted):
+        raise SystemExit("Unique exact page list required")
+    scheduler = state.get("scheduler") or {}
+    active = scheduler.get("active_actions") or []
+    if set(wanted) != {t["page_id"] for t in active} or len(active) != len(wanted):
+        raise SystemExit("Authorization must exactly cover active unknown actions")
+    if state.get("status") == "completed" or state.get("selected_style_judge") or scheduler.get("recovery_queue"):
+        raise SystemExit("Run is not eligible for unknown-outcome continuation")
+    validate_prepare_identity(state.get("selected_style_prepare_identity"))
+    if not pc.evaluate_source_drift(state_path, state, action="resume").get("can_continue"):
+        raise SystemExit("Frozen source identity failed")
+    queued, archived, leases = [], [], []
+    for task in active:
+        page = state["pages"][task["page_id"]]
+        if page.get("selected_source") or page.get("final_path") or task["action"] != "generate_page":
+            raise SystemExit("Existing candidate or non-generation action cannot be abandoned")
+        claim_path, receipt_path = control_paths(project_dir, task_key(task))
+        if not claim_path.is_file() or receipt_path.exists():
+            raise SystemExit("Unknown action requires claim without receipt")
+        claim_value = pc.read_json(claim_path)
+        job = Path(task["generation_job_path"])
+        if pc.file_sha256(job) != task.get("generation_job_sha256") or claim_value.get("generation_job_sha256") != task.get("generation_job_sha256"):
+            raise SystemExit("Claim and frozen job mismatch")
+        pc.validate_generation_job_inputs(job, internal_sources=pc.allowed_internal_sources_for_task(state, task), expected_task=task, state=state, project_dir=project_dir)
+        if any(x.get("page_id") == task["page_id"] for x in scheduler.get("ready_queue") or []):
+            raise SystemExit("Duplicate ready page")
+        replacement = {k: task[k] for k in ("style", "page_id", "action", "generation_job_path", "generation_job_sha256")}
+        replacement.update(attempt=int(task["attempt"])+1, technical_retry=True, retry_reason="user_authorized_unknown_outcome_retry")
+        queued.append(replacement)
+        archived.append({"task": task, "claim_path": str(claim_path), "outcome": "unknown", "disposition": "user_authorized_abandon_wait", "backend_cancelled": False})
+        leases.append(str(claim_value.get("lease_id") or ""))
+    result = {"status": "planned", "pages": wanted, "attempts": {t["page_id"]: t["attempt"] for t in queued}, "preserved_ready_count": len(scheduler.get("ready_queue") or []), "preserved_candidates": [p for p in state["page_order"] if state["pages"][p].get("selected_source")]}
+    if not apply:
+        return result
+    if pc.file_sha256(state_path) != before_sha:
+        raise SystemExit("State changed during reconciliation")
+    now = pc.now_iso()
+    pc.release_shared_imagegen_slots(state_path, state, leases)
+    if pc.file_sha256(state_path) != before_sha:
+        raise SystemExit("State changed during slot release")
+    for t in queued:
+        t["authorized_at"] = now
+        state["pages"][t["page_id"]]["status"] = "retry_pending"
+    scheduler["active_actions"] = []
+    scheduler["ready_queue"] = queued + list(scheduler.get("ready_queue") or [])
+    pc.append_event(state, event_name, now, details={"request_id": request_id, "authorization": authorization, "abandoned_actions": archived, "new_attempts": result["attempts"], "automatic_retry_budget_unchanged": True, "duplicate_billing_risk_accepted": True})
+    pc.atomic_write_json(state_path, state)
+    return {**result, "status": "requeued"}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="selected-style expansion thin control plane v1")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1702,6 +1825,17 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         command = sub.add_parser(name)
         command.add_argument("--state", required=True)
+    resume_p = sub.add_parser("resume-network-failures", help="Continue only failed pages after an explicitly confirmed network recovery")
+    resume_p.add_argument("--state", required=True)
+    resume_p.add_argument("--request-id", required=True)
+    resume_p.add_argument("--authorization", required=True)
+    resume_p.add_argument("--apply", action="store_true")
+    unknown = sub.add_parser("abandon-unknown-actions")
+    unknown.add_argument("--state", required=True)
+    unknown.add_argument("--request-id", required=True)
+    unknown.add_argument("--authorization", required=True)
+    unknown.add_argument("--page-ids", required=True)
+    unknown.add_argument("--apply", action="store_true")
     prepare_next_p = sub.add_parser("_prepare-next", help=argparse.SUPPRESS)
     prepare_next_p.add_argument("--state", required=True)
     prepare_next_p.add_argument("--recover-orphans", action="store_true")
@@ -1725,6 +1859,8 @@ def main() -> None:
     elif args.command == "render-action": print(render_action(state_path))
     elif args.command == "lean-finalize": emit(lean_finalize(state_path))
     elif args.command == "reapply-judge-report": emit(reapply_completed_judge_report(state_path))
+    elif args.command == "resume-network-failures": emit(resume_network_failures(state_path, request_id=args.request_id, authorization=args.authorization, apply=args.apply))
+    elif args.command == "abandon-unknown-actions": emit(abandon_unknown_actions(state_path, request_id=args.request_id, authorization=args.authorization, page_ids=args.page_ids, apply=args.apply))
     elif args.command == "_prepare-next": emit(prepare_next(state_path, recover_orphans=args.recover_orphans))
     elif args.command == "_task-input":
         _state, _active, item, _project = validate_manifest_item(state_path, Path(args.manifest), args.task_key)

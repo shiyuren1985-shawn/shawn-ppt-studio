@@ -17,7 +17,6 @@ import {
   outlineReadingModel,
   safeAttachmentPaths,
   scopeFromSlide,
-  retouchDisplayLabel,
 } from "./model.js";
 import { createTaskCatalogRefreshTracker } from "./task-catalog-refresh.js";
 import {
@@ -50,6 +49,7 @@ const state = {
   messages: [],
   activeHistoryFallback: null,
   attachments: [],
+  editTarget: null,
   activeTurnId: "",
   activeTurnStatus: "",
   eventSequence: 0,
@@ -77,9 +77,9 @@ const state = {
 };
 
 const ids = [
-  "main-content", "app-version", "deck-switcher", "outline-slide-count", "outline-slide-list", "retouch-slide-count",
-  "retouch-slide-list", "current-page-label", "current-page-title", "composer-page", "composer-scope-copy", "selection-count",
-  "current-page-context-copy", "retouch-page-label", "retouch-page-title",
+  "main-content", "app-version", "deck-switcher", "outline-slide-count", "outline-slide-list",
+  "current-page-label", "current-page-title", "composer-page", "composer-scope-copy", "selection-count",
+  "current-page-context-copy",
   "selected-preview", "outline-version", "outline-language-switch", "outline-reading-view", "active-conversation-title",
   "active-conversation-time", "message-list", "conversation-form", "message-input", "attachment-list",
   "attachment-input", "attach-button", "send-button", "conversation-menu-button", "conversation-drawer",
@@ -89,9 +89,9 @@ const ids = [
   "conversation-context-menu", "conversation-context-rename", "conversation-context-delete",
   "conversation-rename-dialog", "conversation-rename-input", "conversation-rename-cancel", "conversation-rename-save", "conversation-rename-status",
   "conversation-delete-dialog", "conversation-delete-name", "conversation-delete-cancel", "conversation-delete-confirm", "conversation-delete-status",
-  "refresh-button", "selector-workspace", "retouch-gallery",
-  "conversation-panel", "outline-conversation-host", "retouch-conversation-host", "conversation-column-toggle",
-  "outline-left-toggle", "retouch-left-toggle", "outline-content-toggle", "retouch-content-toggle", "retouch-stage",
+  "refresh-button", "selector-workspace",
+  "conversation-panel", "outline-conversation-host", "conversation-column-toggle",
+  "outline-left-toggle", "outline-content-toggle",
   "image-dialog", "image-dialog-close", "image-dialog-toggle", "image-dialog-content", "page-comparison", "toast",
   "project-dialog", "project-dialog-close", "blank-project-button", "existing-outline-button", "project-dialog-status",
   "project-picker-button", "project-picker-label", "project-picker-meta", "project-popover", "project-search", "project-popover-new",
@@ -106,8 +106,20 @@ let composerRoute = null;
 
 const observeTaskCatalogRefresh = createTaskCatalogRefreshTracker({
   refreshCatalog: async (deckId) => {
+    // Outline edits and image generation can finish in the same turn. Refresh
+    // the page list independently of whether the selector is currently open.
+    if (deckId === state.deckId) {
+      const payload = await api.getProjects();
+      state.decks = normalizeDecks(payload);
+      state.unavailableDecks = normalizeUnavailableProjects(payload);
+      const chosen = chooseScope(state.decks, { deckId: state.deckId, slideUid: state.slideUid }, state.defaultDeckId);
+      state.deckId = chosen.deckId;
+      state.slideUid = chosen.slideUid;
+      renderDeckSwitcher();
+      renderSlideLists();
+    }
     if (deckId === state.deckId && state.selectorController) {
-      await state.selectorController.refresh();
+      await state.selectorController.setContext({ deckId, slideUid: state.slideUid, decks: state.decks });
       return;
     }
     const { selectorApi } = await import("./selector/api.js");
@@ -169,21 +181,21 @@ function currentSlide() {
 
 function updateComposerContext() {
   const page = state.scope?.page_label || currentSlide()?.page_label || (currentDeck() ? "整套 PPT" : "当前页");
-  el["composer-page"].textContent = page;
-  if (!state.slideUid && currentDeck()) {
+  el["composer-page"].textContent = state.editTarget?.label || page;
+  if (state.editTarget) {
+    el["message-input"].placeholder = "例如：把这张图的标题区 Logo 缩小，其他内容保持不变。";
+    el["composer-scope-copy"].textContent = "，以选稿台指定的图片为原图";
+  } else if (!state.slideUid && currentDeck()) {
     el["message-input"].placeholder = "例如：这份 PPT 讲海外项目交付，请先帮我整理整体故事线。";
     el["composer-scope-copy"].textContent = "，处理范围：整套 PPT";
-  } else if (state.workspace === "retouch") {
-    el["message-input"].placeholder = "例如：把这一页 Logo 去掉；或者改 P04-A / P08 的图片细节。";
-    el["composer-scope-copy"].textContent = "，可直接说“这一页”或图片名称";
   } else {
     el["message-input"].placeholder = "例如：第 5 页的表达还不够直接，请结合整套大纲调整；再为第 5、8 页各做几种图片方案。";
     el["composer-scope-copy"].textContent = "，处理范围：整套 PPT";
   }
 }
 
-function attachConversationPanel(workspace) {
-  const host = workspace === "retouch" ? el["retouch-conversation-host"] : el["outline-conversation-host"];
+function attachConversationPanel() {
+  const host = el["outline-conversation-host"];
   if (host && el["conversation-panel"].parentElement !== host) host.append(el["conversation-panel"]);
   updateComposerContext();
 }
@@ -221,7 +233,7 @@ function toggleColumn(column) {
 }
 
 function setWorkspace(workspace) {
-  if (!new Set(["outline", "selector", "retouch"]).has(workspace)) return;
+  if (!new Set(["outline", "selector"]).has(workspace)) return;
   state.workspace = workspace;
   for (const button of document.querySelectorAll("[data-workspace]")) {
     if (button.dataset.workspace === workspace) button.setAttribute("aria-current", "page");
@@ -230,9 +242,9 @@ function setWorkspace(workspace) {
   for (const panel of document.querySelectorAll("[data-workspace-panel]")) {
     panel.hidden = panel.dataset.workspacePanel !== workspace;
   }
-  if (workspace === "outline" || workspace === "retouch") attachConversationPanel(workspace);
+  if (workspace === "outline") attachConversationPanel();
   if (workspace === "selector") void syncSelectorWorkspace();
-  if ((workspace === "outline" || workspace === "retouch") && state.deckId) loadCurrentPage();
+  if (workspace === "outline" && state.deckId) loadCurrentPage();
   persist();
 }
 
@@ -537,13 +549,10 @@ function slideButton(slide, target) {
 function renderSlideLists() {
   const slides = currentDeck()?.slides || [];
   el["outline-slide-list"].replaceChildren();
-  el["retouch-slide-list"].replaceChildren();
   for (const slide of slides) {
     slideButton(slide, el["outline-slide-list"]);
-    slideButton(slide, el["retouch-slide-list"]);
   }
   el["outline-slide-count"].textContent = String(slides.length);
-  el["retouch-slide-count"].textContent = String(slides.length);
 }
 
 async function selectDeck(deckId) {
@@ -581,8 +590,6 @@ function renderOutline() {
   el["current-page-label"].textContent = state.scope?.page_label || slide?.page_label || "—";
   el["current-page-title"].textContent = outlineInlineDisplayValue(state.scope?.title || slide?.title) || "请选择一页";
   el["composer-page"].textContent = state.scope?.page_label || "未选择页面";
-  el["retouch-page-label"].textContent = state.scope?.page_label || slide?.page_label || "—";
-  el["retouch-page-title"].textContent = outlineInlineDisplayValue(state.scope?.title || slide?.title) || "修图";
   updateComposerContext();
   el["current-page-context-copy"].textContent = state.scope?.page_label
     ? `你正在查看 ${state.scope.page_label}。AI 会把它作为参考，但仍会结合整套 PPT 理解你的要求。`
@@ -663,9 +670,6 @@ function renderNoProject() {
   empty.append(action);
   el["selected-preview"].replaceChildren(empty);
   el["outline-reading-view"].replaceChildren(projectEmptyNode("大纲会显示在这里", "打开项目后，可以和 AI 一起整理内容。"));
-  el["retouch-page-label"].textContent = "";
-  el["retouch-page-title"].textContent = "修图";
-  el["retouch-gallery"].replaceChildren(projectEmptyNode("尚未选择 PPT", "请先新建或打开一份 PPT。"));
   updateSendState();
 }
 
@@ -693,9 +697,6 @@ function renderProjectWithoutSlides() {
   } else {
     el["outline-reading-view"].append(projectEmptyNode("还没有页面", "先在右侧告诉 AI 这份 PPT 要讲什么。"));
   }
-  el["retouch-page-label"].textContent = "";
-  el["retouch-page-title"].textContent = deck?.label || "修图";
-  el["retouch-gallery"].replaceChildren(projectEmptyNode("暂无图片", "先完成至少一页大纲，再开始生成和修改图片。"));
   updateSendState();
 }
 
@@ -788,7 +789,6 @@ async function loadCurrentPage() {
     state.selection = normalizeSelection(selectionPayload);
     renderOutline();
     renderSelection();
-    renderRetouch();
     updateSendState();
   } catch (error) {
     toast(`无法读取这一页：${error.message}`);
@@ -872,6 +872,24 @@ async function synchronizeFromSelector({ deckId, slideUid } = {}) {
   persist();
 }
 
+async function beginEditFromSelector(target) {
+  await synchronizeFromSelector({ deckId: target.deckId, slideUid: target.slideUid });
+  if (state.deckId !== target.deckId || state.slideUid !== target.slideUid || !state.activeConversationId) {
+    toast("无法打开这张图片的对话，请重新选择项目后再试");
+    return;
+  }
+  state.editTarget = {
+    slide_uid: target.slideUid,
+    candidate_id: target.candidateId,
+    sha256: target.sha256,
+    label: target.label,
+  };
+  saveComposerDraft();
+  setWorkspace("outline");
+  renderAttachments();
+  el["message-input"].focus();
+}
+
 async function mountSelectorWorkspaceIfNeeded() {
   if (state.selectorController) return state.selectorController;
   if (state.selectorMounting) return state.selectorMounting;
@@ -889,6 +907,7 @@ async function mountSelectorWorkspaceIfNeeded() {
         onSelectionChange: (context) => {
           if (context?.deckId === state.deckId && context?.slideUid === state.slideUid) void loadCurrentPage();
         },
+        onEditCandidate: (target) => { void beginEditFromSelector(target); },
         onError: (error) => toast(error?.message || "选稿台暂时无法读取，请稍后重试"),
       });
       return state.selectorController;
@@ -930,47 +949,6 @@ async function syncSelectorWorkspace() {
     const controller = await mountSelectorWorkspaceIfNeeded();
     if (alreadyMounted) await controller?.setContext?.({ deckId: state.deckId, slideUid: state.slideUid, decks: state.decks });
   } catch { /* The selector workspace already shows a plain-language retry state. */ }
-}
-
-function renderRetouch() {
-  if (!el["retouch-gallery"]) return;
-  el["retouch-gallery"].replaceChildren();
-  if (!state.slideUid) {
-    el["retouch-gallery"].append(projectEmptyNode("暂无图片", "先完成至少一页大纲，再开始生成和修改图片。"));
-    return;
-  }
-  const candidates = state.selection.candidates;
-  if (!candidates.length) {
-    el["retouch-gallery"].append(selectorEmpty(state.selection.message));
-    return;
-  }
-  const pageLabel = state.scope?.page_label || currentSlide()?.page_label || "当前页";
-  candidates.forEach((candidate, index) => {
-    const displayLabel = retouchDisplayLabel(pageLabel, index, candidates.length, candidate.display_label);
-    const card = document.createElement("article");
-    card.className = "retouch-card";
-    card.dataset.testid = "retouch-image-card";
-    const imageButton = document.createElement("button");
-    imageButton.type = "button";
-    imageButton.className = "image-button";
-    imageButton.dataset.testid = "retouch-image-preview";
-    imageButton.title = `查看 ${displayLabel} 大图`;
-    const image = document.createElement("img");
-    image.src = candidate.preview_url;
-    image.alt = `${displayLabel} 正式图片`;
-    imageButton.append(image);
-    imageButton.addEventListener("click", () => openImage(candidate.preview_url));
-    const caption = document.createElement("div");
-    caption.className = "retouch-card-caption";
-    const label = document.createElement("strong");
-    label.dataset.testid = "retouch-display-label";
-    label.textContent = displayLabel;
-    const copy = document.createElement("span");
-    copy.textContent = "正式图片";
-    caption.append(label, copy);
-    card.append(imageButton, caption);
-    el["retouch-gallery"].append(card);
-  });
 }
 
 function openConversationDrawer() {
@@ -1607,15 +1585,17 @@ function advanceConversationView() {
 }
 
 function saveComposerDraft() {
-  conversationDrafts.save(composerRoute, { text: el["message-input"].value, attachments: state.attachments });
+  conversationDrafts.save(composerRoute, { text: el["message-input"].value, attachments: state.attachments, editTarget: state.editTarget });
 }
 
 function restoreComposerDraft() {
   const draft = conversationDrafts.read(composerRoute);
   el["message-input"].value = draft.text;
   state.attachments = draft.attachments;
+  state.editTarget = draft.editTarget || null;
   resizeMessageInput();
   renderAttachments();
+  updateComposerContext();
   updateSendState();
 }
 
@@ -1942,7 +1922,25 @@ function attachToActiveTurn() {
 
 function renderAttachments() {
   el["attachment-list"].replaceChildren();
-  el["attachment-list"].hidden = !state.attachments.length;
+  el["attachment-list"].hidden = !state.attachments.length && !state.editTarget;
+  if (state.editTarget) {
+    const chip = document.createElement("div");
+    chip.className = "attachment-chip";
+    const name = document.createElement("span");
+    name.textContent = `修改原图：${state.editTarget.label}`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "text-button";
+    remove.textContent = "移除";
+    remove.addEventListener("click", () => {
+      state.editTarget = null;
+      saveComposerDraft();
+      renderAttachments();
+      updateComposerContext();
+    });
+    chip.append(name, remove);
+    el["attachment-list"].append(chip);
+  }
   for (const [index, attachment] of state.attachments.entries()) {
     const chip = document.createElement("div");
     chip.className = "attachment-chip";
@@ -2355,21 +2353,29 @@ async function submitConversation(event) {
   const deckId = route.deckId;
   const conversationId = route.conversationId;
   const attachments = safeAttachmentPaths(state.attachments);
-  const retouchContext = state.workspace === "retouch";
+  const editTarget = state.editTarget;
   const expectedTurnId = state.activeTurnId;
   const optimisticUserMessage = appendOptimisticUserMessage(message);
   el["message-input"].value = "";
   resizeMessageInput();
   state.attachments = [];
+  state.editTarget = null;
   conversationDrafts.clear(route);
   renderAttachments();
   updateSendState();
   const requestBody = {
     message,
-    current_slide_uid: state.scope.slide_uid,
+    current_slide_uid: editTarget?.slide_uid || state.scope.slide_uid,
     reference_images: attachments.map((item) => ({ path: item.path })),
   };
-  if (retouchContext) requestBody.retouch_context = true;
+  if (editTarget) {
+    requestBody.retouch_context = true;
+    requestBody.edit_candidate = {
+      slide_uid: editTarget.slide_uid,
+      candidate_id: editTarget.candidate_id,
+      sha256: editTarget.sha256,
+    };
+  }
   try {
     if (expectedTurnId) {
       try {
@@ -2377,6 +2383,7 @@ async function submitConversation(event) {
           message,
           expected_turn_id: expectedTurnId,
           reference_images: requestBody.reference_images,
+          edit_candidate: requestBody.edit_candidate,
         });
         if (result?.studio_rule) {
           toast(result.studio_rule.added ? "已加入 Studio 长期规则" : "这条内容已经在长期规则里");
@@ -2412,6 +2419,7 @@ async function submitConversation(event) {
           message,
           expected_turn_id: recoveredTurnId,
           reference_images: requestBody.reference_images,
+          edit_candidate: requestBody.edit_candidate,
         });
       }
     }
@@ -2423,6 +2431,10 @@ async function submitConversation(event) {
       renderConversationList();
     }
   } catch (error) {
+    if (editTarget) {
+      conversationDrafts.save(route, { text: message, attachments, editTarget });
+      if (conversationRouteIsCurrent(route)) restoreComposerDraft();
+    }
     if (conversationRouteIsCurrent(route)) {
       optimisticUserMessage.article.classList.add("send-failed");
       toast(`这次没有发送成功：${error.message}`);
@@ -2772,7 +2784,7 @@ function bindEvents() {
 
 async function initialize() {
   const saved = savedState();
-  state.workspace = ["outline", "selector", "retouch"].includes(saved.workspace) ? saved.workspace : "outline";
+  state.workspace = ["outline", "selector"].includes(saved.workspace) ? saved.workspace : "outline";
   state.deckId = typeof saved.deckId === "string" ? saved.deckId : "";
   state.slideUid = typeof saved.slideUid === "string" ? saved.slideUid : "";
   state.outlineLanguageView = ["bilingual", "zh", "en"].includes(saved.outlineLanguageView)

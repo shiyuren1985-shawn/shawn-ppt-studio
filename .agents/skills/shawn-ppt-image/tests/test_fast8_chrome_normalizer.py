@@ -98,6 +98,23 @@ class Fast8ChromeNormalizerTests(unittest.TestCase):
             capture_output=True,
         )
 
+    def test_single_tone_logo_is_valid_but_missing_used_tone_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packet, raw = self.fixture(root)
+            value = json.loads(raw.read_text())
+            del value["logo"]["assets_by_tone"]["dark"]
+            raw.write_text(json.dumps(value), encoding="utf-8")
+            result = self.run_normalizer(root, packet, raw)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            normalized = json.loads((root / "normalized.json").read_text())
+            kwargs = dict(contract_path=root / "normalized.json", contract_sha256="test",
+                          page_id="P29", style="A", language="zh")
+            projected = pipeline.global_chrome_projection(normalized, tone="light", **kwargs)
+            self.assertEqual(projected["logo_asset"]["path"], str((root / "light.png").resolve()))
+            with self.assertRaisesRegex(SystemExit, "实际使用 dark"):
+                pipeline.global_chrome_projection(normalized, tone="dark", **kwargs)
+
     def test_loose_shape_is_normalized_without_guessing_title(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

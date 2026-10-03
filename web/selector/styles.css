@@ -53,7 +53,10 @@
 .selector-candidate-title { min-width: 0; display: grid; gap: 2px; }
 .selector-candidate-title strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .selector-candidate-title span { color: var(--muted, #64716c); font-size: 12px; }
-.selector-card-actions { display: flex; justify-content: flex-end; align-items: center; gap: 7px; }
+.selector-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 7px; }
+.selector-edit { min-height: 36px; flex: 1 0 100%; padding: 6px 10px; border: 1px solid #b6c2bc; border-radius: 9px; color: var(--forest, #123f33); background: #f4f8f5; font-weight: 800; }
+.selector-edit:hover { background: var(--mint, #e4f3ea); }
+.selector-edit:disabled { cursor: not-allowed; opacity: .4; }
 .selector-choice { min-height: 40px; flex: 0 0 auto; padding: 7px 12px; border: 1px solid #b6c2bc; border-radius: 9px; color: var(--forest, #123f33); background: white; font-weight: 800; }
 .selector-choice:hover { background: var(--mint, #e4f3ea); }
 .selector-choice.selected { color: white; border-color: var(--forest-2, #20604d); background: var(--forest-2, #20604d); }

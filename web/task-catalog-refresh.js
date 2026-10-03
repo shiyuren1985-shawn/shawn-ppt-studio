@@ -1,5 +1,9 @@
 const COMPLETED_STATUS = "completed";
 
+function artifactVersion(task) {
+  return JSON.stringify([String(task?.status || ""), Number(task?.completed_units) || 0]);
+}
+
 function taskId(task) {
   return String(task?.task_id || "");
 }
@@ -19,14 +23,14 @@ export function createTaskCatalogRefreshTracker({ refreshCatalog } = {}) {
     const nextStatuses = new Map();
     for (const task of normalized) {
       const id = taskId(task);
-      if (id) nextStatuses.set(id, String(task?.status || ""));
+      if (id) nextStatuses.set(id, artifactVersion(task));
     }
 
     const newlyCompletedDeckIds = [...new Set(normalized
-      .filter((task) => String(task?.status || "") === COMPLETED_STATUS)
+      .filter((task) => String(task?.status || "") === COMPLETED_STATUS || Number(task?.completed_units) > 0)
       .filter((task) => {
         const id = taskId(task);
-        return id && previousStatuses.get(id) !== COMPLETED_STATUS;
+        return id && previousStatuses.get(id) !== artifactVersion(task);
       })
       .map(taskDeckId)
       .filter(Boolean))];

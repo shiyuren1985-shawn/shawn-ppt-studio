@@ -922,6 +922,42 @@ test("a newer completed run hides an older stalled run for the same page and mod
   assert.equal(result.tasks[0].completed_units, 8);
 });
 
+test("a completed selected-style repair replacement does not leave its inactive old run reviewing", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "studio-selected-repair-duplicate-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const output = path.join(root, "output");
+  const deck = {
+    deck_id: "deck", deck_uid: "DECK", label: "测试", output_root: output,
+    slides: [{ page_id: "P12", slide_uid: "SLIDE_12", page_label: "P12" }],
+  };
+  for (const [name, status, updatedAt] of [
+    ["old-run", "running", "2026-09-24T06:37:56Z"],
+    ["replacement-run", "completed", "2026-09-24T06:48:48Z"],
+  ]) {
+    const stateDir = path.join(output, name, "state");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(path.join(stateDir, "source_snapshot.json"), JSON.stringify({
+      page_ids: ["P12"], slide_identity: { deck_uid: "DECK", slide_uids: { P12: "SLIDE_12" } },
+    }));
+    const statePath = path.join(stateDir, "selected_style_run_state.json");
+    await writeFile(statePath, JSON.stringify({
+      run_id: name, run_mode: "selected_style_expansion", status,
+      pages: { P12: { status: status === "completed" ? "accepted" : "candidate_ready", selected_source: `${name}.png` } },
+      selected_style_judge: { status: status === "completed" ? "passed" : "waiting_for_report" },
+    }));
+    await utimes(statePath, new Date(updatedAt), new Date(updatedAt));
+  }
+  const projection = new TaskProjection({
+    discovery: { async listDecks() { return { decks: [deck] }; } },
+    conversations: { ready: true, records() { return []; } },
+    clock: () => Date.parse("2026-09-24T06:50:00Z"), cacheMs: 0,
+  });
+  const result = await projection.list();
+  assert.equal(result.tasks.length, 1);
+  assert.equal(result.tasks[0].status, "completed");
+  assert.equal(result.active_count, 0);
+});
+
 test("an interrupted latest turn immediately marks its associated run stopped", async (t) => {
   const { root, output } = await fixture();
   t.after(() => rm(root, { recursive: true, force: true }));

@@ -211,7 +211,7 @@ function enforceLoopbackRequest(req) {
   }
 }
 
-async function confirmedSelectionRefs(deck, selectionProjection) {
+export async function confirmedSelectionRefs(deck, selectionProjection) {
   if (!selectionProjection) return [];
   const refs = [];
   for (const slide of deck.outline.slides) {
@@ -236,6 +236,27 @@ async function confirmedSelectionRefs(deck, selectionProjection) {
   return refs;
 }
 
+export async function selectionContextForTurn(deck, projection, body) {
+  try {
+    return { refs: await confirmedSelectionRefs(deck, projection), unavailable: false };
+  } catch (error) {
+    if (!["EPERM", "EACCES"].includes(error?.code)) throw error;
+    if (body?.retouch_context === true && !body?.edit_candidate) {
+      throw new HttpError(409, "暂时无法读取已选原图。请恢复文件夹访问后再修图；不会替换成其他图片。", "selected_image_access_denied");
+    }
+    return { refs: [], unavailable: true };
+  }
+}
+
+export async function resolveEditCandidateForTurn(context, deck, body) {
+  if (!body?.edit_candidate) return null;
+  const slideUid = body.edit_candidate.slide_uid;
+  if (!deck.outline.slides.some((slide) => slide.slide_uid === slideUid)) {
+    throw new HttpError(409, "这页已不在当前大纲中，请重新选择图片", "slide_not_found");
+  }
+  return context.selectorWorkspace.resolveEditCandidate(deck.deck_id, body.edit_candidate);
+}
+
 function isArchivedThreadError(error) {
   const message = String(error?.message || "");
   return /\b(?:session|thread)\s+\S+\s+is archived\b/i.test(message)
@@ -253,7 +274,22 @@ async function startTurnWithArchivedRecovery(client, { threadId, params, resumeP
   }
 }
 
-async function requireConversationClient(context) {
+export async function requireConversationClient(context) {
+  // Reload renewed credentials only while idle; never interrupt another chat.
+  // Coalesce concurrent sends so they cannot restart each other's App Server.
+  if (context.authenticationSync) await context.authenticationSync;
+  else if (context.conversationLifecycle?.ready && !context.codexInteraction?.activeEntries().length && !context.codexInteraction?.startingThreads?.size) {
+    context.authenticationSync = (async () => {
+      const changed = await context.conversationLifecycle.refreshAuthenticationFromLegacy();
+      context.authenticationReloadPending ||= changed;
+      if (context.authenticationReloadPending && !context.codexInteraction?.activeEntries().length && !context.codexInteraction?.startingThreads?.size) {
+        await context.client.stop();
+        await context.client.start();
+        context.authenticationReloadPending = false;
+      }
+    })().finally(() => { context.authenticationSync = null; });
+    await context.authenticationSync;
+  }
   if (!context.client.ready && typeof context.client.start === "function") {
     if (context.conversationLifecycle && !context.conversationLifecycle.ready) {
       throw new HttpError(503, "Studio conversation storage is unavailable", "conversation_storage_unavailable");
@@ -263,6 +299,34 @@ async function requireConversationClient(context) {
   if (!context.client.ready) {
     throw new HttpError(503, "Codex App Server is not ready", "app_server_unavailable");
   }
+  await context.client.prepareAuthentication?.();
+}
+
+function missingRollout(error) {
+  return /no rollout found for thread id|missing source rollout/i.test(error?.message || "");
+}
+
+export async function resumeStudioConversation(context, deckUid, conversationId, rules) {
+  context.conversationRecovery ||= new Map();
+  const key = `${deckUid}:${conversationId}`;
+  if (context.conversationRecovery.has(key)) return context.conversationRecovery.get(key);
+  const operation = (async () => {
+    const threadId = context.conversations.threadIdFor(deckUid, conversationId);
+    try {
+      return await context.client.request("thread/resume", threadResumeParams(context.dataRoot || context.labRoot, threadId, rules));
+    } catch (error) {
+      if (!missingRollout(error) || !context.conversations.isUnused?.(deckUid, conversationId)) throw error;
+      // An unused thread may never have written a rollout before App Server exit.
+      // Preserve the old identity for diagnosis; never replace a used conversation.
+      const result = await context.client.request("thread/start", threadStartParams(context.dataRoot || context.labRoot, rules));
+      if (!result?.thread?.id) throw new Error("Codex App Server did not return a thread id");
+      await context.conversations.rebindUnusedThread(deckUid, conversationId, threadId, result.thread.id);
+      return result;
+    }
+  })();
+  context.conversationRecovery.set(key, operation);
+  try { return await operation; }
+  finally { context.conversationRecovery.delete(key); }
 }
 
 async function streamWorkspaceTurn(req, res, context, route) {
@@ -281,11 +345,11 @@ async function streamWorkspaceTurn(req, res, context, route) {
     : null;
   const studioRules = context.studioRules?.ready ? context.studioRules.list().rules : undefined;
   const deck = await context.discovery.readDeck(route.deckId);
-  const threadId = context.conversations.threadIdFor(
+  let threadId = context.conversations.threadIdFor(
     deck.outline.deck_uid,
     route.conversationId,
   );
-  const resumeParams = threadResumeParams(
+  let resumeParams = threadResumeParams(
     context.dataRoot || context.labRoot,
     threadId,
     studioRules,
@@ -298,23 +362,38 @@ async function streamWorkspaceTurn(req, res, context, route) {
   let message;
   const transport = context.client.child;
   try {
-    const resumed = await context.client.request("thread/resume", resumeParams);
+    const resumed = await resumeStudioConversation(context, deck.outline.deck_uid, route.conversationId, studioRules);
+    const recoveredThreadId = context.conversations.threadIdFor(deck.outline.deck_uid, route.conversationId);
+    if (recoveredThreadId !== threadId) {
+      relay.clearStarting(threadId);
+      threadId = recoveredThreadId;
+      if (!relay.markStarting(threadId)) throw new HttpError(409, "this conversation already has an active turn", "turn_already_active");
+      resumeParams = threadResumeParams(context.dataRoot || context.labRoot, threadId, studioRules);
+    }
     relay.observeThreadSnapshot(resumed?.thread);
     if (relay.activeTurn(threadId)) {
       throw new HttpError(409, "this conversation already has an active turn", "turn_already_active");
     }
+    const editCandidate = await resolveEditCandidateForTurn(context, deck, body);
+    const selectionContext = await selectionContextForTurn(deck, context.selectionProjection, body);
     ({ params, message } = await buildWorkspaceTurn(body, {
       dataRoot: context.dataRoot || context.labRoot,
       deck,
       conversationId: route.conversationId,
       threadId,
       pathPolicy: context.pathPolicy,
-      confirmedSelections: await confirmedSelectionRefs(deck, context.selectionProjection),
+      confirmedSelections: selectionContext.refs,
+      editCandidate,
       monitoringRoot: context.monitoringRoot,
       overviewPython: context.overviewPython,
       requestStartedAt,
       studioRules,
     }));
+    if (selectionContext.unavailable) {
+      params.input.unshift({ type: "text", text: editCandidate
+        ? "Some optional selected images could not be read because filesystem access was denied. The exact edit_source_candidate_ref was validated and is available; use that clicked image as the edit parent. Do not substitute another image or report an AI approval request."
+        : "Studio could not read optional selection context because filesystem access was denied. Empty confirmed_selected_image_refs means unavailable, NOT no selections or deleted images. Continue independent conversation or new generation from the authoritative outline and supplied references. If the user specifically needs an existing selected image, resolve that exact input before editing; never substitute another image. Report an actual required-file access error if encountered, not an AI permission approval request." });
+    }
     context.singleEditTurnFinalizer?.registerStarting?.(threadId, {
       transport: "studio_app_server_v1",
       deckUid: deck.outline.deck_uid,
@@ -855,6 +934,11 @@ export function createLabHttpServer(context) {
         const result = await context.client.request("thread/read", {
           threadId,
           includeTurns: true,
+        }).catch(error => {
+          if (missingRollout(error) && context.conversations.isUnused?.(deck.outline.deck_uid, conversationId)) {
+            return { thread: { id: threadId, turns: [], status: { type: "idle" } } };
+          }
+          throw error;
         });
         context.codexInteraction.observeThreadSnapshot?.(result?.thread);
         const storedActiveTurn = [...(result?.thread?.turns || [])]
@@ -885,14 +969,8 @@ export function createLabHttpServer(context) {
         const deck = await context.discovery.readDeck(decodeURIComponent(conversationOpenMatch[1]));
         const conversationId = decodeURIComponent(conversationOpenMatch[2]);
         const threadId = context.conversations.threadIdFor(deck.outline.deck_uid, conversationId);
-        await context.client.request(
-          "thread/resume",
-          threadResumeParams(
-            context.dataRoot || context.labRoot,
-            threadId,
-            context.studioRules?.ready ? context.studioRules.list().rules : undefined,
-          ),
-        );
+        await resumeStudioConversation(context, deck.outline.deck_uid, conversationId,
+          context.studioRules?.ready ? context.studioRules.list().rules : undefined);
         const conversation = await context.conversations.activate(
           deck.outline.deck_uid,
           conversationId,
@@ -931,9 +1009,11 @@ export function createLabHttpServer(context) {
         const rememberedRule = context.studioRules?.ready
           ? await context.studioRules.rememberFromMessage(body?.message)
           : null;
+        const editCandidate = await resolveEditCandidateForTurn(context, deck, body);
         const { input } = await buildWorkspaceSteerInput(body, {
           pathPolicy: context.pathPolicy,
           studioRules: context.studioRules?.ready ? context.studioRules.list().rules : undefined,
+          editCandidate,
         });
         let result;
         try {

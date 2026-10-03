@@ -11423,9 +11423,9 @@ def read_global_chrome_contract(
         raise SystemExit("deck_title_system.logo.required 必须显式为 true|false")
     if logo.get("required") is True:
         assets = logo.get("assets_by_tone")
-        if not isinstance(assets, dict):
+        if not isinstance(assets, dict) or not assets or set(assets) - {"dark", "light"}:
             raise SystemExit("标题系统要求 Logo 时必须提供 assets_by_tone")
-        for tone in ("dark", "light"):
+        for tone in assets:
             item = assets.get(tone)
             if not isinstance(item, dict) or not isinstance(item.get("path"), str):
                 raise SystemExit(f"deck_title_system.logo.assets_by_tone.{tone} 缺少 path")
@@ -11545,6 +11545,8 @@ def global_chrome_projection(
     result["subtitle_policy"] = deck.get("subtitle_policy")
     logo = deck.get("logo") or {}
     if logo.get("required") is True:
+        if tone not in (logo.get("assets_by_tone") or {}):
+            raise SystemExit(f"页 {page_id} 实际使用 {tone} 色调，但标题 Logo 未登记该色调")
         item = dict((logo.get("assets_by_tone") or {})[tone])
         item["path"] = str(Path(item["path"]).expanduser().resolve())
         item["asset_type"] = "required_asset"

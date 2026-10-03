@@ -36,6 +36,13 @@ function within(candidate, root) {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`));
 }
 
+function imageAccessFailure(error) {
+  if (["EPERM", "EACCES"].includes(error?.code)) {
+    throw new HttpError(403, "macOS 暂时不允许 Studio 读取图片所在文件夹。选稿记录仍保留，请检查系统隐私权限与 OneDrive 文件可用性。", "candidate_image_access_denied");
+  }
+  throw error;
+}
+
 function privateCandidateFiles(rawCatalog) {
   const files = new Map();
   for (const page of Array.isArray(rawCatalog?.pages) ? rawCatalog.pages : []) {
@@ -219,6 +226,8 @@ function publicCandidate(deckId, page, candidate) {
     candidate_id: candidateId,
     file_sha256: fileSha256,
     preview_url: candidatePreviewUrl(deckId, candidate),
+    language: candidate.language || "unknown",
+    review_pending: candidate.review_pending === true,
     selected,
     selected_order: selectedIndex >= 0 ? selectedIndex + 1 : (selected ? 1 : null),
     previous_version: candidate.baseline === true,
@@ -360,11 +369,13 @@ export class SelectorWorkspace {
     const running = this.refreshes.get(deckId);
     if (running) return running;
     const refresh = (async () => {
+      const scanStartedAt = Date.now();
       const deck = await this.#deck(deckId);
       const diagnostics = {};
       const catalog = await buildStudioCatalog(deck, { diagnostics });
       await this.#record("selector_catalog_scan_completed", {
         deck_id: deckId,
+        duration_ms: Date.now() - scanStartedAt,
         ...diagnostics,
       });
       return this.#acceptCatalog(deckId, catalog);
@@ -498,7 +509,13 @@ export class SelectorWorkspace {
     const targets = [];
     const pruneChains = new Map();
     const strategies = [];
-    for (const [projectRoot, items] of groups) {
+    for (const [projectRoot, allItems] of groups) {
+      // Unfinalized images still live in the shared generated-image store.
+      // Keep the frozen/shared run records; never sweep that external folder.
+      const external = allItems.filter((item) => !within(item.path, projectRoot));
+      targets.push(...external.map((item) => ({ path: item.path, kind: "file", reason: "candidate_image" })));
+      const items = allItems.filter((item) => within(item.path, projectRoot));
+      if (!items.length) continue;
       const usesFormalState = items.some((item) => canonicalCleanupCatalog(
         item.catalog_path || source.handoff_path,
       ));
@@ -815,12 +832,15 @@ export class SelectorWorkspace {
     };
   }
 
-  async streamImage(res, { deckId, candidateId, sha256 }) {
+  async #openCandidateImage({ deckId, slideUid = null, candidateId, sha256 }) {
     if (!/^[a-f0-9]{24}$/.test(candidateId || "") || !/^[a-f0-9]{64}$/.test(sha256 || "")) {
       throw new HttpError(400, "图片地址无效", "invalid_candidate_image_reference");
     }
     const snapshot = this.snapshot(deckId);
-    const candidate = snapshot.pages
+    const pages = slideUid
+      ? snapshot.pages.filter((page) => page.slide_uid === slideUid)
+      : snapshot.pages;
+    const candidate = pages
       .flatMap((page) => page.candidates)
       .find((item) => item.candidate_id === candidateId && item.file_sha256 === sha256);
     if (!candidate) {
@@ -828,8 +848,12 @@ export class SelectorWorkspace {
     }
     const deck = await this.#deck(deckId);
     const source = this.candidateFiles.get(deckId)?.get(candidateId);
-    const sourceReal = source ? await realpath(source.path).catch(() => null) : null;
-    const outputReal = await realpath(deck.output_root).catch(() => null);
+    const resolveImagePath = (value) => realpath(value).catch(error => {
+      if (error?.code === "ENOENT") return null;
+      return imageAccessFailure(error);
+    });
+    const sourceReal = source ? await resolveImagePath(source.path) : null;
+    const outputReal = await resolveImagePath(deck.output_root);
     const contentType = sourceReal
       ? IMAGE_CONTENT_TYPES.get(path.extname(sourceReal).toLowerCase())
       : null;
@@ -839,22 +863,60 @@ export class SelectorWorkspace {
         !sourceReal ||
         sourceReal !== source.path ||
         !outputReal ||
-        !within(sourceReal, outputReal) ||
+        !(within(sourceReal, outputReal) || (
+          source.project_root && within(source.project_root, outputReal) &&
+          source.origin_root && within(sourceReal, source.origin_root) &&
+          path.basename(path.dirname(source.origin_root)) === "generated_images" &&
+          canonicalCleanupCatalog(source.handoff_path)
+        )) ||
         !contentType
     ) {
       throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
     }
     const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0);
-    const handle = await open(sourceReal, flags).catch(() => null);
+    const handle = await open(sourceReal, flags).catch(error => {
+      if (error?.code === "ENOENT") return null;
+      return imageAccessFailure(error);
+    });
     if (!handle) {
       throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
     }
-    let handedOff = false;
     try {
       const info = await handle.stat();
       if (!info.isFile() || await sha256FileHandle(handle) !== sha256) {
         throw new HttpError(404, "图片已不在当前候选中", "candidate_image_not_found");
       }
+      return { handle, info, contentType, path: sourceReal, source };
+    } catch (error) {
+      await handle.close().catch(() => {});
+      throw error;
+    }
+  }
+
+  async resolveEditCandidate(deckId, { slide_uid: slideUid, candidate_id: candidateId, sha256 } = {}) {
+    if (typeof slideUid !== "string" || !slideUid) {
+      throw new HttpError(400, "请先选择要修改的页面", "invalid_edit_candidate");
+    }
+    const opened = await this.#openCandidateImage({ deckId, slideUid, candidateId, sha256 });
+    await opened.handle.close();
+    if (!opened.source.handoff_path || !opened.source.native_candidate_id || !opened.source.run_id) {
+      throw new HttpError(409, "这张图片的正式记录还没准备好，完成后再从选稿台修改", "edit_parent_not_ready");
+    }
+    return {
+      slide_uid: slideUid,
+      selector_candidate_id: candidateId,
+      parent_candidate_id: opened.source.native_candidate_id,
+      parent_handoff_path: opened.source.handoff_path,
+      source_run_id: opened.source.run_id,
+      file_sha256: sha256,
+      path: opened.path,
+    };
+  }
+
+  async streamImage(res, { deckId, candidateId, sha256 }) {
+    const { handle, info, contentType } = await this.#openCandidateImage({ deckId, candidateId, sha256 });
+    let handedOff = false;
+    try {
       res.writeHead(200, {
         "content-type": contentType,
         "content-length": info.size,

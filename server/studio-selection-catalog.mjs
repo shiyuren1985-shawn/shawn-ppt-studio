@@ -156,11 +156,11 @@ function identityMatches(identity, deck, slideUid, expectedPageId) {
   );
 }
 
-function slideForIdentityPage(identity, deck, sourcePageId) {
+export function slideForIdentityPage(identity, deck, sourcePageId) {
   const mappings = Object.entries(identity?.slide_uids || {}).filter(
     ([key]) => pageId(key) === pageId(sourcePageId),
   );
-  if (mappings.length !== 1) return null;
+  if (!mappings.length || new Set(mappings.map(([, uid]) => uid)).size !== 1) return null;
   const slide = deck.outline.slides.find((item) => item.slide_uid === mappings[0][1]);
   return slide && identityMatches(identity, deck, slide.slide_uid, sourcePageId) ? slide : null;
 }
@@ -253,11 +253,13 @@ function candidateRecord({
     catalog_kind: catalogKind,
     project_root: projectRoot,
     origin_root: path.join(projectRoot, "origin_image"),
+    review_pending: lineage.review_pending === true,
     file_sha256: file.sha256,
     path: file.path,
     slide_uid: slide.slide_uid,
     page_id: slide.page_id,
     source_page_id: pageId(sourcePageId) || slide.page_id,
+    language: /[-_]ZH$/i.test(String(sourcePageId)) ? "zh" : /[-_]EN$/i.test(String(sourcePageId)) ? "en" : "unknown",
     width: file.dimensions.width,
     height: file.dimensions.height,
     size_bytes: file.info.size,
@@ -339,14 +341,17 @@ async function verifyHandoff(deck, handoffPath, outputReal) {
             state.identity?.slide_uid !== slide.slide_uid ||
             pageId(state.identity?.page_id) !== sourcePageId)
       ) throw new Error("state identity mismatch");
+      const sourceRoot = inside(originRoot, path.resolve(candidate.path || ""))
+        ? originRoot : generatedSourceRoot(candidate.path);
+      if (!sourceRoot || !/^[a-f0-9]{64}$/.test(candidate.sha256 || "")) continue;
       const file = await verifiedCandidateFile({
         candidatePath: candidate.path,
-        originRoot,
+        originRoot: sourceRoot,
         sha256: candidate.sha256,
         width: candidate.width,
         height: candidate.height,
       });
-      candidates.push(candidateRecord({
+      const accepted = candidateRecord({
         runId: handoff.run_id,
         runMode: handoff.run_mode,
         catalogPath: handoffPath,
@@ -360,7 +365,9 @@ async function verifyHandoff(deck, handoffPath, outputReal) {
           derivation_kind: candidate.derivation_kind || handoff.lineage?.derivation_kind,
           parent_candidate_id: candidate.parent_candidate_id || handoff.lineage?.parent_candidate_id,
         },
-      }));
+      });
+      accepted.origin_root = sourceRoot;
+      candidates.push(accepted);
     } catch {
       // One missing or changed image does not invalidate the other candidates.
     }
@@ -412,8 +419,8 @@ async function verifyHistoricalState(deck, statePath, outputReal) {
     STATE_FILE_BY_MODE.get(state.run_mode) !== path.basename(statePath) ||
     typeof state.run_id !== "string" ||
     !state.run_id ||
-    !["completed", "attention_required"].includes(state.status) ||
-    state.status === "attention_required" && state.run_mode !== "selected_style_expansion"
+    !["completed", "attention_required", "running"].includes(state.status) ||
+    state.status !== "completed" && state.run_mode !== "selected_style_expansion"
   ) throw new Error("state is not a completed historical run");
   const projectReal = await verifiedProjectRoot(outputReal, state.project_dir, statePath);
   if (statePath !== path.join(projectReal, "state", path.basename(statePath))) {
@@ -426,6 +433,15 @@ async function verifyHistoricalState(deck, statePath, outputReal) {
   const candidates = [];
   for (const row of historicalRows(state)) {
     try {
+      const record = state.pages?.[row.page_id];
+      const pending = state.run_mode === "selected_style_expansion" && row.status === "generated";
+      // A durable generated artifact is selectable, not automatically approved.
+      // Do not wait for the entire run/Judge to finish or copy the image again.
+      if (pending) {
+        if (identity?.required !== true || !record?.file_validated_at || !record?.tool_call_id ||
+            !/^[a-f0-9]{64}$/.test(record.source_sha256 || "")) continue;
+        row.path = record.selected_source;
+      }
       const sourcePageId = pageId(row.page_id);
       // Page numbers describe the frozen run. Stable UIDs describe the current
       // outline, including pages moved by insertion, deletion or reordering.
@@ -436,16 +452,19 @@ async function verifyHistoricalState(deck, statePath, outputReal) {
         );
       if (
         !slide ||
-        !["candidate_ready", "accepted"].includes(row.status)
+        !["candidate_ready", "accepted", ...(pending ? ["generated"] : [])].includes(row.status)
       ) throw new Error("historical page identity mismatch");
+      const sourceRoot = inside(originRoot, path.resolve(row.path || "")) ? originRoot
+        : identity?.required === true && /^[a-f0-9]{64}$/.test(row.sha256 || "") ? generatedSourceRoot(row.path) : null;
+      if (!sourceRoot) continue;
       const file = await verifiedCandidateFile({
         candidatePath: row.path,
-        originRoot,
+        originRoot: sourceRoot,
         sha256: row.sha256,
         width: row.width,
         height: row.height,
       });
-      candidates.push(candidateRecord({
+      const candidate = candidateRecord({
         runId: state.run_id,
         runMode: state.run_mode,
         catalogPath: statePath,
@@ -455,13 +474,24 @@ async function verifyHistoricalState(deck, statePath, outputReal) {
         file,
         slide,
         sourcePageId: row.page_id,
-        lineage: row,
-      }));
+        lineage: { ...row, review_pending: pending },
+      });
+      candidate.origin_root = sourceRoot;
+      candidates.push(candidate);
     } catch {
       // Only accepted, hash-matching files from the bound project are restored.
     }
   }
   return candidates;
+}
+
+// Only the exact state-bound file is read; never scan the shared image store.
+function generatedSourceRoot(filePath) {
+  if (!path.isAbsolute(filePath || "")) return null;
+  const parts = path.resolve(filePath).split(path.sep);
+  const index = parts.lastIndexOf("generated_images");
+  if (index < 1 || parts.length !== index + 3) return null;
+  return path.dirname(filePath);
 }
 
 async function verifyDeliveryImages(deck, runRoot, outputReal, pageOverrides = new Map()) {
@@ -650,7 +680,7 @@ export async function scanStudioCandidates(deck, { diagnostics = null } = {}) {
           accepted = true;
         }
       } catch {
-        // Foreign, running, incomplete and tampered state stays out of the catalog.
+        // Foreign, unbound and tampered records stay out of the catalog.
       }
     }
     if (accepted) acceptedRoots.add(entry.name);
@@ -736,10 +766,13 @@ export async function buildStudioCatalog(deck, { diagnostics = null } = {}) {
   const pages = deck.outline.slides.map((slide) => {
     const pageSelection = selection.pages?.[slide.slide_uid];
     const selected = [];
+    let unresolvedSelectedRefs = 0;
     for (const ref of pageSelection?.selected_candidate_refs || []) {
       const candidate = byRef.get(refKey(ref));
       if (candidate?.slide_uid === slide.slide_uid && !selected.includes(candidate.candidate_id)) {
         selected.push(candidate.candidate_id);
+      } else if (!candidate || candidate.slide_uid !== slide.slide_uid) {
+        unresolvedSelectedRefs += 1;
       }
     }
     const selectedRefKeys = new Set((pageSelection?.selected_candidate_refs || []).map(refKey));
@@ -760,10 +793,15 @@ export async function buildStudioCatalog(deck, { diagnostics = null } = {}) {
       resolution: selected.length ? "selected" : "missing",
       selected_candidate_ids: selected,
       selected_candidate_count: selected.length,
+      unresolved_selected_ref_count: unresolvedSelectedRefs,
       baseline_candidate_id: null,
       candidates: pool.map((candidate) => ({ ...candidate, baseline: false })),
     };
   });
+  if (diagnostics && typeof diagnostics === "object") {
+    diagnostics.visible_slide_count = pages.filter((page) => page.candidates.length > 0).length;
+    diagnostics.unresolved_selection_page_count = pages.filter((page) => page.unresolved_selected_ref_count > 0).length;
+  }
   return {
     catalog_contract_version: 1,
     deck_label: deck.label,

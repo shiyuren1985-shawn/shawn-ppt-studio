@@ -177,6 +177,7 @@ export class ConversationIndex {
         thread_id: codexThreadId,
         title: cleanTitle(title, `新对话 ${number}`),
         title_is_default: !title,
+        has_started_turn: false,
         created_at: timestamp,
         updated_at: timestamp,
         last_used_at: timestamp,
@@ -208,6 +209,26 @@ export class ConversationIndex {
     return publicConversation(activated);
   }
 
+  isUnused(deckUid, conversationId) {
+    const record = this.#record(deckUid, conversationId);
+    return record.has_started_turn === false || (record.has_started_turn === undefined
+      && record.title_is_default && record.created_at === record.updated_at);
+  }
+
+  async rebindUnusedThread(deckUid, conversationId, previousThreadId, threadId) {
+    await this.#mutate((state) => {
+      const record = state.decks[deckUid]?.conversations.find(item => item.conversation_id === conversationId);
+      if (!record || record.archived_at || record.thread_id !== previousThreadId
+        || !(record.has_started_turn === false || (record.has_started_turn === undefined
+          && record.title_is_default && record.created_at === record.updated_at))) {
+        throw new HttpError(409, "conversation changed during recovery", "conversation_changed");
+      }
+      record.previous_empty_thread_ids = [...(record.previous_empty_thread_ids || []), previousThreadId];
+      record.thread_id = requiredString(threadId, "thread_id");
+      record.has_started_turn = false;
+    });
+  }
+
   async touch(deckUid, conversationId, { firstMessage = null } = {}) {
     const uid = requiredString(deckUid, "deck_uid");
     const id = requiredString(conversationId, "conversation_id");
@@ -223,6 +244,7 @@ export class ConversationIndex {
         updated.title = cleanTitle(titleFromMessage(firstMessage), updated.title);
         updated.title_is_default = false;
       }
+      if (firstMessage) updated.has_started_turn = true;
       deck.active_conversation_id = id;
       updated.last_used_at = timestamp;
       updated.updated_at = timestamp;

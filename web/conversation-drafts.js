@@ -7,10 +7,12 @@ function draftKey(route) {
 }
 
 function copyDraft(draft) {
-  return {
+  const copy = {
     text: String(draft?.text || ""),
     attachments: (draft?.attachments || []).map((attachment) => ({ ...attachment })),
   };
+  if (draft?.editTarget) copy.editTarget = { ...draft.editTarget };
+  return copy;
 }
 
 // Draft identity follows the conversation, not its current view epoch or slide.
@@ -27,7 +29,7 @@ export function createConversationDraftStore() {
     const key = draftKey(route);
     if (!key) return;
     const copy = copyDraft(draft);
-    if (copy.text || copy.attachments.length) drafts.set(key, copy);
+    if (copy.text || copy.attachments.length || copy.editTarget) drafts.set(key, copy);
     else drafts.delete(key);
   }
 
@@ -51,7 +53,7 @@ export function createConversationDraftStore() {
       uploads.delete(token);
       const draft = copyDraft(drafts.get(key));
       draft.attachments.push(...attachments.filter(Boolean).map((attachment) => ({ ...attachment })));
-      if (draft.text || draft.attachments.length) drafts.set(key, draft);
+      if (draft.text || draft.attachments.length || draft.editTarget) drafts.set(key, draft);
       return true;
     },
     hasPendingUploads(route) {

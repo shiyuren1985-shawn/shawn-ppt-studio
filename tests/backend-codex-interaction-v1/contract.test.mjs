@@ -13,6 +13,7 @@ import {
   buildWorkspaceTurn,
   STUDIO_COMMUNICATION_RULES,
   threadStartParams,
+  threadResumeParams,
 } from "../../server/turns.mjs";
 
 class FakeClient extends EventEmitter {
@@ -70,8 +71,8 @@ test("workspace turn is one natural Codex turn with official skills and no propo
   );
 
   assert.equal(built.params.threadId, "thread-1");
-  assert.equal(built.params.approvalPolicy, "on-request");
-  assert.equal(built.params.sandboxPolicy.type, "workspaceWrite");
+  assert.equal(built.params.approvalPolicy, "never");
+  assert.deepEqual(built.params.sandboxPolicy, { type: "dangerFullAccess" });
   assert.equal(Object.hasOwn(built.params, "outputSchema"), false);
   assert.deepEqual(
     built.params.input.filter((item) => item.type === "skill").map((item) => item.name),
@@ -88,36 +89,66 @@ test("workspace turn is one natural Codex turn with official skills and no propo
   assert.match(text, /authoritative_outline_path:/);
   assert.match(text, /candidate_output_roots:/);
   assert.match(text, /project_generation_sources:.*global_chrome_contract/s);
-  assert.match(text, /selected-style expansion/);
+  assert.match(text, /For every image route, register each supplied project_generation_source/);
+  assert.match(text, /Judge requests a repair.*continue the existing Skill run/);
+  assert.match(text, /do not repeat Directors or completed pages/);
   assert.match(text, /--supporting-source.*<path>::deck/);
-  assert.match(text, /If project_generation_sources is empty, do not infer or impose/);
+  assert.match(text, /if none is supplied, do not invent a title system/);
   assert.equal(
     built.params.input.some((item) =>
       item.type === "localImage" && item.path.endsWith("全稿标题系统合同.json")),
     false,
   );
-  assert.match(text, /role=primary_style_reference/);
-  assert.match(text, /style_anchor_only is an approval scope, never an asset role/);
-  assert.match(text, /perform one bounded read-only input enumeration/);
-  assert.match(text, /directly referenced page-level asset index/);
-  assert.match(text, /Register every mandatory ImageGen logo, product image, or photo/);
-  assert.match(text, /do not scan unrelated pages, collect optional\/planning assets/);
-  assert.match(text, /first state-mutating command must then build the preflight manifest/);
-  assert.match(text, /never use a distinct slide identity sidecar/);
-  assert.match(text, /never pass --slide-identity-file again; init reads/);
+  assert.match(text, /Enumerate only mandatory assets for the target page before freezing/);
+  assert.match(text, /first state-mutating command must build the preflight manifest/);
+  assert.match(text, /canonical outline for slide identity, not a sidecar/);
+  assert.match(text, /do not pass --slide-identity-file again to init_task_dir.py/);
   assert.match(text, /studio_request_started_at: 2026-08-15T05:09:18\.123Z/);
-  assert.match(text, /--request-started-at/);
-  assert.match(text, /--tone light or --tone dark/);
+  assert.match(text, /Pass studio_request_started_at, the user's explicit --tone/);
   assert.match(text, /studio_overview_python: \/tmp\/shawn-ppt-studio-codex-contract\/runtime\/python3/);
-  assert.match(text, /use the exact studio_overview_python/);
-  assert.match(text, /Never search for another Python, create a virtual environment, run pip\/uv\/conda/);
+  assert.match(text, /use the exact studio_overview_python as init_task_dir.py --overview-python/);
+  assert.match(text, /do not install or search for another runtime/);
   assert.match(text, /currently_viewed_slide:.*Body/s);
   assert.match(text, /slide_uids must be a page-to-UID mapping/);
   assert.match(text, /P01: stable_slide_uid/);
   assert.match(text, /first column is `页码`/);
   assert.match(text, /mapping count equals the page table row count/);
   assert.doesNotMatch(text, /PRIVATE_WHOLE_OUTLINE_SENTINEL/);
-  assert.ok(built.params.sandboxPolicy.writableRoots.includes(path.join(root, "monitoring")));
+  assert.match(text, /monitoring_root:/);
+});
+
+test("selector edit uses its exact candidate as parent without changing the saved selection", async () => {
+  const editCandidate = {
+    slide_uid: "SLIDE_1",
+    selector_candidate_id: "a".repeat(24),
+    parent_candidate_id: "P01-A",
+    parent_handoff_path: `${root}/candidates/handoff.json`,
+    source_run_id: "RUN_1",
+    file_sha256: "b".repeat(64),
+    path: `${root}/candidates/source.png`,
+  };
+  const built = await buildWorkspaceTurn(
+    { message: "缩小 Logo，其他不变", current_slide_uid: "SLIDE_1", retouch_context: true },
+    {
+      dataRoot: root,
+      deck,
+      conversationId: "conversation-1",
+      threadId: "thread-1",
+      pathPolicy: { requireReferenceImage: async (value) => value },
+      editCandidate,
+      confirmedSelections: [],
+    },
+  );
+  const prompt = built.params.input.find((item) => item.type === "text").text;
+  assert.match(prompt, /edit_source_candidate_ref:.*source\.png/);
+  assert.match(prompt, /never auto-select it or overwrite the parent/);
+  assert.ok(built.params.input.some((item) => item.type === "localImage" && item.path === editCandidate.path));
+  const steered = await buildWorkspaceSteerInput(
+    { message: "改成更浅的底色" },
+    { pathPolicy: { requireReferenceImage: async (value) => value }, editCandidate },
+  );
+  assert.match(steered.input[0].text, /exact selector candidate as the edit parent/);
+  assert.ok(steered.input.some((item) => item.type === "localImage" && item.path === editCandidate.path));
 });
 
 test("missing image runtime does not block ordinary conversation or outline edits", async () => {
@@ -148,10 +179,18 @@ test("a removed viewed page is advisory for new work, never silently retargeted 
 
 test("global Studio communication rules also apply when a new Codex thread is created", () => {
   const params = threadStartParams(root, ["所有项目都要遵守的用户规则"]);
+  assert.equal(params.config["sandbox_workspace_write.network_access"], true);
+  assert.equal(threadResumeParams(root, "test").config["sandbox_workspace_write.network_access"], true);
+  for (const value of [params, threadResumeParams(root, "test")]) {
+    assert.equal(value.approvalPolicy, "never");
+    assert.equal(value.sandbox, "danger-full-access");
+    assert.doesNotMatch(value.developerInstructions, /Use official Codex permission requests/);
+  }
   for (const rule of STUDIO_COMMUNICATION_RULES) {
     assert.match(params.developerInstructions, new RegExp(rule.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(params.developerInstructions, /所有项目都要遵守的用户规则/);
+  assert.match(params.developerInstructions, /Judge requests a repair.*continue the existing Skill run/);
   assert.doesNotMatch(params.developerInstructions, /settings panel|toggle/i);
 });
 

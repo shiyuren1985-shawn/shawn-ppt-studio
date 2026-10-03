@@ -16,6 +16,8 @@ export function normalizeCandidate(value) {
   return {
     candidate_id: candidateId,
     preview_url: previewUrl,
+    language: ["zh", "en", "bilingual"].includes(value.language) ? value.language : "unknown",
+    review_pending: value.review_pending === true,
     selected: value.selected === true,
     baseline: value.previous_version === true || value.baseline === true,
     source_count: Math.max(1, Number(value.source_count) || 1),

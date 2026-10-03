@@ -126,7 +126,7 @@ export class SelectionProjection {
 
     if (deck.source_kind === "studio") {
       const current = await resolveStudioSelection(deck, slideUid);
-      if (current.stale) {
+      if (current.candidates.length === 0 && current.stale) {
         return {
           ...common,
           status: "unavailable",
@@ -178,7 +178,9 @@ export class SelectionProjection {
         resolution: "selected",
         selected_count: selected.length,
         selected_candidates: selected,
-        message: null,
+        message: current.stale
+          ? "已显示当前选中的图片；失效的旧记录已自动忽略。"
+          : null,
       };
     }
 

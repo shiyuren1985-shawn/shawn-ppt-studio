@@ -198,7 +198,28 @@ export class StudioConversationLifecycle {
   async refreshAuthenticationFromLegacy() {
     const source = path.join(this.legacyHome, "auth.json");
     if (!(await exists(source))) return false;
-    await this.#atomicCopy(source, path.join(this.isolatedHome, "auth.json"), 0o600);
+    const destination = path.join(this.isolatedHome, "auth.json");
+    const sourceText = await readFile(source, "utf8");
+    const destinationText = await readFile(destination, "utf8").catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (sourceText === destinationText) return false;
+    // Compare OAuth refresh times, not copy times. Never downgrade a login that
+    // Studio refreshed itself, or silently switch a separately signed-in account.
+    if (destinationText !== null) {
+      let incoming, current;
+      try {
+        incoming = JSON.parse(sourceText);
+        current = JSON.parse(destinationText);
+      } catch { return false; }
+      const account = current.tokens?.account_id;
+      if (account && account !== incoming.tokens?.account_id) return false;
+      const incomingTime = Date.parse(incoming.last_refresh);
+      const currentTime = Date.parse(current.last_refresh);
+      if (!Number.isFinite(incomingTime) || (Number.isFinite(currentTime) && incomingTime <= currentTime)) return false;
+    }
+    await this.#atomicCopy(source, destination, 0o600);
     return true;
   }
 

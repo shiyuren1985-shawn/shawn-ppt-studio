@@ -111,10 +111,12 @@ def explicit_required_flag(
 
 
 def normalize_logo_assets(raw: Any) -> dict[str, dict[str, Any]]:
-    if not isinstance(raw, dict):
+    if not isinstance(raw, dict) or not raw or set(raw) - {"dark", "light"}:
         raise SystemExit("标题系统要求 Logo 时必须提供 assets_by_tone")
     result: dict[str, dict[str, Any]] = {}
     for tone in ("dark", "light"):
+        if tone not in raw:
+            continue
         item = raw.get(tone)
         if isinstance(item, str):
             item = {"path": item}

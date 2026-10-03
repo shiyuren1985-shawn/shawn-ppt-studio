@@ -1,14 +1,49 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync } from "node:fs";
+import { accessSync, constants } from "node:fs";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import readline from "node:readline";
 
-const DEFAULT_CODEX_APP = "/Applications/ChatGPT.app/Contents/Resources/codex";
+const DEFAULT_CODEX_RESOURCES = "/Applications/ChatGPT.app/Contents/Resources";
+const BUNDLED_CODEX_PATHS = [
+  "codex-cli/bin/codex",
+  "codex-cli/CodexCLI.app/Contents/MacOS/codex",
+  "codex",
+];
 
-export function resolveCodexExecutable(env = process.env) {
+function isExecutable(file) {
+  try {
+    accessSync(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function explainLaunchError(error) {
+  if (error?.code !== "ENOENT") return error;
+  return Object.assign(new Error("找不到 Codex 命令。请确认 Codex App 已安装，然后重新打开 Studio；现有对话和图片不会因此丢失。"), {
+    code: "codex_executable_missing",
+    cause: error,
+  });
+}
+
+export function isAuthenticationFailure(error) {
+  return /token_expired|access token.*(?:expired|refreshed)|refresh token.*(?:expired|invalid|reused)|please.*(?:sign|log)\s*(?:in|out).*again/i.test(error?.message || "");
+}
+
+function loginRequiredError() {
+  return Object.assign(new Error("Studio 登录已失效，无法自动续期。请在 Codex 重新登录后，再发送一次；Studio 会自动同步更新后的登录，不会丢失对话。"), { code: "authentication_required" });
+}
+
+export function resolveCodexExecutable(env = process.env, resources = DEFAULT_CODEX_RESOURCES) {
   if (env.CODEX_BIN) return env.CODEX_BIN;
   if (env.PPT_AI_LAB_CODEX_BIN) return env.PPT_AI_LAB_CODEX_BIN;
-  if (existsSync(DEFAULT_CODEX_APP)) return DEFAULT_CODEX_APP;
+  for (const relative of BUNDLED_CODEX_PATHS) {
+    const candidate = path.join(resources, relative);
+    if (isExecutable(candidate)) return candidate;
+  }
   return "codex";
 }
 
@@ -64,7 +99,7 @@ export class AppServerClient extends EventEmitter {
     });
     child.stdin.on("error", (error) => this.#handleExit(error, child));
 
-    child.once("error", (error) => this.#handleExit(error, child));
+    child.once("error", (error) => this.#handleExit(explainLaunchError(error), child));
     child.once("exit", (code, signal) => {
       const message = this.stopping
         ? "Codex App Server stopped"
@@ -75,7 +110,7 @@ export class AppServerClient extends EventEmitter {
     await new Promise((resolve, reject) => {
       child.once("spawn", resolve);
       child.once("error", reject);
-    });
+    }).catch((error) => { throw explainLaunchError(error); });
 
     try {
       await this.request("initialize", {
@@ -128,6 +163,37 @@ export class AppServerClient extends EventEmitter {
   subscribe(listener) {
     this.on("notification", listener);
     return () => this.off("notification", listener);
+  }
+
+  async prepareAuthentication() {
+    if (this.authenticationPromise) return this.authenticationPromise;
+    this.authenticationPromise = this.#prepareAuthentication().finally(() => { this.authenticationPromise = null; });
+    return this.authenticationPromise;
+  }
+
+  async #prepareAuthentication() {
+    if (!this.env.CODEX_HOME) return;
+    let expired = false;
+    try {
+      const auth = JSON.parse(await readFile(path.join(this.env.CODEX_HOME, "auth.json"), "utf8"));
+      const token = auth.tokens?.access_token;
+      if (!token) return;
+      const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
+      expired = Number.isFinite(payload.exp) && payload.exp * 1000 <= Date.now() + 60_000;
+    } catch { return; } // Other credential providers remain App Server's responsibility.
+    if (!expired) return;
+    try {
+      const result = await this.request("account/read", { refreshToken: true });
+      this.account = result?.account ?? null;
+      if (!this.account) throw loginRequiredError();
+    } catch (error) {
+      if (isAuthenticationFailure(error) || error.code === "authentication_required") {
+        this.account = null;
+        this.lastError = loginRequiredError();
+        throw this.lastError;
+      }
+      throw error;
+    }
   }
 
   subscribeServerRequests(listener) {
@@ -228,6 +294,11 @@ export class AppServerClient extends EventEmitter {
     }
 
     if (message.method) {
+      const turnError = message.params?.turn?.error || message.params?.error;
+      if (isAuthenticationFailure(turnError)) {
+        this.account = null;
+        this.lastError = loginRequiredError();
+      }
       if (message.method === "serverRequest/resolved") {
         this.#resolveServerRequests((request) => (
           String(request.id) === String(message.params?.requestId)

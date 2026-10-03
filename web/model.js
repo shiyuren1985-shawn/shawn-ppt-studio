@@ -225,16 +225,6 @@ export function normalizeFocusMode(value) {
   return ["balanced", "content", "conversation"].includes(value) ? value : "balanced";
 }
 
-export function retouchDisplayLabel(pageLabel, index, total, provided = "") {
-  const explicit = typeof provided === "string" ? provided.trim() : "";
-  if (explicit) return explicit;
-  const page = typeof pageLabel === "string" && pageLabel.trim() ? pageLabel.trim() : "当前页";
-  if (!Number.isFinite(total) || total <= 1) return page;
-  const offset = Math.max(0, Number.isFinite(index) ? Math.floor(index) : 0);
-  const suffix = offset < 26 ? String.fromCharCode(65 + offset) : String(offset + 1);
-  return `${page}-${suffix}`;
-}
-
 export function normalizeConversations(payload) {
   const items = [];
   for (const item of Array.isArray(payload?.conversations) ? payload.conversations : []) {

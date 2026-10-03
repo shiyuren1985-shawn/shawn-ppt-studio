@@ -151,9 +151,8 @@ h3 { margin: 0; font-size: 16px; }
 .column-toggle:hover { background: var(--mint); }
 .column-toggle:focus-visible { outline: 2px solid var(--forest-2); outline-offset: 1px; }
 
-.outline-stage, .retouch-stage { position: relative; min-width: 0; min-height: 0; display: grid; overflow: hidden; background: #f5f7f5; }
+.outline-stage { position: relative; min-width: 0; min-height: 0; display: grid; overflow: hidden; background: #f5f7f5; }
 .outline-stage { grid-template-rows: auto minmax(0, 1fr); }
-.retouch-stage { grid-template-rows: auto minmax(0, 1fr); }
 .content-column-toggle { position: absolute; z-index: 4; top: 10px; right: 10px; }
 .page-context-bar { min-width: 0; min-height: 58px; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 10px 64px 10px 16px; border-bottom: 1px solid var(--line); background: white; }
 .page-context-bar > div { min-width: 0; display: flex; align-items: baseline; gap: 9px; }
@@ -305,17 +304,6 @@ h3 { margin: 0; font-size: 16px; }
 .workspace-intro { min-height: 58px; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 10px 64px 10px 16px; border-bottom: 1px solid var(--line); background: white; }
 .workspace-intro h2 { margin-bottom: 2px; }
 .workspace-intro p { margin: 0; color: var(--muted); font-size: 13px; }
-.retouch-titlebar > div { min-width: 0; display: grid; grid-template-columns: auto minmax(0,1fr); align-items: baseline; gap: 2px 9px; }
-.retouch-titlebar span { color: var(--forest-2); font-size: 13px; font-weight: 900; }
-.retouch-titlebar h2 { overflow: hidden; margin: 0; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
-.retouch-titlebar p { grid-column: 1 / -1; }
-.retouch-gallery { min-height: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); align-content: start; gap: 11px; overflow-y: auto; padding: 12px; }
-.retouch-card { position: relative; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: white; box-shadow: 0 7px 20px rgba(27,49,41,.08); }
-.retouch-card .image-button { position: relative; width: 100%; height: 210px; padding: 0; border: 0; background: #e9edeb; cursor: zoom-in; }
-.retouch-card img { width: 100%; height: 100%; object-fit: contain; }
-.retouch-card-caption { min-height: 43px; display: flex; justify-content: space-between; align-items: center; gap: 9px; padding: 7px 10px; }
-.retouch-card-caption strong { font-size: 13px; }
-.retouch-card-caption span { color: var(--muted); font-size: 11px; }
 
 html[data-left-column="collapsed"] .workspace:not(.selector-workspace) { grid-template-columns: 60px 0 minmax(380px, 1fr) 7px var(--conversation-width); }
 html[data-left-column="collapsed"] .workspace:not(.selector-workspace) > .column-resizer[data-column-resizer="left"] { visibility: hidden; pointer-events: none; }
@@ -329,8 +317,7 @@ html[data-left-column="collapsed"] .slide-button { min-height: 42px; grid-templa
 html[data-content-column="collapsed"] .workspace:not(.selector-workspace) { grid-template-columns: var(--sidebar-width) 7px 48px 0 minmax(390px, 1fr); }
 html[data-content-column="collapsed"][data-left-column="collapsed"] .workspace:not(.selector-workspace) { grid-template-columns: 60px 0 48px 0 minmax(390px, 1fr); }
 html[data-content-column="collapsed"] .workspace:not(.selector-workspace) > .column-resizer[data-column-resizer="conversation"] { visibility: hidden; pointer-events: none; }
-html[data-content-column="collapsed"] .outline-stage > :not(.content-column-toggle),
-html[data-content-column="collapsed"] .retouch-stage > :not(.content-column-toggle) { display: none; }
+html[data-content-column="collapsed"] .outline-stage > :not(.content-column-toggle) { display: none; }
 html[data-content-column="collapsed"] .content-column-toggle { position: static; width: 100%; height: 100%; min-height: 120px; padding: 8px 0; writing-mode: vertical-rl; border-radius: 0; }
 
 html[data-conversation-column="collapsed"] .workspace:not(.selector-workspace) { grid-template-columns: var(--sidebar-width) 7px minmax(380px, 1fr) 0 48px; }

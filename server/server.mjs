@@ -144,7 +144,9 @@ const client = new AppServerClient({
 
 try {
   if (!conversationLifecycle.ready) throw conversationLifecycle.lastError;
+  await conversationLifecycle.refreshAuthenticationFromLegacy();
   await client.start();
+  await client.prepareAuthentication();
   if (!client.account && conversationLifecycle.ready && await conversationLifecycle.refreshAuthenticationFromLegacy()) {
     await client.stop();
     await client.start();
